@@ -40,6 +40,13 @@ def make_hooks(name, weight, bias):
 
     def post(mod, args, output):
         x = captured.pop("x")
+        # Qwen3 MoE: experts that receive 0 routed tokens in this step get
+        # an empty input. F.mse_loss handles numel()==0 cleanly, but
+        # `.abs().max()` and `.abs().mean()` blow up on empty tensors
+        # ("Expected reduction dim to be specified for input.numel() == 0").
+        # Skip — there is no SC error to record for an unused expert call.
+        if x.numel() == 0:
+            return
         with torch.no_grad():
             ref = F.linear(x.to(weight.dtype), weight, bias).float()
             out = output.float()
