@@ -142,6 +142,113 @@ Expected pattern at `sc_prec=8 stoc_len=256`:
 If you need to skip specific layers from SC, the candidates in priority order
 are: late-layer `down_proj` first, then all `k_proj`.
 
+## Qwen3-4B-Instruct (`model_qwen4b/`)
+
+A second SC integration, this time as a thin non-invasive adapter rather
+than a forked modeling file. Two surfaces are SC-ified:
+
+1. Every `nn.Linear` inside each `Qwen3DecoderLayer` (q/k/v/o + gate/up/down)
+   is replaced with `SCLinear`, reusing the loaded weight tensors.
+2. `transformers.models.qwen3.modeling_qwen3.eager_attention_forward` is
+   module-globally swapped for `sc_eager_attention_forward`, which routes
+   Q·Kᵀ and softmax·V through `scmp_kernels.sc_matmul` when `use_sc_attn`.
+
+Unlike `model/llama_sc.py`, `make_qwen3_sc` forces
+`attn_implementation="eager"` so the SC attention path actually runs (the
+llama smoke test defaults to `sdpa` and so only exercises `SCLinear`).
+
+### Run
+
+```bash
+bash model_qwen4b/_run_test.sh fp16  DISABLE_SC=1   # baseline
+bash model_qwen4b/_run_test.sh sc256                # SC defaults
+SC_PREC=8 SC_STOC_LEN=128 bash model_qwen4b/_run_test.sh sc128  # custom
+```
+
+The wrapper sets, before invoking `python test.py`:
+
+- `HF_HOME=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/hf_cache`
+  — lab-shared scratch. Model weights must not live in `/home` (quota).
+- `QWEN_MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507` (override via env).
+
+Logs land in `model_qwen4b/_run_<tag>.log` with a `_run_<tag>.done` touch
+on clean exit. Both are ignored by `.gitignore`.
+
+### Reference timings on PRO 6000 Blackwell (gl1810)
+
+| config | ms/tok |
+|---|---|
+| fp16 baseline | 19 |
+| SC sc_prec=8 stoc_len=256 | 1208 |
+
+### Kernel dependency
+
+The SC attention path stresses the per-head bipolar kernel with
+**asymmetric** matmuls (softmax·V where `N_q ≠ K_kv`). Requires
+scmp_kernels at the PR-#10 merge or later — the original kernel
+hardcoded `M = N` for the symmetric Q·Kᵀ case and crashed on the
+softmax·V reshape. Tracked here as a submodule at
+`kernels/`; bump with `git submodule update --init --recursive`.
+
+### MoE support (Qwen3 30B-A3B / 235B-A22B)
+
+`qwen3_sc.py` also patches
+`transformers.models.qwen3_moe.modeling_qwen3_moe.eager_attention_forward`
+when that module is importable, so MoE checkpoints use the same SC
+attention path as dense Qwen3. The MoE **router** (the
+`Qwen3MoeSparseMoeBlock.gate` Linear that picks top-k experts) is
+explicitly excluded from `SCLinear` replacement via
+`_SKIP_LINEAR_NAMES = {"gate"}` — quantizing the router corrupts
+top-k expert selection and collapses output to gibberish at every
+`stoc_len`. `gate_proj` (MLP gate projection, different role) is
+**not** skipped.
+
+Run the same wrapper with a MoE model id:
+
+```bash
+QWEN_MODEL_PATH=Qwen/Qwen3-30B-A3B-Instruct-2507 \
+  bash model_qwen4b/_run_test.sh sc256_moe
+```
+
+### Diagnostic scripts
+
+Three SC-quality diagnostics ported from `scmp_llm/check_*.py`. All take
+`QWEN_MODEL_PATH`, `SC_PREC`, and (where relevant) `STOC_LENS` /
+`SC_STOC_LEN` from the environment. Assertions enforce
+`max(STOC_LENS) <= 2**SC_PREC` — never sweep past the SC RNG grid.
+
+| script | what it measures |
+|---|---|
+| `check_mse.py` | One forward pass per `stoc_len`. Reports logit MSE, max\|Δ\|, argmax-match %, and next-token (SC vs FP16) per config. Default sweep `256,192,128,96,64,48,32,24,16,12,8`. |
+| `check_perlayer_mse.py` | Hooks every `SCLinear`, captures `(x, sc_out)` and computes `F.linear(x, W, b)` as the cuBLAS reference. Aggregates by projection (q/k/v/o + gate/up/down) and lists top-10 worst single matmuls. |
+| `check_gen.py` | Decodes `NEW_TOKENS` (default 64) under each `stoc_len`. Use this — not MSE — to see where prose collapses into rubbish; autoregressive feedback amplifies single-token noise. |
+
+Wrapper scripts under `model_qwen4b/` automate common combinations:
+
+```bash
+# Single-model overnight quality sweep: logit MSE (Phase 1) +
+# per-layer MSE at stoc_len ∈ {256, 64, 16} (Phase 2).
+bash model_qwen4b/_run_sweep.sh sweep
+
+# Multi-model run across {4B, 8B, 14B, 30B-A3B MoE}. Each model
+# gets its own _run_<tag>.log; per-model failures do not block others.
+bash model_qwen4b/_run_sweep_all.sh
+
+# Qualitative generation sweep: decoded text per stoc_len.
+bash model_qwen4b/_run_gen.sh gen
+```
+
+### Empirical quality floor (Qwen3-4B-Instruct-2507, default prompt)
+
+From `check_gen.py` with `NEW_TOKENS=64`:
+
+- `stoc_len ≥ 96` — indistinguishable from FP16 for practical use.
+- `stoc_len = 64` — still coherent English on-topic; minor stylistic drift.
+- `stoc_len = 48` — **cliff**. Output starts a sentence then collapses into nonsense within ~10 tokens.
+- `stoc_len ≤ 32` — token salad / mojibake.
+
+MSE alone is misleading: MSE 2.4 at `stoc_len=48` looks comparable to MSE 2.8 at `stoc_len=32`, but autoregressive feedback turns the former from one-bad-token-recoverable into total collapse.
+
 ## Common failure modes
 
 - `ImportError: cannot import name 'LossKwargs'` — `transformers>=5` removed
