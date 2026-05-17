@@ -1,0 +1,23 @@
+# Python build/cache artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Generation / smoke-test run artifacts (logs + done markers)
+# Keep the _run_*.sh / _setup_env.sh wrappers themselves.
+_run_*.log
+_run_*.done
+_setup_env.log
+_setup_env.done
+
+# arch-implement skill scratch directories
+arch_impl/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

@@ -142,6 +142,53 @@ Expected pattern at `sc_prec=8 stoc_len=256`:
 If you need to skip specific layers from SC, the candidates in priority order
 are: late-layer `down_proj` first, then all `k_proj`.
 
+## Qwen3-4B-Instruct (`model_qwen4b/`)
+
+A second SC integration, this time as a thin non-invasive adapter rather
+than a forked modeling file. Two surfaces are SC-ified:
+
+1. Every `nn.Linear` inside each `Qwen3DecoderLayer` (q/k/v/o + gate/up/down)
+   is replaced with `SCLinear`, reusing the loaded weight tensors.
+2. `transformers.models.qwen3.modeling_qwen3.eager_attention_forward` is
+   module-globally swapped for `sc_eager_attention_forward`, which routes
+   Q·Kᵀ and softmax·V through `scmp_kernels.sc_matmul` when `use_sc_attn`.
+
+Unlike `model/llama_sc.py`, `make_qwen3_sc` forces
+`attn_implementation="eager"` so the SC attention path actually runs (the
+llama smoke test defaults to `sdpa` and so only exercises `SCLinear`).
+
+### Run
+
+```bash
+bash model_qwen4b/_run_test.sh fp16  DISABLE_SC=1   # baseline
+bash model_qwen4b/_run_test.sh sc256                # SC defaults
+SC_PREC=8 SC_STOC_LEN=128 bash model_qwen4b/_run_test.sh sc128  # custom
+```
+
+The wrapper sets, before invoking `python test.py`:
+
+- `HF_HOME=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/hf_cache`
+  — lab-shared scratch. Model weights must not live in `/home` (quota).
+- `QWEN_MODEL_PATH=Qwen/Qwen3-4B-Instruct-2507` (override via env).
+
+Logs land in `model_qwen4b/_run_<tag>.log` with a `_run_<tag>.done` touch
+on clean exit. Both are ignored by `.gitignore`.
+
+### Reference timings on PRO 6000 Blackwell (gl1810)
+
+| config | ms/tok |
+|---|---|
+| fp16 baseline | 19 |
+| SC sc_prec=8 stoc_len=256 | 1208 |
+
+### Kernel dependency
+
+The SC attention path stresses the per-head bipolar kernel with
+**asymmetric** matmuls (softmax·V where `N_q ≠ K_kv`). Requires the
+scmp_kernels commit that supports asymmetric M in
+`_sc_matmul_per_head_bipolar` — the original kernel hardcoded `M = N`
+for the symmetric Q·Kᵀ case and crashed on the softmax·V reshape.
+
 ## Common failure modes
 
 - `ImportError: cannot import name 'LossKwargs'` — `transformers>=5` removed
