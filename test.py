@@ -1,8 +1,8 @@
 import torch
 from transformers import AutoTokenizer
-from model.llama_anns import LlamaForCausalLM
+from model.llama_sc import LlamaForCausalLM
 
-MODEL_PATH = "meta-llama/Llama-2-7b-hf"  # 替换为本地路径或 HuggingFace model id
+MODEL_PATH = "meta-llama/Llama-3.1-8B-Instruct"  # 替换为本地路径或 HuggingFace model id
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
 model = LlamaForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.float16, device_map="auto")

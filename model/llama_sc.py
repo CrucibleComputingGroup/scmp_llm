@@ -50,8 +50,88 @@ from transformers.utils import (
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+try:
+    from scmp_kernels import sc_matmul as _sc_matmul
+    _HAS_SC = True
+except ImportError:
+    _sc_matmul = None
+    _HAS_SC = False
+
 
 logger = logging.get_logger(__name__)
+
+
+def _sc_attention_matmul_ab_t(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    *,
+    granularity: str,
+    mode: str,
+    sc_prec: int,
+    stoc_len: int,
+) -> torch.Tensor:
+    """4D-aware wrapper around sc_matmul, computes ``a @ b.T``.
+
+    a: (B, H, N, K), b: (B, H, M, K) -> (B, H, N, M). Casts to fp32 for
+    the SC kernels and back to a.dtype on return.
+    """
+    orig_dtype = a.dtype
+    B, H, N, K = a.shape
+    M = b.shape[-2]
+    a3 = a.reshape(B * H, N, K).to(torch.float32).contiguous()
+    b3 = b.reshape(B * H, M, K).to(torch.float32).contiguous()
+    out3 = _sc_matmul(
+        a3,
+        b3,
+        granularity=granularity,
+        mode=mode,
+        sc_prec=sc_prec,
+        stoc_len=stoc_len,
+    )
+    return out3.reshape(B, H, N, M).to(orig_dtype)
+
+
+class SCLinear(nn.Linear):
+    """nn.Linear subclass that routes the matmul through ``sc_matmul``.
+
+    Weight / bias semantics, ``state_dict`` keys, and shapes are unchanged
+    so HuggingFace checkpoints load as-is. Forward falls back to
+    ``F.linear`` when SC is disabled or unavailable.
+    """
+
+    def __init__(self, in_features, out_features, bias=True, *, sc_config=None, **kwargs):
+        super().__init__(in_features, out_features, bias=bias, **kwargs)
+        self._sc_config = sc_config
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        config = self._sc_config
+        use_sc = _HAS_SC and bool(getattr(config, "use_sc_linear", True))
+        if not use_sc:
+            return nn.functional.linear(x, self.weight, self.bias)
+
+        sc_gran = getattr(config, "sc_linear_granularity", "per_row")
+        sc_mode = getattr(config, "sc_mode", "bipolar")
+        sc_prec = int(getattr(config, "sc_prec", 8))
+        sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
+        sc_chunk_d = int(getattr(config, "sc_linear_chunk_d", 128))
+
+        orig_dtype = x.dtype
+        orig_shape = x.shape
+        x_flat = x.reshape(-1, orig_shape[-1]).to(torch.float32).contiguous()
+        w_fp32 = self.weight.to(torch.float32).contiguous()
+        out_flat = _sc_matmul(
+            x_flat,
+            w_fp32,
+            granularity=sc_gran,
+            mode=sc_mode,
+            sc_prec=sc_prec,
+            stoc_len=sc_stoc_len,
+            chunk_d=sc_chunk_d,
+        )
+        out = out_flat.reshape(*orig_shape[:-1], self.out_features).to(orig_dtype)
+        if self.bias is not None:
+            out = out + self.bias
+        return out
 
 _CHECKPOINT_FOR_DOC = "meta-llama/Llama-2-7b-hf"
 _CONFIG_FOR_DOC = "LlamaConfig"
@@ -181,9 +261,9 @@ class LlamaMLP(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=config.mlp_bias)
+        self.gate_proj = SCLinear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias, sc_config=config)
+        self.up_proj = SCLinear(self.hidden_size, self.intermediate_size, bias=config.mlp_bias, sc_config=config)
+        self.down_proj = SCLinear(self.intermediate_size, self.hidden_size, bias=config.mlp_bias, sc_config=config)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -216,14 +296,33 @@ def eager_attention_forward(
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
 
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    config = getattr(module, "config", None)
+    use_sc = _HAS_SC and bool(getattr(config, "use_sc_attn", True))
+    sc_gran = getattr(config, "sc_granularity", "per_head")
+    sc_mode = getattr(config, "sc_mode", "bipolar")
+    sc_prec = int(getattr(config, "sc_prec", 8))
+    sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
+
+    if use_sc:
+        attn_weights = _sc_attention_matmul_ab_t(
+            query, key_states,
+            granularity=sc_gran, mode=sc_mode, sc_prec=sc_prec, stoc_len=sc_stoc_len,
+        ) * scaling
+    else:
+        attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
     if attention_mask is not None:
         causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
         attn_weights = attn_weights + causal_mask
 
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
     attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
-    attn_output = torch.matmul(attn_weights, value_states)
+    if use_sc:
+        attn_output = _sc_attention_matmul_ab_t(
+            attn_weights, value_states.transpose(-2, -1),
+            granularity=sc_gran, mode=sc_mode, sc_prec=sc_prec, stoc_len=sc_stoc_len,
+        )
+    else:
+        attn_output = torch.matmul(attn_weights, value_states)
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
@@ -242,17 +341,17 @@ class LlamaAttention(nn.Module):
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
 
-        self.q_proj = nn.Linear(
-            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
+        self.q_proj = SCLinear(
+            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias, sc_config=config
         )
-        self.k_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
+        self.k_proj = SCLinear(
+            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias, sc_config=config
         )
-        self.v_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
+        self.v_proj = SCLinear(
+            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias, sc_config=config
         )
-        self.o_proj = nn.Linear(
-            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
+        self.o_proj = SCLinear(
+            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias, sc_config=config
         )
 
     def forward(
