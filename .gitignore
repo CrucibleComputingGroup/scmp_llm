@@ -7,12 +7,14 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 
-# Generation / smoke-test run artifacts (logs + done markers)
-# Keep the _run_*.sh / _setup_env.sh wrappers themselves.
-_run_*.log
-_run_*.done
-_setup_env.log
-_setup_env.done
+# Generation / smoke-test run artifacts (logs + done markers).
+# Keep the _run_*.sh / _setup_env.sh wrappers themselves — they have
+# distinct suffixes and are not matched by these patterns.
+*.log
+*.done
+*.tmp
+*.out
+*.err
 
 # arch-implement skill scratch directories
 arch_impl/

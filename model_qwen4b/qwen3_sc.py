@@ -21,6 +21,15 @@ from transformers import AutoModelForCausalLM
 from transformers.models.qwen3 import modeling_qwen3 as _qwen3_mod
 from transformers.models.qwen3.modeling_qwen3 import repeat_kv
 
+# Qwen3 MoE lives in a sibling module with its own eager_attention_forward.
+# Import lazily so older transformers without MoE support still loads.
+try:
+    from transformers.models.qwen3_moe import modeling_qwen3_moe as _qwen3_moe_mod
+    _HAS_QWEN3_MOE = True
+except ImportError:
+    _qwen3_moe_mod = None
+    _HAS_QWEN3_MOE = False
+
 try:
     from scmp_kernels import sc_matmul as _sc_matmul
     _HAS_SC = True
@@ -155,13 +164,24 @@ def sc_eager_attention_forward(
     return attn_output, attn_weights
 
 
+# Linear children to skip from SC replacement. "gate" is the MoE router
+# (Qwen3MoeSparseMoeBlock.gate: hidden -> num_experts). SC-quantizing the
+# router corrupts top-k expert selection and the model collapses to gibberish
+# at any stoc_len, masking the actual SC quality of the experts themselves.
+# Note "gate_proj" (MLP gate projection) is NOT skipped — it's a real MLP.
+_SKIP_LINEAR_NAMES = frozenset({"gate"})
+
+
 def _replace_linear_with_sclinear(module: nn.Module, sc_config) -> int:
     """Recursively replace nn.Linear (non-SCLinear) under ``module`` in place.
     Returns count of replacements. Weight/bias Parameters are rebound, not copied.
+    Names in _SKIP_LINEAR_NAMES (e.g. MoE router) are left as nn.Linear.
     """
     n = 0
     for name, child in list(module.named_children()):
         if isinstance(child, nn.Linear) and not isinstance(child, SCLinear):
+            if name in _SKIP_LINEAR_NAMES:
+                continue
             new = SCLinear(
                 child.in_features, child.out_features,
                 bias=child.bias is not None, sc_config=sc_config,
@@ -178,8 +198,16 @@ def _replace_linear_with_sclinear(module: nn.Module, sc_config) -> int:
 
 
 def patch_eager_attention():
-    """Monkey-patch Qwen3 eager_attention_forward in its module namespace."""
+    """Monkey-patch Qwen3 (and Qwen3 MoE, if present) eager_attention_forward.
+
+    Both dense Qwen3 and Qwen3-MoE define their own ``eager_attention_forward``
+    in their respective modules. Each model's Qwen3*Attention.forward looks up
+    the name as a free module global at call time, so patching the module
+    attribute is sufficient and avoids subclassing or forking the file.
+    """
     _qwen3_mod.eager_attention_forward = sc_eager_attention_forward
+    if _HAS_QWEN3_MOE:
+        _qwen3_moe_mod.eager_attention_forward = sc_eager_attention_forward
 
 
 def make_qwen3_sc(
