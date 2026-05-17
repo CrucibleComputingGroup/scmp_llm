@@ -1,4 +1,4 @@
 [submodule "scmp_kernels"]
-	path = scmp_kernels
+	path = kernels
 	url = https://github.com/heroarmor/scmp_kernels.git
 	branch = main
