@@ -6,7 +6,7 @@
 # Usage: bash _run_gen.sh <tag> [QWEN_MODEL_PATH=...]
 set -eo pipefail
 TAG="${1:-gen}"
-HERE=/home/allenjin/Projects/scmp_llm/model_qwen4b
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG=$HERE/_run_${TAG}.log
 DONE=$HERE/_run_${TAG}.done
 rm -f "$DONE"

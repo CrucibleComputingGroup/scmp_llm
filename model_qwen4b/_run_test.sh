@@ -6,7 +6,7 @@
 # Models cache under the shared scratch dir per group policy.
 set -eo pipefail
 TAG="$1"; shift
-HERE=/home/allenjin/Projects/scmp_llm/model_qwen4b
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG=$HERE/_run_${TAG}.log
 DONE=$HERE/_run_${TAG}.done
 rm -f "$DONE"

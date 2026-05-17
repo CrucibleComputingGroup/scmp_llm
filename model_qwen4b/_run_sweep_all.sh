@@ -16,7 +16,7 @@
 #              new modeling_qwen3_moe.eager_attention_forward patch and the
 #              "skip MoE router from SC replacement" path)
 set -uo pipefail
-HERE=/home/allenjin/Projects/scmp_llm/model_qwen4b
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOPLOG=$HERE/_run_sweep_all.log
 TOPDONE=$HERE/_run_sweep_all.done
 rm -f "$TOPDONE"

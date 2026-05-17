@@ -11,7 +11,7 @@
 # Writes  _run_<tag>.log  and touches  _run_<tag>.done  on clean exit.
 set -eo pipefail
 TAG="${1:-sweep}"
-HERE=/home/allenjin/Projects/scmp_llm/model_qwen4b
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG=$HERE/_run_${TAG}.log
 DONE=$HERE/_run_${TAG}.done
 rm -f "$DONE"
