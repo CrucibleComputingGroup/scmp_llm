@@ -17,7 +17,9 @@ SC_PREC = int(os.environ.get("SC_PREC", "8"))
 SC_STOC_LEN = int(os.environ.get("SC_STOC_LEN", "256"))
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-model = LlamaForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.float16, device_map="auto")
+model = LlamaForCausalLM.from_pretrained(
+    MODEL_PATH, attn_implementation="eager",
+    torch_dtype=torch.float16, device_map="auto")
 model.config.use_sc_attn = True
 model.config.use_sc_linear = True
 model.config.sc_prec = SC_PREC
