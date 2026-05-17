@@ -13,7 +13,9 @@ STOC_LENS = [int(x) for x in os.environ.get("STOC_LENS", "256,128,96,64,48,32,16
 SC_PREC = int(os.environ.get("SC_PREC", "8"))
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-model = LlamaForCausalLM.from_pretrained(MODEL_PATH, torch_dtype=torch.float16, device_map="auto")
+model = LlamaForCausalLM.from_pretrained(
+    MODEL_PATH, attn_implementation="eager",
+    torch_dtype=torch.float16, device_map="auto")
 model.eval()
 inputs = tokenizer(PROMPT, return_tensors="pt").to(model.device)
 L = inputs.input_ids.shape[1]
