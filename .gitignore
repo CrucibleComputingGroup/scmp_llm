@@ -19,6 +19,18 @@ __pycache__/
 # arch-implement skill scratch directories
 arch_impl/
 
+# Legacy llama_sc — pre-merge forked HF modeling file, kept locally as a
+# reference / fallback while we validate the new adapter (model/llama_sc.py
+# + model/sc_common.py). Do not commit.
+model/llama_sc_legacy.py
+
+# Benchmark downloaded data + run artifacts. Re-fetch with the
+# download_paulgraham_essay.py / download_qa_dataset.sh scripts.
+benchmark/ruler/data/synthetic/json/*.json
+benchmark/ruler/ruler_eval_result/
+benchmark/ruler/_sbatch_logs/
+benchmark/LongBench/results/
+
 # Editor / OS
 .vscode/
 .idea/
