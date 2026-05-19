@@ -47,6 +47,8 @@ STRIDE = int(os.environ.get("STRIDE", str(CTX)))
 SC_PREC = int(os.environ.get("SC_PREC", "8"))
 STOC_LENS = [int(x) for x in os.environ.get("STOC_LENS", "256,128,64").split(",") if x]
 SC_ATTN_GRANULARITY = os.environ.get("SC_ATTN_GRANULARITY", "per_head")
+SKIP_FP16 = os.environ.get("SKIP_FP16", "0") == "1"
+FP16_REF = float(os.environ.get("FP16_REF", "0"))
 
 
 def compute_ppl(model, tokenizer, enc_ids: torch.Tensor) -> tuple[float, int, float]:
@@ -110,15 +112,21 @@ def main() -> None:
           f"— {eval_tokens} of {total_tokens} tokens, ctx={CTX} stride={STRIDE}")
     print()
 
-    # FP16 reference
-    model.config.use_sc_attn = False
-    model.config.use_sc_linear = False
-    ppl_fp16, n, secs = compute_ppl(model, tokenizer, enc)
     print(f"{'config':<28}  {'PPL':>10}  {'tokens':>8}  {'sec':>7}  {'ms/win':>8}")
     print("-" * 76)
     n_win = max(1, eval_tokens // STRIDE)
-    print(f"{'FP16 baseline':<28}  {ppl_fp16:10.4f}  {n:8d}  {secs:7.1f}  "
-          f"{secs * 1000 / n_win:8.0f}")
+    if SKIP_FP16:
+        if FP16_REF <= 0:
+            raise SystemExit("SKIP_FP16=1 requires FP16_REF=<value> to compute ×fp16 ratios")
+        ppl_fp16 = FP16_REF
+        print(f"{'FP16 baseline (ref)':<28}  {ppl_fp16:10.4f}  {'-':>8}  {'-':>7}  {'-':>8}")
+    else:
+        # FP16 reference
+        model.config.use_sc_attn = False
+        model.config.use_sc_linear = False
+        ppl_fp16, n, secs = compute_ppl(model, tokenizer, enc)
+        print(f"{'FP16 baseline':<28}  {ppl_fp16:10.4f}  {n:8d}  {secs:7.1f}  "
+              f"{secs * 1000 / n_win:8.0f}")
 
     # SC sweep
     for stoc_len in STOC_LENS:
