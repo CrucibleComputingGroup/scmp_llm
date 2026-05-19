@@ -15,10 +15,12 @@ exec >"$LOG" 2>&1
 echo "=== gen $TAG start $(date) on $(hostname) ==="
 source ~/.bashrc
 conda activate annstention
-cd "$HERE"
+cd "$HERE/.."  # run unified scripts from repo root
 export HF_HOME=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/hf_cache
 export QWEN_MODEL_PATH="${QWEN_MODEL_PATH:-Qwen/Qwen3-4B-Instruct-2507}"
-echo "QWEN_MODEL_PATH=$QWEN_MODEL_PATH"
+export MODEL_PATH="$QWEN_MODEL_PATH"
+export NEW_TOKENS="${NEW_TOKENS:-64}"  # qwen check_gen historically used 64
+echo "MODEL_PATH=$MODEL_PATH NEW_TOKENS=$NEW_TOKENS"
 echo
 python check_gen.py
 echo "=== gen $TAG end $(date) ==="

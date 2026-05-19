@@ -77,20 +77,13 @@ Reference timings on the test GPU:
 
 | config | ms/tok |
 |---|---|
-| fp16 baseline | ~18 |
-| SC sc_prec=8 stoc_len=256 | ~1440 (**SCLinear only — see note**) |
-| SC sc_prec=8 stoc_len=16 | ~1416 (gibberish output — **SCLinear only**) |
+| fp16 baseline | 19 |
+| SC sc_prec=8 stoc_len=256 | 1647 |
+| SC sc_prec=8 stoc_len=16 | 1583 (gibberish output) |
 
-> **Stale numbers (pre-PR #3).** The two SC rows above were measured before
-> `test.py` forced `attn_implementation="eager"`. HF defaulted to `sdpa`, so
-> the SC `eager_attention_forward` in `llama_sc.py` never ran — only the
-> SCLinear Q/K/V/O + MLP projections did. Full-SC (attention + projections)
-> ms/tok will be **higher**. Re-run after the fix lands and update this
-> table.
-
-The 80× SC slowdown (relative to fp16) is dominated by `cum_indicator` table
+The ~87× SC slowdown (relative to fp16) is dominated by `cum_indicator` table
 build + Triton launch overhead. Sweeping `stoc_len` from 256 down to 16
-changes runtime by <2%; it only affects quality.
+changes runtime by ~4%; it only affects quality.
 
 ## SC knobs (read by `model/llama_sc.py` from `LlamaConfig`)
 
@@ -121,14 +114,11 @@ python check_mse.py                                # default sweep
 STOC_LENS=256,128,64,32 python check_mse.py        # custom sweep
 ```
 
-Expected: MSE grows monotonically as `stoc_len` shrinks; argmax of the
-next-token stays correct down to `stoc_len=32`; flips at `stoc_len=16`.
-
-> **Stale numbers (pre-PR #3).** These thresholds were observed with SC
-> attention disabled-by-default (sdpa fallback bug). Once full SC is on the
-> path, attention noise compounds with projection noise across layers and
-> the breakdown `stoc_len` is expected to shift **up** (i.e. argmax flips
-> at a larger `stoc_len`). Re-measure.
+Expected: MSE grows monotonically as `stoc_len` shrinks; next-token argmax
+stays correct down to `stoc_len=48`; flips at `stoc_len=32` (and full
+sequence-wide argmax-match drops from 80% at stoc_len≥96 to 40% at
+stoc_len≤64 — single-token agreement degrades earlier than the next-token
+prediction does).
 
 ### `check_perlayer_mse.py` — per-matmul MSE
 

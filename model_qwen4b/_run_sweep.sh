@@ -20,11 +20,12 @@ exec >"$LOG" 2>&1
 echo "=== sweep $TAG start $(date) on $(hostname) ==="
 source ~/.bashrc
 conda activate annstention
-cd "$HERE"
+cd "$HERE/.."  # run unified scripts from repo root
 export HF_HOME=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/hf_cache
 export QWEN_MODEL_PATH="${QWEN_MODEL_PATH:-Qwen/Qwen3-4B-Instruct-2507}"
+export MODEL_PATH="$QWEN_MODEL_PATH"
 echo "HF_HOME=$HF_HOME"
-echo "QWEN_MODEL_PATH=$QWEN_MODEL_PATH"
+echo "MODEL_PATH=$MODEL_PATH"
 echo
 
 echo "============================================================"
