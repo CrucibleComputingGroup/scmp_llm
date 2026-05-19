@@ -1,9 +1,9 @@
-"""ruler prediction (SC-llama fork).
+"""RULER prediction entrypoint for local Hugging Face models.
 
 Two modes:
 * ``--mode fp16`` — vanilla eager attention, no SC.
 * ``--mode sc``   — full SC matmul (attention + linear) via
-  ``model.llama_sc.LlamaForCausalLM`` with ``--sc_prec`` and
+  ``loader.load_sc_model`` (Llama/Qwen adapters) with ``--sc_prec`` and
   ``--sc_stoc_len``.
 
 Outputs jsonl with field ``pred`` per sample, mirroring upstream:
