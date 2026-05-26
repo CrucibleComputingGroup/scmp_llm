@@ -1,0 +1,5 @@
+{
+  "type": "MPConfig",
+  "stoc_len_levels": [128, 64, 32],
+  "level_fractions": [0.2, 0.5, 0.3]
+}
