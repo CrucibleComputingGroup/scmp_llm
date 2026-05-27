@@ -20,6 +20,13 @@ Knobs read from ``model.config``:
   * ``sc_granularity`` (str, default "per_head") — attention SC granularity.
   * ``sc_linear_granularity`` (str, default "per_row") — linear SC granularity.
   * ``sc_linear_chunk_d`` (int, default 128) — D-chunking for linear path.
+  * ``sc_halve_bipolar`` (bool, default False) — uSystolic/HUB sign-magnitude
+    cycle halving (``halve_bipolar_stoc_len`` on ``sc_matmul``); bipolar only.
+  * ``sc_halve_grid_only`` (bool, default False) — when halving, only halve the
+    RNG grid (``rng_levels`` → 2^(sc_prec-1)) and keep the explicit
+    ``sc_stoc_len`` as the stream length, instead of collapsing both to
+    2^(sc_prec-1). Lets a ``sc_stoc_len`` sweep stay meaningful with halve on.
+    No effect unless ``sc_halve_bipolar`` is also set.
 """
 from __future__ import annotations
 
@@ -45,6 +52,8 @@ SC_CONFIG_DEFAULTS = {
     "sc_granularity": "per_head",
     "sc_linear_granularity": "per_row",
     "sc_linear_chunk_d": 128,
+    "sc_halve_bipolar": False,
+    "sc_halve_grid_only": False,
 }
 
 
@@ -82,6 +91,19 @@ class SCLinear(nn.Linear):
         sc_prec = int(getattr(config, "sc_prec", 8))
         sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
         sc_chunk_d = int(getattr(config, "sc_linear_chunk_d", 128))
+        sc_halve = bool(getattr(config, "sc_halve_bipolar", False))
+        sc_halve_grid_only = bool(getattr(config, "sc_halve_grid_only", False))
+        # uSystolic cycle-halving models hardware that runs each bipolar multiply
+        # in 2^(sc_prec-1) cycles. The cycle count is the kernel's stoc_len, and
+        # the kernel only halves stoc_len when it is None — passing the config's
+        # 256 here would leave 256 cycles and defeat the halving. So in the
+        # default (pure) halve we hand stoc_len=None, which sets both the cycle
+        # count and rng_levels to 2^(sc_prec-1).
+        #
+        # Grid-only (sweepable) halve keeps the explicit stoc_len as the stream
+        # length and lets the kernel halve just the rng grid — so a stoc_len
+        # sweep stays meaningful with halve on.
+        eff_stoc_len = sc_stoc_len if (sc_halve_grid_only or not sc_halve) else None
 
         orig_dtype = x.dtype
         orig_shape = x.shape
@@ -90,7 +112,8 @@ class SCLinear(nn.Linear):
         out_flat = _sc_matmul(
             x_flat, w_fp32,
             granularity=sc_gran, mode=sc_mode,
-            sc_prec=sc_prec, stoc_len=sc_stoc_len, chunk_d=sc_chunk_d,
+            sc_prec=sc_prec, stoc_len=eff_stoc_len, chunk_d=sc_chunk_d,
+            halve_bipolar_stoc_len=sc_halve,
         )
         out = out_flat.reshape(*orig_shape[:-1], self.out_features).to(orig_dtype)
         if self.bias is not None:
@@ -132,7 +155,24 @@ def replace_linears_with_sc(
                 new_lin.weight = child.weight
                 if child.bias is not None:
                     new_lin.bias = child.bias
-                new_lin.to(child.weight.device, dtype=child.weight.dtype)
+                # Preserve accelerate's dispatch/offload hook if present. With
+                # device_map="auto" + CPU offload, the original Linear carries an
+                # AlignDevicesHook whose weights_map holds the real (CPU) weights
+                # while the module's own param is a `meta` placeholder. Dropping
+                # the hook here leaves the SCLinear with a meta weight that is
+                # never materialized at forward -> "Tensor on device meta" crash.
+                # Transfer the existing hook (already initialized, weights_map
+                # populated) so the replacement keeps offload semantics.
+                hf_hook = getattr(child, "_hf_hook", None)
+                if hf_hook is not None:
+                    from accelerate.hooks import (
+                        add_hook_to_module,
+                        remove_hook_from_module,
+                    )
+                    remove_hook_from_module(child)
+                    add_hook_to_module(new_lin, hf_hook)
+                else:
+                    new_lin.to(child.weight.device, dtype=child.weight.dtype)
                 setattr(parent, name, new_lin)
                 n_replaced += 1
             else:
@@ -170,6 +210,7 @@ def _sc_attention_matmul_ab_t(
     mode: str,
     sc_prec: int,
     stoc_len: int,
+    halve: bool = False,
 ) -> torch.Tensor:
     """4D-aware wrapper around sc_matmul, computes ``a @ b.T``.
 
@@ -184,6 +225,7 @@ def _sc_attention_matmul_ab_t(
         a3, b3,
         granularity=granularity, mode=mode,
         sc_prec=sc_prec, stoc_len=stoc_len,
+        halve_bipolar_stoc_len=halve,
     )
     return out3.reshape(B, H, N, M).to(orig_dtype)
 
@@ -212,12 +254,18 @@ def sc_eager_attention_forward(
     sc_mode = getattr(config, "sc_mode", "bipolar")
     sc_prec = int(getattr(config, "sc_prec", 8))
     sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
+    sc_halve = bool(getattr(config, "sc_halve_bipolar", False))
+    sc_halve_grid_only = bool(getattr(config, "sc_halve_grid_only", False))
+    # See SCLinear.forward: default (pure) halve hands stoc_len=None so the
+    # kernel runs 2^(sc_prec-1) cycles; grid-only halve keeps the explicit
+    # stoc_len and halves just the rng grid (sweepable).
+    eff_stoc_len = sc_stoc_len if (sc_halve_grid_only or not sc_halve) else None
 
     if use_sc:
         attn_weights = _sc_attention_matmul_ab_t(
             query, key_states,
             granularity=sc_gran, mode=sc_mode,
-            sc_prec=sc_prec, stoc_len=sc_stoc_len,
+            sc_prec=sc_prec, stoc_len=eff_stoc_len, halve=sc_halve,
         ) * scaling
     else:
         attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
@@ -235,7 +283,7 @@ def sc_eager_attention_forward(
         attn_output = _sc_attention_matmul_ab_t(
             attn_weights, value_states.transpose(-2, -1),
             granularity=sc_gran, mode=sc_mode,
-            sc_prec=sc_prec, stoc_len=sc_stoc_len,
+            sc_prec=sc_prec, stoc_len=eff_stoc_len, halve=sc_halve,
         )
     else:
         attn_output = torch.matmul(attn_weights, value_states)

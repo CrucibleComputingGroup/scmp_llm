@@ -73,6 +73,9 @@ def apply_sc_env_overrides(model) -> None:
       * ``SC_PREC``                — SC precision (int).
       * ``SC_STOC_LEN``            — SC stochastic stream length (int).
       * ``SC_ATTN_GRANULARITY``    — ``per_head`` or ``per_row``.
+      * ``SC_HALVE_BIPOLAR=0|1``   — uSystolic sign-magnitude cycle halving.
+      * ``SC_HALVE_GRID_ONLY=0|1`` — when halving, halve only the rng grid and
+        keep SC_STOC_LEN as the stream length (sweepable halve).
     """
     if os.environ.get("DISABLE_SC", "0") == "1":
         model.config.use_sc_attn = False
@@ -87,6 +90,10 @@ def apply_sc_env_overrides(model) -> None:
         model.config.use_sc_linear = os.environ["USE_SC_LINEAR"] == "1"
     if "SC_ATTN_GRANULARITY" in os.environ:
         model.config.sc_granularity = os.environ["SC_ATTN_GRANULARITY"]
+    if "SC_HALVE_BIPOLAR" in os.environ:
+        model.config.sc_halve_bipolar = os.environ["SC_HALVE_BIPOLAR"] == "1"
+    if "SC_HALVE_GRID_ONLY" in os.environ:
+        model.config.sc_halve_grid_only = os.environ["SC_HALVE_GRID_ONLY"] == "1"
 
 
 def describe_mode(model) -> str:

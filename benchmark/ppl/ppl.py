@@ -47,6 +47,7 @@ STRIDE = int(os.environ.get("STRIDE", str(CTX)))
 SC_PREC = int(os.environ.get("SC_PREC", "8"))
 STOC_LENS = [int(x) for x in os.environ.get("STOC_LENS", "256,128,64").split(",") if x]
 SC_ATTN_GRANULARITY = os.environ.get("SC_ATTN_GRANULARITY", "per_head")
+SC_HALVE_BIPOLAR = os.environ.get("SC_HALVE_BIPOLAR", "0") == "1"
 SKIP_FP16 = os.environ.get("SKIP_FP16", "0") == "1"
 FP16_REF = float(os.environ.get("FP16_REF", "0"))
 
@@ -135,8 +136,9 @@ def main() -> None:
         model.config.sc_prec = SC_PREC
         model.config.sc_stoc_len = stoc_len
         model.config.sc_granularity = SC_ATTN_GRANULARITY
+        model.config.sc_halve_bipolar = SC_HALVE_BIPOLAR
         ppl_sc, n, secs = compute_ppl(model, tokenizer, enc)
-        name = f"SC sl={stoc_len} gran={SC_ATTN_GRANULARITY}"
+        name = f"SC sl={stoc_len} gran={SC_ATTN_GRANULARITY}{' halve' if SC_HALVE_BIPOLAR else ''}"
         rel = ppl_sc / ppl_fp16
         print(f"{name:<28}  {ppl_sc:10.4f}  {n:8d}  {secs:7.1f}  "
               f"{secs * 1000 / n_win:8.0f}  (×{rel:.3f} vs fp16)")

@@ -21,7 +21,7 @@ fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${HERE}"
 
-export HF_HUB_CACHE="${HF_HUB_CACHE:-/scratch/nbleier_owned_root/nbleier_owned1/zhkangqi/hf_cache_hub}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-/nfs/turbo/coe-nbleier/zhkangqi/hf_cache_hub}"
 
 MODEL=${1}
 MODE=${2}
