@@ -132,7 +132,24 @@ def replace_linears_with_sc(
                 new_lin.weight = child.weight
                 if child.bias is not None:
                     new_lin.bias = child.bias
-                new_lin.to(child.weight.device, dtype=child.weight.dtype)
+                # Preserve accelerate's dispatch/offload hook if present. With
+                # device_map="auto" + CPU offload, the original Linear carries an
+                # AlignDevicesHook whose weights_map holds the real (CPU) weights
+                # while the module's own param is a `meta` placeholder. Dropping
+                # the hook here leaves the SCLinear with a meta weight that is
+                # never materialized at forward -> "Tensor on device meta" crash.
+                # Transfer the existing hook (already initialized, weights_map
+                # populated) so the replacement keeps offload semantics.
+                hf_hook = getattr(child, "_hf_hook", None)
+                if hf_hook is not None:
+                    from accelerate.hooks import (
+                        add_hook_to_module,
+                        remove_hook_from_module,
+                    )
+                    remove_hook_from_module(child)
+                    add_hook_to_module(new_lin, hf_hook)
+                else:
+                    new_lin.to(child.weight.device, dtype=child.weight.dtype)
                 setattr(parent, name, new_lin)
                 n_replaced += 1
             else:
