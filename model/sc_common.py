@@ -20,13 +20,6 @@ Knobs read from ``model.config``:
   * ``sc_granularity`` (str, default "per_head") — attention SC granularity.
   * ``sc_linear_granularity`` (str, default "per_row") — linear SC granularity.
   * ``sc_linear_chunk_d`` (int, default 128) — D-chunking for linear path.
-  * ``sc_halve_bipolar`` (bool, default False) — uSystolic/HUB sign-magnitude
-    cycle halving (``halve_bipolar_stoc_len`` on ``sc_matmul``); bipolar only.
-  * ``sc_halve_grid_only`` (bool, default False) — when halving, only halve the
-    RNG grid (``rng_levels`` → 2^(sc_prec-1)) and keep the explicit
-    ``sc_stoc_len`` as the stream length, instead of collapsing both to
-    2^(sc_prec-1). Lets a ``sc_stoc_len`` sweep stay meaningful with halve on.
-    No effect unless ``sc_halve_bipolar`` is also set.
 """
 from __future__ import annotations
 
@@ -42,6 +35,14 @@ except ImportError:
     _sc_matmul = None
     _HAS_SC = False
 
+try:
+    from scmp_kernels.mp import MPConfig, classify_rows_by_metric
+    _HAS_MP = True
+except ImportError:
+    MPConfig = None
+    classify_rows_by_metric = None
+    _HAS_MP = False
+
 
 SC_CONFIG_DEFAULTS = {
     "use_sc_attn": True,
@@ -52,9 +53,54 @@ SC_CONFIG_DEFAULTS = {
     "sc_granularity": "per_head",
     "sc_linear_granularity": "per_row",
     "sc_linear_chunk_d": 128,
-    "sc_halve_bipolar": False,
-    "sc_halve_grid_only": False,
+    # When True, route through the wu-hpca2022 sign-magnitude cycle-halving
+    # path in sc_matmul: forces stoc_len = rng_levels = 2**(sc_prec-1).
+    # Overrides sc_stoc_len at call time (no resolution loss in bipolar).
+    "sc_halve_bipolar_stoc_len": False,
+    # Per-row mixed-precision config. When None (default), every row uses
+    # the global sc_stoc_len. When set to a MPConfig instance, SCLinear and
+    # sc_eager_attention_forward dispatch by row: classify each token row
+    # (or query row) by its row metric, then call sc_matmul once per
+    # stoc_len level with that level's row subset.
+    "sc_mp_config": None,
 }
+
+
+def _mp_tracker() -> dict:
+    """Process-wide accumulator for effective per-row stoc_len.
+
+    Set ``model.config.sc_mp_track = True`` to record. Use
+    ``mp_tracker_snapshot()`` to read and reset between sweep runs.
+    """
+    if not hasattr(_mp_tracker, "_state"):
+        _mp_tracker._state = {"weighted_sl": 0.0, "rows": 0}
+    return _mp_tracker._state
+
+
+def mp_tracker_reset() -> None:
+    _mp_tracker()["weighted_sl"] = 0.0
+    _mp_tracker()["rows"] = 0
+
+
+def mp_tracker_avg_stoc_len() -> float:
+    s = _mp_tracker()
+    return s["weighted_sl"] / max(s["rows"], 1)
+
+
+def _record_assignment(assignment) -> None:
+    """Accumulate weighted-sum of per-row stoc_len for reporting.
+
+    Each level's stoc_len is the *effective* cycle count seen by the kernel
+    (MP levels are already in the halved space when halve_bipolar_stoc_len
+    is on — they're just sliced from [0, 2**(sc_prec-1)]).
+    """
+    state = _mp_tracker()
+    for sl, idxs in assignment.level_row_indices.items():
+        n = int(idxs.numel())
+        if n == 0:
+            continue
+        state["weighted_sl"] += float(sl) * n
+        state["rows"] += n
 
 
 def apply_sc_config_defaults(config) -> None:
@@ -91,30 +137,59 @@ class SCLinear(nn.Linear):
         sc_prec = int(getattr(config, "sc_prec", 8))
         sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
         sc_chunk_d = int(getattr(config, "sc_linear_chunk_d", 128))
-        sc_halve = bool(getattr(config, "sc_halve_bipolar", False))
-        sc_halve_grid_only = bool(getattr(config, "sc_halve_grid_only", False))
-        # uSystolic cycle-halving models hardware that runs each bipolar multiply
-        # in 2^(sc_prec-1) cycles. The cycle count is the kernel's stoc_len, and
-        # the kernel only halves stoc_len when it is None — passing the config's
-        # 256 here would leave 256 cycles and defeat the halving. So in the
-        # default (pure) halve we hand stoc_len=None, which sets both the cycle
-        # count and rng_levels to 2^(sc_prec-1).
-        #
-        # Grid-only (sweepable) halve keeps the explicit stoc_len as the stream
-        # length and lets the kernel halve just the rng grid — so a stoc_len
-        # sweep stays meaningful with halve on.
-        eff_stoc_len = sc_stoc_len if (sc_halve_grid_only or not sc_halve) else None
+        sc_halve = bool(getattr(config, "sc_halve_bipolar_stoc_len", False))
+        mp_config = getattr(config, "sc_mp_config", None)
 
         orig_dtype = x.dtype
         orig_shape = x.shape
         x_flat = x.reshape(-1, orig_shape[-1]).to(torch.float32).contiguous()
         w_fp32 = self.weight.to(torch.float32).contiguous()
-        out_flat = _sc_matmul(
-            x_flat, w_fp32,
-            granularity=sc_gran, mode=sc_mode,
-            sc_prec=sc_prec, stoc_len=eff_stoc_len, chunk_d=sc_chunk_d,
-            halve_bipolar_stoc_len=sc_halve,
-        )
+        smooth = getattr(self, "smooth_scales", None)
+
+        if mp_config is not None and _HAS_MP:
+            # Per-row mixed-precision dispatch. Classify each token row by
+            # its abs-max along D, then call sc_matmul once per stoc_len
+            # level on that level's row subset and scatter back.
+            metric = x_flat.abs().amax(dim=-1)
+            assignment = classify_rows_by_metric(
+                metric,
+                mp_config.stoc_len_levels,
+                mp_config.level_fractions,
+            )
+            _record_assignment(assignment)
+            out_flat = torch.empty(
+                (x_flat.shape[0], self.out_features),
+                dtype=torch.float32,
+                device=x_flat.device,
+            )
+            for sl, indices in assignment.level_row_indices.items():
+                if indices.numel() == 0:
+                    continue
+                if sl <= 0:
+                    out_flat[indices] = 0.0
+                    continue
+                x_sub = x_flat.index_select(0, indices).contiguous()
+                out_sub = _sc_matmul(
+                    x_sub, w_fp32,
+                    granularity=sc_gran, mode=sc_mode,
+                    sc_prec=sc_prec, stoc_len=int(sl), chunk_d=sc_chunk_d,
+                    halve_bipolar_stoc_len=sc_halve,
+                    smooth_scales=smooth,
+                )
+                out_flat[indices] = out_sub
+        else:
+            # When halving, pass stoc_len=None so the kernel sets both stoc_len
+            # and rng_levels to 2**(sc_prec-1). Passing the config int would
+            # only halve rng_levels and silently keep the full-length stream.
+            call_stoc_len = None if sc_halve else sc_stoc_len
+            out_flat = _sc_matmul(
+                x_flat, w_fp32,
+                granularity=sc_gran, mode=sc_mode,
+                sc_prec=sc_prec, stoc_len=call_stoc_len, chunk_d=sc_chunk_d,
+                halve_bipolar_stoc_len=sc_halve,
+                smooth_scales=smooth,
+            )
+
         out = out_flat.reshape(*orig_shape[:-1], self.out_features).to(orig_dtype)
         if self.bias is not None:
             out = out + self.bias
@@ -155,24 +230,7 @@ def replace_linears_with_sc(
                 new_lin.weight = child.weight
                 if child.bias is not None:
                     new_lin.bias = child.bias
-                # Preserve accelerate's dispatch/offload hook if present. With
-                # device_map="auto" + CPU offload, the original Linear carries an
-                # AlignDevicesHook whose weights_map holds the real (CPU) weights
-                # while the module's own param is a `meta` placeholder. Dropping
-                # the hook here leaves the SCLinear with a meta weight that is
-                # never materialized at forward -> "Tensor on device meta" crash.
-                # Transfer the existing hook (already initialized, weights_map
-                # populated) so the replacement keeps offload semantics.
-                hf_hook = getattr(child, "_hf_hook", None)
-                if hf_hook is not None:
-                    from accelerate.hooks import (
-                        add_hook_to_module,
-                        remove_hook_from_module,
-                    )
-                    remove_hook_from_module(child)
-                    add_hook_to_module(new_lin, hf_hook)
-                else:
-                    new_lin.to(child.weight.device, dtype=child.weight.dtype)
+                new_lin.to(child.weight.device, dtype=child.weight.dtype)
                 setattr(parent, name, new_lin)
                 n_replaced += 1
             else:
@@ -210,22 +268,60 @@ def _sc_attention_matmul_ab_t(
     mode: str,
     sc_prec: int,
     stoc_len: int,
-    halve: bool = False,
+    halve_bipolar_stoc_len: bool = False,
+    mp_config=None,
 ) -> torch.Tensor:
     """4D-aware wrapper around sc_matmul, computes ``a @ b.T``.
 
     a: (B, H, N, K), b: (B, H, M, K) -> (B, H, N, M).
+
+    When ``mp_config`` is set, dispatches per-(B,H) slice with per-row
+    stoc_len assignment based on ``a.abs().amax(-1)``. Each (B,H) slice
+    runs the 2D per_row path so different rows can use different stoc_len
+    levels — at the cost of losing the 3D batched kernel parallelism.
     """
     orig_dtype = a.dtype
     B, H, N, K = a.shape
     M = b.shape[-2]
     a3 = a.reshape(B * H, N, K).to(torch.float32).contiguous()
     b3 = b.reshape(B * H, M, K).to(torch.float32).contiguous()
+
+    if mp_config is not None and _HAS_MP:
+        out3 = torch.empty(
+            (B * H, N, M), dtype=torch.float32, device=a3.device,
+        )
+        for bh in range(B * H):
+            a_bh = a3[bh]                              # (N, K)
+            b_bh = b3[bh]                              # (M, K)
+            metric = a_bh.abs().amax(dim=-1)           # (N,)
+            assignment = classify_rows_by_metric(
+                metric,
+                mp_config.stoc_len_levels,
+                mp_config.level_fractions,
+            )
+            _record_assignment(assignment)
+            for sl, indices in assignment.level_row_indices.items():
+                if indices.numel() == 0:
+                    continue
+                if sl <= 0:
+                    out3[bh].index_fill_(0, indices, 0.0)
+                    continue
+                a_sub = a_bh.index_select(0, indices).contiguous()
+                out_sub = _sc_matmul(
+                    a_sub, b_bh,
+                    granularity="per_row", mode=mode,
+                    sc_prec=sc_prec, stoc_len=int(sl),
+                    halve_bipolar_stoc_len=halve_bipolar_stoc_len,
+                )
+                out3[bh, indices] = out_sub
+        return out3.reshape(B, H, N, M).to(orig_dtype)
+
+    call_stoc_len = None if halve_bipolar_stoc_len else stoc_len
     out3 = _sc_matmul(
         a3, b3,
         granularity=granularity, mode=mode,
-        sc_prec=sc_prec, stoc_len=stoc_len,
-        halve_bipolar_stoc_len=halve,
+        sc_prec=sc_prec, stoc_len=call_stoc_len,
+        halve_bipolar_stoc_len=halve_bipolar_stoc_len,
     )
     return out3.reshape(B, H, N, M).to(orig_dtype)
 
@@ -254,18 +350,16 @@ def sc_eager_attention_forward(
     sc_mode = getattr(config, "sc_mode", "bipolar")
     sc_prec = int(getattr(config, "sc_prec", 8))
     sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
-    sc_halve = bool(getattr(config, "sc_halve_bipolar", False))
-    sc_halve_grid_only = bool(getattr(config, "sc_halve_grid_only", False))
-    # See SCLinear.forward: default (pure) halve hands stoc_len=None so the
-    # kernel runs 2^(sc_prec-1) cycles; grid-only halve keeps the explicit
-    # stoc_len and halves just the rng grid (sweepable).
-    eff_stoc_len = sc_stoc_len if (sc_halve_grid_only or not sc_halve) else None
+    sc_halve = bool(getattr(config, "sc_halve_bipolar_stoc_len", False))
+    mp_config = getattr(config, "sc_mp_config", None)
 
     if use_sc:
         attn_weights = _sc_attention_matmul_ab_t(
             query, key_states,
             granularity=sc_gran, mode=sc_mode,
-            sc_prec=sc_prec, stoc_len=eff_stoc_len, halve=sc_halve,
+            sc_prec=sc_prec, stoc_len=sc_stoc_len,
+            halve_bipolar_stoc_len=sc_halve,
+            mp_config=mp_config,
         ) * scaling
     else:
         attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
@@ -283,7 +377,9 @@ def sc_eager_attention_forward(
         attn_output = _sc_attention_matmul_ab_t(
             attn_weights, value_states.transpose(-2, -1),
             granularity=sc_gran, mode=sc_mode,
-            sc_prec=sc_prec, stoc_len=eff_stoc_len, halve=sc_halve,
+            sc_prec=sc_prec, stoc_len=sc_stoc_len,
+            halve_bipolar_stoc_len=sc_halve,
+            mp_config=mp_config,
         )
     else:
         attn_output = torch.matmul(attn_weights, value_states)
