@@ -31,7 +31,7 @@ GRAN="${GRAN:-per_row}"
 
 source ~/.bashrc
 conda activate annstention
-export HF_HUB_CACHE=/scratch/nbleier_owned_root/nbleier_owned1/zhkangqi/hf_cache_hub
+export HF_HUB_CACHE=/nfs/turbo/coe-nbleier/zhkangqi/hf_cache_hub
 export MAX_NEW_TOKENS_OVERRIDE=64
 
 cd /scratch/nbleier_owned_root/nbleier_owned1/zhkangqi/scmp_llm_llama/benchmark/ruler

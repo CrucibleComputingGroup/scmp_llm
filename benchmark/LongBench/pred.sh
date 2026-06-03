@@ -36,7 +36,7 @@ cd "${HERE}"
 
 # Model weights live on scratch; pin the HF hub cache so we never fall back
 # to a stale copy under $HOME.
-export HF_HUB_CACHE="${HF_HUB_CACHE:-/scratch/nbleier_owned_root/nbleier_owned1/zhkangqi/hf_cache_hub}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-/nfs/turbo/coe-nbleier/zhkangqi/hf_cache_hub}"
 
 RESULT_DIR="./results/pred/${MODEL}/${TAG}"
 RESULT_DIR_E="./results/pred_e/${MODEL}/${TAG}"
