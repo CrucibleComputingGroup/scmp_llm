@@ -97,13 +97,27 @@ def apply_mp_config_from_env(model) -> None:
     """Load per-row mixed-precision config from ``MP_CONFIG_JSON`` and attach
     it to ``model.config.sc_mp_config``.
 
-    JSON schema (MPConfig, fixed-fraction quantile):
+    Two JSON schemas are accepted:
+
+    1. Fixed-fraction quantile (legacy ``MPConfig``):
 
         {
           "type": "MPConfig",
           "stoc_len_levels": [128, 64, 32],
           "level_fractions": [0.2, 0.5, 0.3]
         }
+
+    2. Calibrated thresholds (``AdaptiveMPConfig``):
+
+        {
+          "type": "AdaptiveMPConfig",
+          "stoc_len_levels": [128, 96, 64],
+          "threshold_table_path": "benchmark/ppl/mp_calib/<safe>__int8_avg91.json"
+        }
+
+       The referenced table is produced by
+       ``benchmark/ppl/calibrate_mp_thresholds.py``. The runtime
+       ``stoc_len_levels`` must match the levels recorded in that table.
 
     Unset env or empty path is a no-op (model stays in single-stoc_len mode).
     """
@@ -115,19 +129,36 @@ def apply_mp_config_from_env(model) -> None:
     with open(path) as f:
         spec = json.load(f)
     kind = spec.get("type", "MPConfig")
-    if kind != "MPConfig":
-        raise SystemExit(
-            f"MP_CONFIG_JSON: only MPConfig is wired into scmp_llm today, "
-            f"got type={kind!r}"
+    if kind == "MPConfig":
+        from scmp_kernels.mp import MPConfig
+        mp = MPConfig(
+            stoc_len_levels=[int(x) for x in spec["stoc_len_levels"]],
+            level_fractions=[float(x) for x in spec.get("level_fractions") or []] or None,
         )
-    from scmp_kernels.mp import MPConfig
-    mp = MPConfig(
-        stoc_len_levels=[int(x) for x in spec["stoc_len_levels"]],
-        level_fractions=[float(x) for x in spec.get("level_fractions") or []] or None,
+        model.config.sc_mp_config = mp
+        print(f"[mp] loaded MPConfig from {path}: "
+              f"levels={mp.stoc_len_levels} fractions={mp.level_fractions}")
+        return
+    if kind == "AdaptiveMPConfig":
+        from scmp_kernels.mp import AdaptiveMPConfig
+        table_path = spec["threshold_table_path"]
+        if not os.path.isabs(table_path):
+            table_path = os.path.join(os.path.dirname(os.path.abspath(path)), table_path)
+        mp = AdaptiveMPConfig(
+            stoc_len_levels=[int(x) for x in spec["stoc_len_levels"]],
+            threshold_table_path=table_path,
+        )
+        model.config.sc_mp_config = mp
+        n_default = len(mp.operator_default_thresholds)
+        n_bucket = len(mp.bucket_thresholds)
+        print(f"[mp] loaded AdaptiveMPConfig from {path}: "
+              f"levels={mp.stoc_len_levels} "
+              f"operator_defaults={n_default} buckets={n_bucket}")
+        return
+    raise SystemExit(
+        f"MP_CONFIG_JSON: unknown type={kind!r}. "
+        f"Expected 'MPConfig' or 'AdaptiveMPConfig'."
     )
-    model.config.sc_mp_config = mp
-    print(f"[mp] loaded MPConfig from {path}: "
-          f"levels={mp.stoc_len_levels} fractions={mp.level_fractions}")
 
 
 def describe_mode(model) -> str:

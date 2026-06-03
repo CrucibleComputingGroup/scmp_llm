@@ -31,7 +31,18 @@ benchmark/ruler/ruler_eval_result/
 benchmark/ruler/_sbatch_logs/
 benchmark/LongBench/results/
 
+# MP calibration / sweep artifacts (regenerable). Tables, sweep output dirs,
+# and SmoothQuant scales are all reproduced by tests/run_mp_sweep.sh /
+# tests/reproduce_crosslayer.sh — never commit them.
+benchmark/ppl/mp_calib/
+benchmark/ppl/_mp_overnight_*/
+benchmark/ppl/_overnight_*/
+benchmark/ppl/_mp_overnight_latest.path
+benchmark/ppl/act_scales_*.pt
+
 # Editor / OS
 .vscode/
 .idea/
 .DS_Store
+benchmark/ppl/_alpha_sweep_*/
+benchmark/ppl/_halved_fix_*/

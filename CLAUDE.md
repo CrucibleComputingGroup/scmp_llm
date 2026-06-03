@@ -258,6 +258,145 @@ From `check_gen.py` with `NEW_TOKENS=64`:
 
 MSE alone is misleading: MSE 2.4 at `stoc_len=48` looks comparable to MSE 2.8 at `stoc_len=32`, but autoregressive feedback turns the former from one-bad-token-recoverable into total collapse.
 
+## Mixed-precision (MP) calibration — per-token-row SC stream length
+
+Instead of one global `stoc_len`, MP assigns each **token row** (for linears /
+softmax·V) or **query row** (for Q·Kᵀ) its own `stoc_len` from a small set of
+levels, based on a calibrated **threshold on the row's activation magnitude**
+(`abs().amax(-1)`, normalized to [0,1] per call). Rows that matter get longer
+SC streams; the rest get shorter ones, at a fixed average-`stoc_len` budget.
+
+Pipeline:
+
+```
+calibrate_mp_thresholds.py   →  <table>.json (per-(operator,layer-bucket) thresholds)
+        ↓ wrapped by
+<table>_wrapper.json (MP_CONFIG_JSON)  →  AdaptiveMPConfig.load_threshold_table
+        ↓ dispatched at runtime by
+model/sc_common.py (SCLinear / sc_eager_attention_forward, per-row level dispatch)
+```
+
+Calibration runs an FP teacher forward over a few wikitext2 windows, measures
+each row's **per-level SC reconstruction error** σ (relative L2 vs the FP
+output) at every `stoc_len` level, then solves a budget-constrained allocation
+(Lagrangian on σ) and converts the per-level row counts into thresholds on the
+sorted activation metric. Operators calibrated: `q/k/v/o/gate/up/down_proj`,
+`qk` (Q·Kᵀ), `av` (softmax·V).
+
+### Importance signals (`--method` in the sweep) — what each is for
+
+All share the same runtime mechanism (threshold on the activation metric); they
+differ only in **what objective sets the thresholds**:
+
+| method | objective | what it's testing |
+|---|---|---|
+| `act` | minimize Σσ (reconstruction error), **per-(op,layer) budget** | baseline — every layer pinned to the same avg stoc_len |
+| `grad` | weight each row's σ by its loss sensitivity `‖∂L/∂y_row‖` (one extra backward) | does clean-forward loss-gradient importance help? |
+| `grad_sc` | same, but `g` measured on the **SC-noisy** trajectory via a straight-through estimator (`--grad-on-sc`) | does noisy-trajectory gradient help where clean grad fails (high noise)? |
+| `act_global` | minimize Σσ with **ONE global budget** (`--budget-scope global`) | cross-layer: let budget flow from insensitive to sensitive layers |
+| `grad_global` | gradient-weighted σ, global budget | cross-layer with a gradient signal |
+| `measured` | global budget, each (op,layer) group weighted by **measured ΔLoss** from a knock-down probe, `act` quantile within (`--cross-layer-weight measured`) | cross-layer with a ground-truth loss-sensitivity signal |
+
+### Precision configs (`--prec`)
+
+Levels and budgets are in **halved space** (`halve_bipolar_stoc_len=1`, so the
+cap is `2**(sc_prec-1)=128`; a level value *is* the cycle count). `int8` is the
+uniform no-MP ceiling.
+
+| prec | levels | target avg stoc_len |
+|---|---|---|
+| `int8` | uniform 128 | 128 |
+| `len192` | 128,96,64 | 91 |
+| `int7` | 128,64,32 | 64 |
+| `len96` | 64,48,32 | 48 |
+
+### How to run
+
+```bash
+# One-command reproduction (all models × precs × methods, then prints the table).
+# Serial on one GPU (~1 day); see the header for the parallel-per-node form.
+bash tests/reproduce_crosslayer.sh
+bash tests/reproduce_crosslayer.sh --max-tokens 4096          # quick smoke
+
+# Or drive the sweep directly (one or more models/precs/methods):
+bash tests/run_mp_sweep.sh --models 4B,8B,14B \
+  --prec int8,int7,len96,len192 --method act,act_global,grad_global,measured
+
+# Re-print the summary table from any sweep outdir (no GPU needed):
+python benchmark/ppl/summarize_mp_results.py benchmark/ppl/_mp_overnight_<tag>
+
+# Calibrate a single table by hand:
+python benchmark/ppl/calibrate_mp_thresholds.py --model_path <hf> \
+  --mp_levels 128,64,32 --budget_ratio 0.5 --budget_ref_stoc_len 128 \
+  --sc_prec 8 --halve 1 --budget-scope global \
+  --output_json benchmark/ppl/mp_calib/<safe>__int7_act_global.json
+```
+
+The sweep sets `SC_OWEN_MODE=bitrev`, `SC_SCRAMBLE_RESCALE=1` (Owen scramble ON,
+deterministic). Calibration and PPL inherit the same Owen mode — they MUST match
+or thresholds won't transfer. `--recalibrate` forces fresh tables (needed after
+changing Owen mode or the calibrator).
+
+### Findings (iso-budget, wikitext2 65k tokens, ctx 1024, SmoothQuant α=0.5, bitrev)
+
+PPL @ realized avg_sl (halved cycles). **bold** = best method in the row.
+
+**Qwen3-4B** (FP16 11.27, int8 ceiling 12.15)
+
+| prec (target) | act | act_global | grad_global | measured |
+|---|---|---|---|---|
+| len192 (91) | 13.35 @94 | **13.17** @93 | 14.42 @91 | 13.26 @92 |
+| int7 (64)   | 17.02 @66 | **16.87** @66 | 58.52 @62 | 17.95 @64 |
+| len96 (48)  | 23.65 @49 | 21.97 @49 | 48.38 @48 | **20.36** @48 |
+
+**Qwen3-8B** (FP16 11.10, int8 ceiling 11.88)
+
+| prec (target) | act | act_global | grad_global | measured |
+|---|---|---|---|---|
+| len192 (91) | 12.87 @94 | 12.84 @93 | 13.76 @91 | **12.22** @92 |
+| int7 (64)   | 15.50 @67 | **14.96** @67 | 19.47 @63 | 15.59 @64 |
+| len96 (48)  | 18.56 @49 | **17.21** @49 | 18.91 @48 | 17.40 @48 |
+
+**Qwen3-14B** (FP16 9.85, int8 ceiling 10.03)
+
+| prec (target) | act | act_global | grad_global | measured |
+|---|---|---|---|---|
+| len192 (91) | 10.34 @95 | 10.35 @94 | 11.27 @92 | **10.21** @91 |
+| int7 (64)   | 11.58 @67 | **11.55** @66 | 14.24 @63 | 12.60 @66 |
+| len96 (48)  | 12.34 @49 | **12.02** @49 | 13.76 @49 | 12.63 @48 |
+
+Reproduce: `bash tests/reproduce_crosslayer.sh` (table via
+`summarize_mp_results.py`). Summary:
+
+- **Cross-layer helps**: `act_global` ≥ uniform `act` in every model×prec cell,
+  with real wins in the higher-noise regimes (int7, len96).
+- **Reconstruction error is the best signal** — `act_global` is the most
+  consistent winner.
+- **`measured`** is inconsistent (wins low-noise len192, loses int7).
+- **Gradient is the worst** — `grad`, `grad_sc`, and `grad_global` all lose to
+  `act`; `grad_global` is catastrophic at high noise (4B int7 PPL ~58). Gradient
+  magnitude is a poor precision-importance signal for SC.
+
+### Two bugs that gated cross-layer (fixed — don't reintroduce)
+
+Cross-layer only works because of two fixes in the **global** solve (per-bucket
+`act`/`grad` are unaffected):
+
+1. **rep_g cost pricing.** The global Lagrangian must price each row's cost by
+   `rep_g = R_g / n_g` (true per-forward row count / stored subsampled count).
+   Without it, attention (many rows) dominates the budget and a single shared λ
+   craters the cheap, few-row linear layers — landing *worse than uniform on its
+   own objective*. (`_global_lambda` / `_fit_group(rep=...)`.)
+2. **qk calibrated per-row, not per-head.** Q·Kᵀ runs **per query row**
+   (B·H·N) at runtime, so it must be calibrated per-row too. The old per-head
+   metric (H units) under-counted qk ~1000× in the budget, so cross-layer
+   over-spent and realized avg_sl drifted far past target (int7 64→92). The
+   `qk` branch in `calib_eager` now mirrors the `av` (per-row) branch.
+
+Each calibration table records `expected_avg_stoc_len` (predicted row-weighted
+budget) and `global_lambda` — use them to confirm a global table actually holds
+budget before trusting its PPL.
+
 ## Common failure modes
 
 - `ImportError: cannot import name 'LossKwargs'` — `transformers>=5` removed

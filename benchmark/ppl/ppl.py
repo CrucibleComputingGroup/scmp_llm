@@ -148,9 +148,15 @@ def main() -> None:
         halved_tag = " (halved)" if SC_HALVE else ""
         if mp_cfg is not None:
             avg_sl = mp_tracker_avg_stoc_len()
-            name = (f"SC MP levels={mp_cfg.stoc_len_levels} "
-                    f"fr={mp_cfg.level_fractions} avg_sl={avg_sl:.1f}"
-                    f"{halved_tag}")
+            mp_kind = type(mp_cfg).__name__
+            # MPConfig has .level_fractions; AdaptiveMPConfig has calibrated
+            # thresholds — show whichever is present.
+            extra = getattr(mp_cfg, "level_fractions", None)
+            if extra is None:
+                extra = (f"buckets={len(getattr(mp_cfg, 'bucket_thresholds', {}))} "
+                         f"op_def={len(getattr(mp_cfg, 'operator_default_thresholds', {}))}")
+            name = (f"SC {mp_kind} levels={mp_cfg.stoc_len_levels} "
+                    f"{extra} avg_sl={avg_sl:.1f}{halved_tag}")
         else:
             name = f"SC sl={eff_sl}{halved_tag} gran={SC_ATTN_GRANULARITY}"
         rel = ppl_sc / ppl_fp16
