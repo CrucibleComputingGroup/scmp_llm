@@ -1,0 +1,245 @@
+#!/bin/bash
+# hpca — single entry point for the HPCA LLM experiments.
+#
+# PHASE 1: NON-SC quantization baselines.
+#   models  : Qwen3-1.7B, Qwen3-14B, Qwen3-30B-A3B (MoE), Llama-3.1-8B
+#   configs : fp16 + {W8A8,W7A7,W6A6,W5A5,W4A4} x {symm,asymm}   (11 per model)
+#   quant   : SmoothQuant + per-channel-weight / per-token-activation RTN
+#             fake-quant (symm/asymm on BOTH W and A). See benchmark/quant/ptq.py.
+#   metrics : ppl (wikitext-2) + longbench + ruler
+#
+# PHASE 2: SC UNIFORM baselines (sc_int8, sc_avg192, sc_int7, sc_avg96, sc_int6).
+#   One global stream length per cell — no mixed precision. All cells:
+#   sc_prec=8, bipolar, halve optimization ON (tag value IS the cycle count:
+#   128/96/64/48/32), Owen scramble bitrev with 64 masks, SmoothQuant with the
+#   SAME cached act_scales as the INT cells. PPL runs through the IDENTICAL
+#   eval_quant.py protocol (full wikitext-2 test, ctx 2048, GPTQ stream).
+#   SC cells are ppl-only: longbench/ruler are skipped (SC decode is ~1.5 s/tok).
+#   NOTE: SC forwards are ~2 orders of magnitude slower than fp16 — run SC
+#   cells on their own GPU (e.g. --configs sc_int7 --metrics ppl) and expect
+#   hours-to-a-day per (model, cell) on the big models.
+#
+# Each (model, config, metric) is one job. Results append to
+#   benchmark/quant/_hpca_<tag>/results.tsv   (model \t config \t metric \t value)
+# and the summary table prints at the end (also: tools re-parse the tsv).
+#
+# Usage:
+#   bash hpca                                   # everything, this GPU
+#   bash hpca --metrics ppl                     # PPL only (fast first pass)
+#   bash hpca --models 1.7B,llama8B --metrics ppl,longbench
+#   bash hpca --configs fp16,W8A8_symm,W4A4_asymm
+#   bash hpca --gpu 0 --models 14B  &  bash hpca --gpu 1 --models 30B   # fan out
+#   bash hpca --configs sc_int8,sc_int7,sc_int6 --metrics ppl   # SC uniform cells
+#   bash hpca --dry-run                          # print jobs, run nothing
+# -----------------------------------------------------------------------------
+set -uo pipefail
+
+MODELS_CSV="1.7B,14B,30B,llama8B"
+CONFIGS_CSV="fp16,W8A8_symm,W8A8_asymm,W7A7_symm,W7A7_asymm,W6A6_symm,W6A6_asymm,W5A5_symm,W5A5_asymm,W4A4_symm,W4A4_asymm,sc_int8,sc_avg192,sc_int7,sc_avg96,sc_int6"
+# SC scramble operating point (Phase 2 cells; ignored by INT cells).
+# HARD-ASSIGNED, not inherited: a stale shell export (SC_SCRAMBLE_MASKS=256
+# for pre-2026-06-03 tables, SC_OWEN_MODE=random for grad_sc calibration)
+# would silently shift every SC cell to a different operating point that is
+# invisible in results.tsv. Override only via --owen-mode / --masks.
+SC_OWEN_MODE="bitrev"
+SC_SCRAMBLE_MASKS="64"
+METRICS_CSV="ppl,longbench,ruler"
+TAG="$(date +%Y%m%d 2>/dev/null || echo run)"
+CONDA_ENV="annstention"
+HF_HOME_OVERRIDE="/nfs/turbo/coe-nbleier/allenjin/hf_cache"
+# Storage tiers: weights + act_scales + final results -> Turbo (persistent);
+# bulky per-cell logs -> scratch (write-heavy, ~60d purge). LongBench/RULER
+# output dirs are symlinked to scratch already.
+TURBO_BASE="/nfs/turbo/coe-nbleier/allenjin/hpca"
+SCRATCH_BASE="/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca"
+PPL_MAX_TOKENS=0   # 0 = full wikitext-2 test (BitMoD/GPTQ protocol); 65536 for quick smoke
+PPL_CTX=2048
+SQ_ALPHA=0.5
+GPU_OVERRIDE=""
+DRY=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --models)   MODELS_CSV="$2"; shift 2 ;;
+    --configs)  CONFIGS_CSV="$2"; shift 2 ;;
+    --metrics)  METRICS_CSV="$2"; shift 2 ;;
+    --tag)      TAG="$2"; shift 2 ;;
+    --env)      CONDA_ENV="$2"; shift 2 ;;
+    --hf-cache) HF_HOME_OVERRIDE="$2"; shift 2 ;;
+    --max-tokens) PPL_MAX_TOKENS="$2"; shift 2 ;;
+    --ctx)      PPL_CTX="$2"; shift 2 ;;
+    --sq-alpha) SQ_ALPHA="$2"; shift 2 ;;
+    --gpu)      GPU_OVERRIDE="$2"; shift 2 ;;
+    --owen-mode) SC_OWEN_MODE="$2"; shift 2 ;;
+    --masks)    SC_SCRAMBLE_MASKS="$2"; shift 2 ;;
+    --dry-run)  DRY=1; shift ;;
+    -h|--help)  grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown flag: $1"; exit 1 ;;
+  esac
+done
+
+# model shortname -> HF id
+declare -A MODEL_ID=(
+  [1.7B]="Qwen/Qwen3-1.7B"
+  [14B]="Qwen/Qwen3-14B"
+  [30B]="Qwen/Qwen3-30B-A3B-Instruct-2507"
+  [llama8B]="meta-llama/Llama-3.1-8B-Instruct"
+)
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUTDIR="$SCRATCH_BASE/logs/_hpca_${TAG}"       # per-cell logs -> scratch
+RESULTS="$TURBO_BASE/results/results_${TAG}.tsv"  # deliverable -> Turbo (persistent)
+export ACT_SCALES_DIR="$TURBO_BASE/act_scales"    # calibration -> Turbo (reused)
+
+if [[ -n "$GPU_OVERRIDE" ]]; then export CUDA_VISIBLE_DEVICES="$GPU_OVERRIDE"; fi
+
+if [[ $DRY -eq 0 ]]; then
+  set +u; source ~/.bashrc; conda activate "$CONDA_ENV"; set -u
+  mkdir -p "$OUTDIR" "$TURBO_BASE/results" "$ACT_SCALES_DIR"
+  # noclobber: parallel fan-out launches share one results file — a plain
+  # check-then-write would let the second launch truncate the first's rows.
+  ( set -o noclobber; printf "model\tconfig\tmetric\tvalue\n" > "$RESULTS" ) 2>/dev/null || true
+fi
+export HF_HOME="$HF_HOME_OVERRIDE"
+export TRANSFORMERS_CACHE="$HF_HOME"
+export HF_DATASETS_CACHE="$HF_HOME/datasets"
+export HF_HUB_CACHE="$HF_HOME/hub"
+# Reduce allocator fragmentation on the big MoE (helps the 60GB model + quant).
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+mkdir -p "$SCRATCH_BASE/tmp" 2>/dev/null || true
+export TMPDIR="$SCRATCH_BASE/tmp"
+
+IFS=, read -ra MODELS  <<<"$MODELS_CSV"
+IFS=, read -ra CONFIGS <<<"$CONFIGS_CSV"
+IFS=, read -ra METRICS <<<"$METRICS_CSV"
+
+echo "[hpca] outdir=$OUTDIR"
+echo "[hpca] models=$MODELS_CSV configs=$CONFIGS_CSV metrics=$METRICS_CSV"
+
+record() {  # <model> <config> <metric> <value>
+  printf "%s\t%s\t%s\t%s\n" "$1" "$2" "$3" "$4" >> "$RESULTS"
+}
+
+# Cells that crash or produce no parsable result are recorded as FAILED(...)
+# rows and counted here; the script exits nonzero if any cell failed. Without
+# this, a dead cell (OOM, missing act_scales, CUDA error) leaves no tsv row at
+# all and the run still reports success — day-long SC cells must not vanish.
+N_FAILED=0
+fail_cell() {  # <model> <config> <metric> <why>
+  echo "[hpca] !!! FAILED $1/$2/$3 ($4)"
+  record "$1" "$2" "$3" "FAILED($4)"
+  N_FAILED=$((N_FAILED + 1))
+}
+
+run_ppl() {  # <short> <hf> <config>
+  local short="$1" hf="$2" cfg="$3"
+  local log="$OUTDIR/${short}_${cfg}_ppl.log"
+  # SC cells also emit the scmp_kernels precision trace — the execution log
+  # (per-(op,block) calls/rows/macs/row_cycles) the energy/latency simulator
+  # consumes. Summary mode by default (SC_MP_TRACE_MODE=trace for per-call
+  # JSONL); durable deliverable -> Turbo. SC_TRACE=0 disables. Empty
+  # SC_MP_TRACE keeps tracing off for INT cells (env-driven enable ignores "").
+  local trace=""
+  if [[ "$cfg" == sc_* && "${SC_TRACE:-1}" == "1" ]]; then
+    trace="$TURBO_BASE/traces/_hpca_${TAG}/${short}_${cfg}_trace.json"
+    [[ $DRY -eq 0 ]] && mkdir -p "$(dirname "$trace")"
+  fi
+  echo "[hpca] >>> PPL  $short / $cfg -> $log"
+  [[ $DRY -eq 1 ]] && { echo "  DRY: MODEL_PATH=$hf QUANT_CONFIG=$cfg SC_MP_TRACE=$trace python benchmark/quant/eval_quant.py"; return; }
+  env MODEL_PATH="$hf" QUANT_CONFIG="$cfg" SQ_ALPHA="$SQ_ALPHA" \
+      PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$PPL_CTX" \
+      SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" \
+      SC_MP_TRACE="$trace" SC_MP_TRACE_MODE="${SC_MP_TRACE_MODE:-summary}" \
+      python -u "$HERE/benchmark/quant/eval_quant.py" 2>&1 | tee "$log"
+  local rc="${PIPESTATUS[0]}"
+  # capture finite PPL AND nan/inf (a collapsed config is a real result)
+  local v; v=$(grep "\[RESULT\]" "$log" | grep -oE "value=[^ ]+" | sed 's/value=//' | tail -1)
+  if [[ -n "$v" ]]; then
+    record "$short" "$cfg" ppl "$v"
+  else
+    fail_cell "$short" "$cfg" ppl "rc=$rc, no [RESULT] in log"
+  fi
+}
+
+run_longbench() {  # <short> <hf> <config>
+  local short="$1" hf="$2" cfg="$3"
+  [[ "$cfg" == sc_* ]] && { echo "[hpca] [skip] LongBench $short/$cfg — SC cells are ppl-only"; return; }
+  local mode="fp16"; [[ "$cfg" != "fp16" ]] && mode="quant"
+  echo "[hpca] >>> LongBench  $short / $cfg (mode=$mode)"
+  [[ $DRY -eq 1 ]] && { echo "  DRY: QUANT_CONFIG=$cfg bash benchmark/LongBench/longbench_run.sh $hf $mode float16 cuda:0"; return; }
+  ( cd "$HERE/benchmark/LongBench" && QUANT_CONFIG="$cfg" \
+      bash longbench_run.sh "$hf" "$mode" float16 cuda:0 ) 2>&1 \
+      | tee "$OUTDIR/${short}_${cfg}_longbench.log"
+  # score lives in results/pred/<hf>/<tag>/result.json — average it
+  local tag="fp16"; [[ "$cfg" != "fp16" ]] && tag="quant_${cfg}"
+  local rj="$HERE/benchmark/LongBench/results/pred/${hf}/${tag}/result.json"
+  local v; v=$(python -c "import json,sys;d=json.load(open('$rj'));print(round(sum(d.values())/len(d),4))" 2>/dev/null)
+  if [[ -n "$v" ]]; then
+    record "$short" "$cfg" longbench "$v"
+  else
+    fail_cell "$short" "$cfg" longbench "no parsable $rj"
+  fi
+}
+
+# RULER uses a REGISTERED model name (ruler_config_models.sh), NOT the HF id.
+# Registered today: llama-3.1-8b, qwen3-30b-a3b. TODO: register qwen3-1.7b and
+# qwen3-14b (copy an existing block, point MODEL_PATH at the HF id) before RULER
+# can run for those. ruler_run.sh positional args:
+#   MODEL_NAME(1) BENCHMARK(2) MAX_SEQ(3) TASK(4) MODE(5) DTYPE(6) DEVICE(7)
+declare -A RULER_NAME=(
+  [1.7B]="qwen3-1.7b"       # NOT yet registered
+  [14B]="qwen3-14b"         # NOT yet registered
+  [30B]="qwen3-30b-a3b"     # registered
+  [llama8B]="llama-3.1-8b"  # registered
+)
+RULER_MAXSEQ="${RULER_MAXSEQ:-4096}"
+RULER_TASK="${RULER_TASK:-niah_single_1}"   # single task; loop externally for full RULER
+run_ruler() {  # <short> <hf> <config>
+  local short="$1" hf="$2" cfg="$3"
+  [[ "$cfg" == sc_* ]] && { echo "[hpca] [skip] RULER $short/$cfg — SC cells are ppl-only"; return; }
+  local rname="${RULER_NAME[$short]:-}"
+  local mode="fp16"; [[ "$cfg" != "fp16" ]] && mode="quant"
+  echo "[hpca] >>> RULER  $short ($rname) / $cfg (mode=$mode, task=$RULER_TASK)"
+  if ! grep -q "\b${rname})" "$HERE/benchmark/ruler/ruler_config_models.sh" 2>/dev/null; then
+    echo "  [skip] '$rname' not registered in ruler_config_models.sh — register it first."; return
+  fi
+  [[ $DRY -eq 1 ]] && { echo "  DRY: QUANT_CONFIG=$cfg bash ruler_run.sh $rname synthetic $RULER_MAXSEQ $RULER_TASK $mode float16 cuda:0"; return; }
+  ( cd "$HERE/benchmark/ruler" && QUANT_CONFIG="$cfg" \
+      bash ruler_run.sh "$rname" synthetic "$RULER_MAXSEQ" "$RULER_TASK" "$mode" float16 cuda:0 ) 2>&1 \
+      | tee "$OUTDIR/${short}_${cfg}_ruler.log"
+  local v; v=$(grep -hoE "[0-9.]+" "$HERE/benchmark/ruler/ruler_eval_result/${rname}"/*/*/quant_${cfg}/*summary* 2>/dev/null | tail -1)
+  if [[ -n "$v" ]]; then
+    record "$short" "$cfg" ruler "$v"
+  else
+    fail_cell "$short" "$cfg" ruler "no summary under ruler_eval_result/${rname}"
+  fi
+}
+
+for SHORT in "${MODELS[@]}"; do
+  HF="${MODEL_ID[$SHORT]:-}"
+  [[ -z "$HF" ]] && { echo "[skip] unknown model '$SHORT'"; continue; }
+  for CFG in "${CONFIGS[@]}"; do
+    for M in "${METRICS[@]}"; do
+      case "$M" in
+        ppl)       run_ppl       "$SHORT" "$HF" "$CFG" ;;
+        longbench) run_longbench "$SHORT" "$HF" "$CFG" ;;
+        ruler)     run_ruler     "$SHORT" "$HF" "$CFG" ;;
+        *) echo "[skip] unknown metric '$M'" ;;
+      esac
+    done
+  done
+done
+
+if [[ $DRY -eq 0 ]]; then
+  echo; echo "===== HPCA baseline summary ($OUTDIR) ====="
+  # Dedupe on (model, config, metric) keeping the LAST row: same-day reruns
+  # append rather than replace, and the freshest value is the one whose log
+  # and trace files are on disk.
+  awk -F'\t' 'NR==1{print;next}{k=$1 FS $2 FS $3; if(!(k in row)) order[++n]=k; row[k]=$0} END{for(i=1;i<=n;i++) print row[order[i]]}' \
+    "$RESULTS" | column -t -s $'\t'
+fi
+echo "[hpca] done. results: $RESULTS"
+if [[ $N_FAILED -gt 0 ]]; then
+  echo "[hpca] WARNING: $N_FAILED cell(s) FAILED — see FAILED(...) rows above."
+  exit 1
+fi
