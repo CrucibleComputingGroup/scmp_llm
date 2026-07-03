@@ -65,6 +65,8 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
 def mode_tag(args: argparse.Namespace) -> str:
     if args.mode == "fp16":
         return "fp16"
+    if args.mode == "quant":
+        return f"quant_{args.quant_config}"
     return f"sc_prec{args.sc_prec}_stoc{args.sc_stoc_len}"
 
 
@@ -77,8 +79,12 @@ def normalize_device_map(device: str) -> Any:
 def load_model(
     model_path: str, dtype: torch.dtype, device: str, args: argparse.Namespace,
 ) -> tuple[Any, Any]:
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
     device_map = normalize_device_map(device)
+    if args.mode == "quant":
+        # Integer PTQ baseline: plain HF + SmoothQuant + fake-quant (no SC).
+        from benchmark.quant.eval_quant import build_model
+        return build_model(model_path, args.quant_config, device_map=device_map)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
     llm = load_sc_model(model_path, dtype=dtype, device_map=device_map)
     if args.mode == "fp16":
         llm.config.use_sc_attn = False

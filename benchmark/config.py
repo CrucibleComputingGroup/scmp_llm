@@ -21,10 +21,15 @@ if PROJECT_ROOT not in sys.path:
 def parse_sc_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode", type=str, default="fp16",
-        choices=["fp16", "sc", "sc_linear"],
-        help="fp16 baseline, full SC (attention + linear), or sc_linear "
-             "(attention=fp16, linear=SC — useful when per_head SC OOMs "
-             "at long context, or to isolate linear-side noise).")
+        choices=["fp16", "sc", "sc_linear", "quant"],
+        help="fp16 baseline, full SC (attention + linear), sc_linear "
+             "(attention=fp16, linear=SC), or quant (integer PTQ baseline: "
+             "SmoothQuant + per-channel-weight / per-token-activation RTN "
+             "fake-quant — set --quant_config, e.g. W8A8_symm).")
+    parser.add_argument(
+        "--quant_config", type=str, default="fp16",
+        help="Quant baseline config tag for --mode quant: "
+             "fp16 | W{8..4}A{8..4}_{symm,asymm}. See benchmark/quant/ptq.py.")
     parser.add_argument(
         "--sc_prec", type=int, default=8,
         help="SC precision (quantization grid). Used when --mode sc.")

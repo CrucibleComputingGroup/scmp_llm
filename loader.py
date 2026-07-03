@@ -112,7 +112,8 @@ def apply_mp_config_from_env(model) -> None:
         {
           "type": "AdaptiveMPConfig",
           "stoc_len_levels": [128, 96, 64],
-          "threshold_table_path": "benchmark/ppl/mp_calib/<safe>__int8_avg91.json"
+          "threshold_table_path": "<safe>__int8_avg91.json"   // relative → resolved
+                                                               // against THIS json's dir
         }
 
        The referenced table is produced by

@@ -74,11 +74,26 @@ ATTN_OPS = {"qk", "av"}
 
 def _normalize_metric(metric: torch.Tensor) -> torch.Tensor:
     metric = metric.float()
+    if metric.numel() == 0:
+        # Empty row batch (e.g. an MoE expert that received zero tokens this
+        # forward). Nothing to normalize; return as-is so callers can skip it.
+        return metric
     m_min = metric.min()
     m_max = metric.max()
     if (m_max - m_min).item() < 1e-8:
         return torch.ones_like(metric, dtype=torch.float32)
     return (metric - m_min) / (m_max - m_min)
+
+
+# M1 resolution note: calibration and runtime must share ONE normalization
+# scope for the attention metric. Both now pool GLOBALLY over B*H*N rows
+# (runtime: _sc_attention_matmul_ab_t classifies the whole flattened metric
+# once; calibration: the qk/av hooks above use _normalize_metric on the full
+# reshape). The per-slice alternative (normalize each (B,H) head independently)
+# was tried and measurably degrades PPL: min-max stretching every head to [0,1]
+# erases cross-head scale, so the allocator cannot move budget toward
+# genuinely large heads — the very cross-group flow the global-λ solve needs
+# (4B int7 act_global 16.9→19.2, grad_group 46→83).
 
 
 def _relative_l2_rows(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -315,6 +330,9 @@ class ThresholdCalibrator:
         grad_s_pow: float = 2.0,
         budget_scope: str = "per_bucket",
         group_weights: Optional[dict] = None,
+        grad_as_group_weight: bool = False,
+        grad_group_pow: float = 1.0,
+        grad_group_clip: float = 99.0,
     ):
         self.levels = levels
         self.operators = set(operators)
@@ -335,6 +353,16 @@ class ThresholdCalibrator:
         self.loss_weight_by_grad = bool(loss_weight_by_grad)
         self.grad_g_pow = float(grad_g_pow)
         self.grad_s_pow = float(grad_s_pow)
+        # grad_group: instead of multiplying per-row σ by g (which over-
+        # concentrates budget on a few high-gradient rows and crosses the
+        # collapse cliff), aggregate g to ONE per-(operator, layer-bucket)
+        # cross-layer weight W_g and keep act-style σ within group. The per-row
+        # gradient noise averages out; g only nudges the cross-layer split.
+        self.grad_as_group_weight = bool(grad_as_group_weight)
+        self.grad_group_pow = float(grad_group_pow)
+        self.grad_group_clip = float(grad_group_clip)
+        self._grad_group_sum: dict = defaultdict(float)
+        self._grad_group_cnt: dict = defaultdict(int)
         self.costs = np.asarray(levels, dtype=np.float64)
         self.records: dict = defaultdict(lambda: {"metrics": [], "errors": []})
         # True (un-subsampled) per-forward row count accumulated per group. The
@@ -392,12 +420,26 @@ class ThresholdCalibrator:
                     f"({metrics.shape[0]}) for operator={operator} "
                     f"block_idx={block_idx}."
                 )
-            # Objective term per (row, level): g_row^gp · σ_row(level)^sp.
-            # Defaults (gp=sp=2) give the Gauss-Newton Σ g²σ² objective. Setting
-            # gp=sp=1 gives the softened Σ g·σ (which makes act the literal
-            # g≡1 special case and avoids over-concentrating budget on a few
-            # high-gradient rows). Downstream solver is unchanged.
-            errors = (g[:, None] ** self.grad_g_pow) * (errors ** self.grad_s_pow)
+            if self.grad_as_group_weight:
+                # grad_group: do NOT reweight per-row errors (keep act σ). Instead
+                # accumulate a robust per-(op, layer-bucket) loss-sensitivity that
+                # becomes the cross-layer weight W_g. Winsorize per call so a few
+                # outlier rows cannot dominate the group mean. errors falls
+                # through unchanged → within-group allocation stays act-style.
+                gp = g ** self.grad_group_pow
+                if 0.0 < self.grad_group_clip < 100.0 and gp.size:
+                    cap = float(np.percentile(gp, self.grad_group_clip))
+                    gp = np.minimum(gp, cap)
+                lb_g = _bucket_index(block_idx, self.total_blocks, self.layer_buckets)
+                self._grad_group_sum[(operator, lb_g)] += float(gp.sum())
+                self._grad_group_cnt[(operator, lb_g)] += int(gp.size)
+            else:
+                # Objective term per (row, level): g_row^gp · σ_row(level)^sp.
+                # Defaults (gp=sp=2) give the Gauss-Newton Σ g²σ² objective.
+                # Setting gp=sp=1 gives the softened Σ g·σ (which makes act the
+                # literal g≡1 special case and avoids over-concentrating budget
+                # on a few high-gradient rows). Downstream solver is unchanged.
+                errors = (g[:, None] ** self.grad_g_pow) * (errors ** self.grad_s_pow)
         true_size = int(metrics.size)   # before subsampling — the runtime weight
         if self.max_units_per_call > 0 and metrics.size > self.max_units_per_call:
             keep = self._rng.choice(metrics.size, self.max_units_per_call, replace=False)
@@ -418,6 +460,17 @@ class ThresholdCalibrator:
         """Mean W_g over an operator's buckets (for the operator_default fallback)."""
         ws = [w for (op, _lb), w in self.group_weights.items() if op == operator]
         return float(np.mean(ws)) if ws else 1.0
+
+    def grad_group_raw_weights(self) -> dict:
+        """Per-(operator, layer-bucket) mean gradient importance for grad_group.
+
+        Returns {(operator, l_bucket): mean_rows(g_row**grad_group_pow)} over all
+        calibration rows seen (winsorized per call in ``add``). Fed through
+        ``_normalize_group_weights`` to become the cross-layer W_g — the same
+        slot the measured-ΔLoss probe fills, but sourced from one cheap backward
+        instead of |ops|·buckets probe forwards."""
+        return {k: self._grad_group_sum[k] / max(self._grad_group_cnt[k], 1)
+                for k in self._grad_group_sum}
 
     def _fit_group(self, metrics: np.ndarray, errors: np.ndarray,
                    lam: Optional[float] = None, weight: float = 1.0,
@@ -557,7 +610,6 @@ class ThresholdCalibrator:
             den += R
         payload["expected_avg_stoc_len"] = (num / den) if den else 0.0
         return payload, summary_rows
-        return payload, summary_rows
 
 
 def _flatten_summary(fitted: dict) -> dict:
@@ -665,7 +717,8 @@ class PendingMerger:
 
         No-op when grad-weighting is OFF (records were already flushed in
         ``record``). When ON, each pending record's g_row is added into
-        ``self._accum`` keyed by (operator, block_idx); metric/errors are kept
+        ``self._accum`` keyed by call position (cid; unique per call so MoE
+        experts that share op+block_idx don't collide); metric/errors are kept
         from the first draw. ``finalize`` then averages g_row over the draws
         seen and feeds the calibrator. With a single draw this is exactly the
         old behaviour (g_row passed through unchanged, same add order / RNG
@@ -689,7 +742,15 @@ class PendingMerger:
                     f"({rec['n_rows']}) for operator={rec['operator']} "
                     f"block_idx={rec['block_idx']}."
                 )
-            key = (rec["operator"], rec["block_idx"])
+            # Key by CALL POSITION (cid), not (operator, block_idx). In a MoE
+            # layer many experts share the same op-name + block_idx but receive
+            # DIFFERENT token counts, so (op, block_idx) is not unique per call
+            # and summing their g_rows crashes on the size mismatch. cid is the
+            # forward-order call index (reset each flush), so it is unique within
+            # a draw AND stable across draws (routing is deterministic — the gate
+            # is FP/excluded from SC). For dense models this is byte-identical to
+            # the old (op, block_idx) keying (one call per key per forward).
+            key = cid
             acc = self._accum.get(key)
             if acc is None:
                 self._accum[key] = {
@@ -700,9 +761,12 @@ class PendingMerger:
                     "g_sum": g,
                     "draws": 1,
                 }
-            else:
+            elif acc["g_sum"].shape == g.shape:
                 acc["g_sum"] = acc["g_sum"] + g
                 acc["draws"] += 1
+            # else: SC noise changed MoE routing across draws (grad_sc only), so
+            # call cid hit a different expert with a different row count. Keep the
+            # first draw's g rather than crash. draws==1 paths never reach here.
         self._pending.clear()
         self._next_id = 0
 
@@ -764,6 +828,11 @@ def _make_sclinear_hook(
             return
         x = inputs[0]
         x_flat = x.reshape(-1, x.shape[-1])
+        # MoE experts can receive ZERO tokens in a given forward (sparse top-k
+        # routing) → an empty (0, D) input. Nothing to calibrate; skip so we
+        # don't reduce over an empty dim or record empty rows.
+        if x_flat.shape[0] == 0:
+            return
         with torch.no_grad():
             if grad_on_sc:
                 # output is SC-noisy under STE; recompute the FP teacher.
@@ -844,6 +913,11 @@ def _patch_attention_for_calibration(
                     dropout=0.0, **kwargs):
         key_states = repeat_kv(key, module.num_key_value_groups)
         value_states = repeat_kv(value, module.num_key_value_groups)
+        # n1: attention keys the (op, layer) tables by module.layer_idx, while the
+        # Linear path keys by the replace_linears traversal counter _sc_block_idx.
+        # These agree for Llama/Qwen3 (ModuleList iterates in layer_idx order). If
+        # onboarding a model that exposes layers out of registration order or
+        # without layer_idx, verify the two indexings still line up.
         block_idx = getattr(module, "layer_idx", None)
 
         # Teacher chain: on-graph when grad-weighting is on, else no_grad
@@ -904,7 +978,11 @@ def _patch_attention_for_calibration(
             with torch.no_grad():
                 Bq, Hq, Nq, Kq = query.shape
                 # Per-row query metric: amax over head_dim K, one value per
-                # (B,H,N) query row — exactly the runtime metric.
+                # (B,H,N) query row — exactly the runtime metric. Normalized
+                # GLOBALLY over all B*H*N rows: the runtime classify pools the
+                # whole flattened metric before thresholding (M1 resolution —
+                # global scope on BOTH sides; per-slice normalization erases
+                # cross-head scale and measurably degrades PPL).
                 q_metric = _normalize_metric(
                     query.float().abs().amax(dim=-1).reshape(Bq * Hq * Nq)
                 )
@@ -936,7 +1014,9 @@ def _patch_attention_for_calibration(
         if calibrator.use_operator("av") and block_idx is not None:
             with torch.no_grad():
                 # Per-(B*H)-row metric: amax over the kv-dim of attn_weights.
-                # Same surface as the runtime classify in _sc_attention_matmul_ab_t.
+                # Same surface as the runtime classify in _sc_attention_matmul_ab_t,
+                # normalized GLOBALLY over B*H*N (matches the runtime global
+                # pooling — M1 resolution, see qk branch above).
                 B, H, N, K = attn_weights.shape
                 av_metric_full = _normalize_metric(
                     attn_weights.float().abs().amax(dim=-1).reshape(B * H * N)
@@ -1010,9 +1090,9 @@ def _reseed_sc_for_draw(draw_idx: int, base_seed: int) -> None:
     scramble is in its stochastic ('random') mode.
 
     The SC kernel is a deterministic function of its inputs under the default
-    Sobol + counter-mode scramble (and with SC_DISABLE_OWEN=1), so re-running an
-    identical forward gives byte-identical output: draws would be identical and
-    this reseed is a no-op. Under ``SC_OWEN_MODE=random`` the per-dimension
+    Sobol + bitrev scramble (and under mode 'off'), so re-running an identical
+    forward gives byte-identical output: draws would be identical and this
+    reseed is a no-op. Under ``SC_OWEN_MODE=random`` the per-dimension
     scramble is drawn from ``_OWEN_SCRAMBLE_SEED``; bumping that constant per
     draw (and clearing the cached enable tables) yields genuinely independent
     noise draws. We vary it defensively regardless of mode so that turning on
@@ -1023,8 +1103,11 @@ def _reseed_sc_for_draw(draw_idx: int, base_seed: int) -> None:
         from scmp_kernels.sc import kernels as _sck
         _sck._OWEN_SCRAMBLE_SEED = (int(base_seed) + 1 + draw_idx) * 2654435761 & 0x7FFFFFFF
         _sck.clear_rng_cache()
-    except Exception:
-        pass
+    except Exception as e:
+        # Don't hide a real import/attr error: under SC_OWEN_MODE=random a
+        # silent failure here yields identical draws with no warning (m3).
+        print(f"[calib] WARN: SC reseed for draw {draw_idx} failed "
+              f"({type(e).__name__}: {e}); draws may be identical.", file=sys.stderr)
 
 
 # All SC operators that can carry a per-group precision override.
@@ -1198,17 +1281,47 @@ def _build_parser():
                         "across layers/operators (SkewQ-style). With "
                         "--loss-weight-by-grad off → act-global; on → grad-global.")
     p.add_argument("--cross-layer-weight", dest="cross_layer_weight",
-                   choices=["uniform", "measured"], default="uniform",
+                   choices=["uniform", "measured", "measured_marg", "grad_group"],
+                   default="uniform",
                    help="Per-group importance weight W_g for --budget-scope "
-                        "global. 'uniform' (default): W_g=1. 'measured': run a "
-                        "ΔLoss knock-down probe and weight each (op,layer-bucket) "
-                        "group by its measured loss sensitivity, with act-style "
-                        "reconstruction-error quantile WITHIN each group "
-                        "(measured cross-layer + act within). Forces act objective "
-                        "(no grad weighting). Implies --budget-scope global.")
+                        "global. 'uniform' (default): W_g=1 (act_global). "
+                        "'measured': ΔLoss knock-down probe to the LOWEST level "
+                        "(original; inconsistent because the floor knock-down "
+                        "saturates past the collapse cliff at low precision). "
+                        "'measured_marg': marginal probe — knock each group down "
+                        "by a SMALL step from baseline (--measure-marg-frac) so "
+                        "ΔL stays in the locally-linear regime at every precision "
+                        "(the recommended measured variant). 'grad_group': source "
+                        "W_g from the per-group MEAN of the loss gradient (one "
+                        "backward), instead of the per-row g·σ multiply that "
+                        "over-concentrates budget and crosses the cliff. All three "
+                        "keep act-style σ quantile WITHIN each group and imply "
+                        "--budget-scope global.")
     p.add_argument("--measure-probe-level", dest="measure_probe_level", type=int,
                    default=0, help="stoc_len a group is knocked down to in the "
-                        "measured probe. 0 (default) → lowest level (max noise).")
+                        "'measured' probe. 0 (default) → lowest level (max noise). "
+                        "Ignored by 'measured_marg' (which derives the probe from "
+                        "--measure-marg-frac) unless explicitly set > 0.")
+    p.add_argument("--measure-marg-frac", dest="measure_marg_frac", type=float,
+                   default=0.25, help="measured_marg: probe stoc_len = "
+                        "round(baseline·(1-frac)). A small frac keeps ΔL a "
+                        "finite-difference marginal sensitivity ∂L/∂budget near "
+                        "the operating point, avoiding the floor/cliff that makes "
+                        "plain 'measured' inconsistent at int7/len96. Default 0.25.")
+    p.add_argument("--measure-floor-frac", dest="measure_floor_frac", type=float,
+                   default=0.1, help="Floor for per-group ΔL/grad weights as a "
+                        "fraction of the positive mean (anti-starvation). Default "
+                        "0.1; lower it (e.g. 0.05) for more cross-layer "
+                        "discrimination once the probe is low-variance.")
+    p.add_argument("--grad-group-pow", dest="grad_group_pow", type=float, default=1.0,
+                   help="grad_group: exponent on g_row before the per-group mean "
+                        "that forms W_g. 1.0 (default) = mean |∂L/∂y_row| (robust; "
+                        "g² re-introduces heavy-tail concentration even at group "
+                        "level).")
+    p.add_argument("--grad-group-clip", dest="grad_group_clip", type=float,
+                   default=99.0, help="grad_group: winsorize g_row at this "
+                        "percentile per call before the group mean (robustness "
+                        "against a few outlier rows). 100 = off. Default 99.")
     p.add_argument("--measure-baseline-stoclen", dest="measure_baseline_stoclen",
                    type=int, default=0, help="Uniform baseline stoc_len for the "
                         "measured probe. 0 (default) → round(budget_ratio·ref).")
@@ -1242,6 +1355,20 @@ def main():
         raise RuntimeError(
             "Calibration requires CUDA + Triton (sc_matmul is GPU-only)."
         )
+
+    # Precision tracing during calibration would record σ-probe / FP-teacher /
+    # knock-down work — with stale or null context — as if it were inference,
+    # and (in trace mode) grow the buffer across the whole calibration. The
+    # sweep exports SC_MP_TRACE for the PPL stage; explicitly disable it here.
+    try:
+        from scmp_kernels import trace as _sc_trace_mod
+        if _sc_trace_mod.is_enabled():
+            _sc_trace_mod.disable()
+            print("[calib] SC_MP_TRACE set — tracing disabled during "
+                  "calibration (probe workloads are not simulator input); "
+                  "enable it on eval runs (ppl.py) instead.")
+    except ImportError:
+        pass
 
     torch.manual_seed(args.seed)
 
@@ -1280,30 +1407,48 @@ def main():
         if not (min(levels) <= grad_sc_stoclen <= max(levels)):
             print(f"[calib] NOTE: grad_sc_stoclen={grad_sc_stoclen} is outside "
                   f"the MP level range [{min(levels)}, {max(levels)}].")
-        owen_mode = os.environ.get("SC_OWEN_MODE", "counter").lower()
-        owen_off = os.environ.get("SC_DISABLE_OWEN", "0") == "1"
-        if grad_sc_draws > 1 and (owen_off or owen_mode != "random"):
+        owen_mode = os.environ.get("SC_OWEN_MODE", "bitrev").lower()
+        if grad_sc_draws > 1 and owen_mode != "random":
             print(f"[calib] NOTE: grad_sc_draws={grad_sc_draws} but the SC RNG "
-                  f"is deterministic (SC_OWEN_MODE={owen_mode}, "
-                  f"SC_DISABLE_OWEN={int(owen_off)}); draws will be identical. "
-                  f"Set SC_OWEN_MODE=random for independent draws, or "
-                  f"--grad-sc-draws 1 to skip the wasted compute.")
+                  f"is deterministic (SC_OWEN_MODE={owen_mode}); draws will be "
+                  f"identical. Set SC_OWEN_MODE=random for independent draws, "
+                  f"or --grad-sc-draws 1 to skip the wasted compute.")
 
-    # Cross-layer budget scope + measured-ΔLoss reweighting.
+    # Cross-layer budget scope + per-group weighting. All weighted variants
+    # share the SAME structure (global budget, per-group W_g, act σ quantile
+    # WITHIN group) and differ only in how W_g is sourced.
     budget_scope = args.budget_scope
     cross_layer_weight = args.cross_layer_weight
-    if cross_layer_weight == "measured":
+    grad_as_group_weight = False
+    if cross_layer_weight in ("measured", "measured_marg"):
         budget_scope = "global"          # measured weights only make sense globally
         if grad_weight:
             grad_weight = False          # measured uses act objective within groups
             grad_on_sc = False
-            print("[calib] --cross-layer-weight measured forces the act "
-                  "(reconstruction-error) within-group objective; disabling "
+            print(f"[calib] --cross-layer-weight {cross_layer_weight} forces the "
+                  "act (reconstruction-error) within-group objective; disabling "
                   "grad weighting.")
+    elif cross_layer_weight == "grad_group":
+        budget_scope = "global"          # group weights only make sense globally
+        grad_weight = True               # need one backward to capture g_row
+        grad_on_sc = False               # clean-trajectory grad, used as a GROUP mean
+        grad_as_group_weight = True
+        print("[calib] --cross-layer-weight grad_group: collecting clean "
+              "loss-gradient, aggregating to a per-group cross-layer weight W_g "
+              "(act σ quantile WITHIN group; no per-row g·σ multiply).")
     ref_sl = args.budget_ref_stoc_len or max(levels)
     measure_baseline_sl = int(args.measure_baseline_stoclen) or max(
         1, int(round(args.budget_ratio * ref_sl)))
-    measure_probe_sl = int(args.measure_probe_level) or min(levels)
+    if cross_layer_weight == "measured_marg" and int(args.measure_probe_level) <= 0:
+        # Marginal probe: a small step DOWN from baseline, grid-independent, so it
+        # never lands on the floor/cliff (which is what makes plain 'measured'
+        # inconsistent at int7/len96). ΔL is then a finite-difference ∂L/∂budget.
+        measure_probe_sl = max(1, int(round(
+            measure_baseline_sl * (1.0 - args.measure_marg_frac))))
+        if measure_probe_sl >= measure_baseline_sl:
+            measure_probe_sl = max(1, measure_baseline_sl - 1)
+    else:
+        measure_probe_sl = int(args.measure_probe_level) or min(levels)
 
     print(f"[calib] model={args.model_path} sc_prec={sc_prec} halve={halve} "
           f"levels={levels} budget_ratio={args.budget_ratio:.4f} "
@@ -1345,15 +1490,21 @@ def main():
         for p in model.parameters():
             p.requires_grad_(False)
         model.enable_input_require_grads()
-        # 30B-MoE OOMs without activation checkpointing on the backward pass.
-        # Harmless (correctness-wise a no-op) for smaller models.
-        is_moe = "a3b" in args.model_path.lower() or "moe" in args.model_path.lower()
-        if is_moe:
+        # 30B-MoE and the large dense models (esp. 32B) OOM without activation
+        # checkpointing on the backward pass. Harmless (correctness-wise a no-op)
+        # for smaller models. Force it via CALIB_GRAD_CKPT=1.
+        mp_low = args.model_path.lower()
+        is_big = (
+            "a3b" in mp_low or "moe" in mp_low
+            or "-14b" in mp_low or "-30b" in mp_low or "-32b" in mp_low
+            or os.environ.get("CALIB_GRAD_CKPT", "0") == "1"
+        )
+        if is_big:
             try:
                 model.gradient_checkpointing_enable()
                 if hasattr(model, "config"):
                     model.config.use_cache = False
-                print("[calib] gradient_checkpointing_enable() for MoE "
+                print("[calib] gradient_checkpointing_enable() for large model "
                       "(use_cache=False).")
             except Exception as e:
                 print(f"[calib] WARN: gradient_checkpointing_enable failed: {e}")
@@ -1391,6 +1542,9 @@ def main():
         grad_g_pow=args.grad_g_pow,
         grad_s_pow=args.grad_s_pow,
         budget_scope=budget_scope,
+        grad_as_group_weight=grad_as_group_weight,
+        grad_group_pow=args.grad_group_pow,
+        grad_group_clip=args.grad_group_clip,
     )
     merger = PendingMerger(calibrator)
 
@@ -1443,24 +1597,49 @@ def main():
             h.remove()
         restore_attn()
 
-    # Measured-ΔLoss cross-layer weights (knock-down probe). Done AFTER the act
-    # σ-collection (hooks removed), as a pure SC-inference measurement.
+    # Per-group cross-layer weights W_g. Done AFTER the act σ-collection (hooks
+    # removed). Two sources, both feeding the SAME _normalize_group_weights →
+    # calibrator.group_weights slot consumed by the global solve:
+    #   measured / measured_marg → ΔLoss knock-down probe (extra SC forwards)
+    #   grad_group               → per-group mean of g_row (already accumulated)
     measured_info = None
-    if cross_layer_weight == "measured":
+    if cross_layer_weight in ("measured", "measured_marg"):
+        is_marg = cross_layer_weight == "measured_marg"
         print(f"[calib] measuring per-group ΔLoss sensitivity "
-              f"(baseline_sl={measure_baseline_sl}, probe_sl={measure_probe_sl})...")
+              f"({cross_layer_weight}: baseline_sl={measure_baseline_sl}, "
+              f"probe_sl={measure_probe_sl}"
+              + (f", marg_frac={args.measure_marg_frac}" if is_marg else "")
+              + ")...")
         raw_w, L0 = _measure_group_sensitivity(
             model, enc, levels, total_blocks, args.layer_buckets, operators,
             baseline_sl=measure_baseline_sl, probe_sl=measure_probe_sl,
             n_windows=args.measure_windows, ctx=args.measure_ctx, device=device,
         )
-        norm_w = _normalize_group_weights(raw_w)
+        norm_w = _normalize_group_weights(raw_w, floor_frac=args.measure_floor_frac)
         calibrator.group_weights = norm_w
         measured_info = {
+            "source": cross_layer_weight,
             "baseline_sl": measure_baseline_sl,
             "probe_sl": measure_probe_sl,
+            "marg_frac": (args.measure_marg_frac if is_marg else None),
+            "floor_frac": args.measure_floor_frac,
             "baseline_loss": L0,
             "raw_delta_loss": {f"{op}:l{lb}": float(v) for (op, lb), v in raw_w.items()},
+            "normalized_weights": {f"{op}:l{lb}": float(v) for (op, lb), v in norm_w.items()},
+        }
+    elif cross_layer_weight == "grad_group":
+        raw_w = calibrator.grad_group_raw_weights()
+        norm_w = _normalize_group_weights(raw_w, floor_frac=args.measure_floor_frac)
+        calibrator.group_weights = norm_w
+        print(f"[calib] grad_group: built {len(norm_w)} per-group weights "
+              f"from mean |∂L/∂y|^{args.grad_group_pow} "
+              f"(clip p{args.grad_group_clip}, floor {args.measure_floor_frac}).")
+        measured_info = {
+            "source": "grad_group",
+            "grad_group_pow": args.grad_group_pow,
+            "grad_group_clip": args.grad_group_clip,
+            "floor_frac": args.measure_floor_frac,
+            "raw_group_grad": {f"{op}:l{lb}": float(v) for (op, lb), v in raw_w.items()},
             "normalized_weights": {f"{op}:l{lb}": float(v) for (op, lb), v in norm_w.items()},
         }
 
@@ -1486,10 +1665,16 @@ def main():
     # method tag (the JSON consumer / AdaptiveMPConfig ignores this — schema is
     # identical across methods):
     #   act / grad / grad_sc            (per_bucket scope)
-    #   act_global / grad_global        (global scope, uniform W_g)
-    #   measured_xlayer                 (global scope, measured-ΔLoss W_g, act within)
+    #   act_global / grad_global        (global scope, uniform W_g, per-row obj)
+    #   measured_xlayer                 (global, floor-knockdown ΔLoss W_g, act within)
+    #   measured_marg_xlayer            (global, MARGINAL ΔLoss W_g, act within)  ← fix 1
+    #   grad_group_xlayer               (global, per-group mean-g W_g, act within) ← fix 2
     if cross_layer_weight == "measured":
         method = "measured_xlayer"
+    elif cross_layer_weight == "measured_marg":
+        method = "measured_marg_xlayer"
+    elif cross_layer_weight == "grad_group":
+        method = "grad_group_xlayer"
     elif grad_on_sc:
         method = "grad_sc_global" if budget_scope == "global" else "grad_sc"
     elif grad_weight:

@@ -36,6 +36,14 @@ except ImportError:
     _HAS_SC = False
 
 try:
+    # Precision-trace context (energy/latency simulator log). Tagging is
+    # gated on _sc_trace._ENABLED so the off-path cost is one attr read.
+    from scmp_kernels import trace as _sc_trace
+except ImportError:
+    class _sc_trace:            # kernels too old — tagging becomes a no-op
+        _ENABLED = False
+
+try:
     from scmp_kernels.mp import (
         MPConfig,
         AdaptiveMPConfig,
@@ -173,6 +181,16 @@ class SCLinear(nn.Linear):
         w_fp32 = self.weight.to(torch.float32).contiguous()
         smooth = getattr(self, "smooth_scales", None)
 
+        if _sc_trace._ENABLED:
+            # Tag every sc_matmul this forward issues with this module's
+            # identity for the precision trace. _sc_unit_idx = MoE expert
+            # index (None for dense modules).
+            _sc_trace.set_context(
+                getattr(self, "_sc_op_name", None),
+                getattr(self, "_sc_block_idx", None),
+                getattr(self, "_sc_unit_idx", None),
+            )
+
         group_map = getattr(config, "sc_group_stoclen", None)
         if group_map is not None:
             # Calibration-only per-(operator, block) UNIFORM stoc_len override,
@@ -306,7 +324,8 @@ def replace_linears_with_sc(
     n_replaced = 0
     block_counter = [0]
 
-    def _swap_within(parent: nn.Module, block_idx: int) -> None:
+    def _swap_within(parent: nn.Module, block_idx: int,
+                     unit_idx: Optional[int] = None) -> None:
         nonlocal n_replaced
         for name, child in list(parent.named_children()):
             if isinstance(child, nn.Linear) and not isinstance(child, SCLinear):
@@ -322,10 +341,16 @@ def replace_linears_with_sc(
                 new_lin.to(child.weight.device, dtype=child.weight.dtype)
                 new_lin._sc_op_name = name
                 new_lin._sc_block_idx = block_idx
+                # Sub-unit index for the precision trace: a digit-named
+                # container on the path is a ModuleList entry — for MoE that
+                # is the expert index (…experts.<i>.down_proj). Dense layers
+                # have no digit-named ancestors, so this stays None.
+                new_lin._sc_unit_idx = unit_idx
                 setattr(parent, name, new_lin)
                 n_replaced += 1
             else:
-                _swap_within(child, block_idx)
+                _swap_within(child, block_idx,
+                             int(name) if name.isdigit() else unit_idx)
 
     def _walk(parent: nn.Module) -> None:
         for child in parent.children():
@@ -372,10 +397,12 @@ def _sc_attention_matmul_ab_t(
 
     a: (B, H, N, K), b: (B, H, M, K) -> (B, H, N, M).
 
-    When ``mp_config`` is set, dispatches per-(B,H) slice with per-row
-    stoc_len assignment based on ``a.abs().amax(-1)``. Each (B,H) slice
-    runs the 2D per_row path so different rows can use different stoc_len
-    levels — at the cost of losing the 3D batched kernel parallelism.
+    When ``mp_config`` is set, assigns a per-row stoc_len from
+    ``a.abs().amax(-1)`` and dispatches each (B,H) slice through the 2D
+    per_row path — at the cost of losing the 3D batched kernel parallelism.
+    AdaptiveMPConfig rows are CLASSIFIED in one global pass over B*H*N (the
+    normalization pools across heads, matching calibration — M1); the legacy
+    fixed-fraction MPConfig keeps its by-design per-slice quantile split.
 
     ``operator`` / ``block_idx`` / ``total_blocks`` are used by AdaptiveMPConfig
     to look up calibrated thresholds. They are ignored for legacy MPConfig.
@@ -383,6 +410,11 @@ def _sc_attention_matmul_ab_t(
     orig_dtype = a.dtype
     B, H, N, K = a.shape
     M = b.shape[-2]
+
+    if _sc_trace._ENABLED:
+        # Batched (uniform) attention calls carry no sub-unit; the per-(B,H)
+        # MP dispatch loops below re-tag with unit = head index.
+        _sc_trace.set_context(operator, block_idx, None)
     a3 = a.reshape(B * H, N, K).to(torch.float32).contiguous()
     b3 = b.reshape(B * H, M, K).to(torch.float32).contiguous()
 
@@ -393,23 +425,63 @@ def _sc_attention_matmul_ab_t(
         use_adaptive = (
             AdaptiveMPConfig is not None and isinstance(mp_config, AdaptiveMPConfig)
         )
+        if use_adaptive:
+            # M1 fix: classify ALL B*H*N rows in ONE global pass, so the
+            # min/max normalization inside adaptive_classify_rows pools
+            # across heads — matching the calibration, which normalizes the
+            # full flattened metric. The previous per-(B,H) classify
+            # stretched every head to [0,1] independently, erasing
+            # cross-head scale: quiet heads claimed the same share of
+            # high-precision rows as loud ones, and both consistency
+            # directions were measured — per-slice calibration degrades
+            # PPL badly (4B int7 act_global 16.9→19.2, grad_group 46→83),
+            # so GLOBAL scope on both sides is the resolution.
+            metric_all = a3.abs().amax(dim=-1)          # (B*H, N)
+            assignment = adaptive_classify_rows(
+                metric_all.reshape(-1), mp_config,
+                operator=operator,
+                block_idx=block_idx,
+                total_blocks=total_blocks,
+            )
+            _record_assignment(assignment)
+            row_levels = assignment.row_levels.reshape(B * H, N)
+            levels = mp_config.stoc_len_levels
+            for bh in range(B * H):
+                if _sc_trace._ENABLED:
+                    _sc_trace.set_context(operator, block_idx, bh % H)
+                a_bh = a3[bh]                          # (N, K)
+                b_bh = b3[bh]                          # (M, K)
+                lv_bh = row_levels[bh]                 # (N,) index into levels
+                for li, sl in enumerate(levels):
+                    indices = (lv_bh == li).nonzero(as_tuple=True)[0]
+                    if indices.numel() == 0:
+                        continue
+                    if sl <= 0:
+                        out3[bh].index_fill_(0, indices, 0.0)
+                        continue
+                    a_sub = a_bh.index_select(0, indices).contiguous()
+                    out_sub = _sc_matmul(
+                        a_sub, b_bh,
+                        granularity="per_row", mode=mode,
+                        sc_prec=sc_prec, stoc_len=int(sl),
+                        halve_bipolar_stoc_len=halve_bipolar_stoc_len,
+                    )
+                    out3[bh, indices] = out_sub
+            return out3.reshape(B, H, N, M).to(orig_dtype)
+        # Legacy fixed-fraction MPConfig: quantile split is per-(B,H) slice
+        # BY DESIGN (each head gets the configured level fractions), so the
+        # per-slice classify is the correct semantics here — unchanged.
         for bh in range(B * H):
+            if _sc_trace._ENABLED:
+                _sc_trace.set_context(operator, block_idx, bh % H)
             a_bh = a3[bh]                              # (N, K)
             b_bh = b3[bh]                              # (M, K)
             metric = a_bh.abs().amax(dim=-1)           # (N,)
-            if use_adaptive:
-                assignment = adaptive_classify_rows(
-                    metric, mp_config,
-                    operator=operator,
-                    block_idx=block_idx,
-                    total_blocks=total_blocks,
-                )
-            else:
-                assignment = classify_rows_by_metric(
-                    metric,
-                    mp_config.stoc_len_levels,
-                    mp_config.level_fractions,
-                )
+            assignment = classify_rows_by_metric(
+                metric,
+                mp_config.stoc_len_levels,
+                mp_config.level_fractions,
+            )
             _record_assignment(assignment)
             for sl, indices in assignment.level_row_indices.items():
                 if indices.numel() == 0:
@@ -445,6 +517,8 @@ def _sc_attn_ab_t_at_stoc_len(
     sc_prec: int,
     stoc_len: int,
     halve_bipolar_stoc_len: bool,
+    operator: Optional[str] = None,
+    block_idx: Optional[int] = None,
 ) -> torch.Tensor:
     """``a @ b.T`` at one EXPLICIT stoc_len. 4D in/out, per_head bipolar.
 
@@ -454,8 +528,13 @@ def _sc_attn_ab_t_at_stoc_len(
     means the halved RNG grid (2**(sc_prec-1) levels) but a stream truncated to
     ``stoc_len`` — i.e. ``stoc_len`` is interpreted in halved space, matching
     the calibration levels and ``calibrate_mp_thresholds._sc_attn_matmul_at_level``.
-    Used only by the STE noisy-trajectory forward (``sc_ste_grad``).
+    Used by the STE noisy-trajectory forward (``sc_ste_grad``) and the
+    sc_group_stoclen knock-down probe. ``operator``/``block_idx`` tag the
+    precision trace (without them these paths would inherit the stale
+    context of the last SCLinear, mislabeling attention records).
     """
+    if _sc_trace._ENABLED:
+        _sc_trace.set_context(operator, block_idx, None)
     orig_dtype = a.dtype
     B, H, N, K = a.shape
     M = b.shape[-2]
@@ -510,6 +589,7 @@ def sc_eager_attention_forward(
         attn_weights = _sc_attn_ab_t_at_stoc_len(
             query, key_states, mode=sc_mode, sc_prec=sc_prec,
             stoc_len=sl_qk, halve_bipolar_stoc_len=sc_halve,
+            operator="qk", block_idx=block_idx,
         ) * scaling
     elif use_sc and ste_grad:
         # Straight-through Q·Kᵀ: forward = SC-noisy, backward = FP Jacobian.
@@ -519,6 +599,7 @@ def sc_eager_attention_forward(
             sc_attn = _sc_attn_ab_t_at_stoc_len(
                 query, key_states, mode=sc_mode, sc_prec=sc_prec,
                 stoc_len=sc_stoc_len, halve_bipolar_stoc_len=sc_halve,
+                operator="qk", block_idx=block_idx,
             ) * scaling
         attn_weights = fp_attn + (sc_attn - fp_attn).detach()
     elif use_sc:
@@ -550,6 +631,7 @@ def sc_eager_attention_forward(
             attn_weights, value_states.transpose(-2, -1),
             mode=sc_mode, sc_prec=sc_prec,
             stoc_len=sl_av, halve_bipolar_stoc_len=sc_halve,
+            operator="av", block_idx=block_idx,
         )
     elif use_sc and ste_grad:
         # Straight-through softmax·V: forward = SC-noisy, backward = FP Jacobian.
@@ -559,6 +641,7 @@ def sc_eager_attention_forward(
                 attn_weights, value_states.transpose(-2, -1),
                 mode=sc_mode, sc_prec=sc_prec,
                 stoc_len=sc_stoc_len, halve_bipolar_stoc_len=sc_halve,
+                operator="av", block_idx=block_idx,
             )
         attn_output = fp_av + (sc_av - fp_av).detach()
     elif use_sc:

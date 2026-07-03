@@ -41,8 +41,10 @@ DEVICE=${7}
 SC_PREC=${8:-8}
 SC_STOC_LEN=${9:-256}
 
+QUANT_CONFIG="${QUANT_CONFIG:-fp16}"   # threaded via env from hpca
 case "${MODE}" in
     fp16)      TAG="fp16" ;;
+    quant)     TAG="quant_${QUANT_CONFIG}" ;;
     sc_linear) TAG="sc_linear_prec${SC_PREC}_stoc${SC_STOC_LEN}" ;;
     sc)        TAG="sc_prec${SC_PREC}_stoc${SC_STOC_LEN}_gran-${SC_ATTN_GRANULARITY}" ;;
     *) echo "unknown mode: ${MODE}"; exit 1 ;;
@@ -86,6 +88,7 @@ echo "=== predict ==="
 python -u pred/call_api.py \
     --model_name "${MODEL_PATH}" \
     --mode "${MODE}" \
+    --quant_config "${QUANT_CONFIG}" \
     --sc_prec "${SC_PREC}" \
     --sc_stoc_len "${SC_STOC_LEN}" \
     --max_len "${MAX_SEQ_LENGTH}" \

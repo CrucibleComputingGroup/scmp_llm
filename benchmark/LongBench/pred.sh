@@ -25,8 +25,11 @@ SC_PREC=${6:-8}
 SC_STOC_LEN=${7:-256}
 NUM_EXAMPLES=${8:--1}
 
+QUANT_CONFIG="${QUANT_CONFIG:-fp16}"   # threaded via env from hpca
 if [ "${MODE}" = "fp16" ]; then
     TAG="fp16"
+elif [ "${MODE}" = "quant" ]; then
+    TAG="quant_${QUANT_CONFIG}"
 else
     TAG="sc_prec${SC_PREC}_stoc${SC_STOC_LEN}"
 fi
@@ -50,6 +53,7 @@ python -u pred.py \
     --model "${MODEL}" \
     --task "${TASK}" \
     --mode "${MODE}" \
+    --quant_config "${QUANT_CONFIG}" \
     --sc_prec "${SC_PREC}" \
     --sc_stoc_len "${SC_STOC_LEN}" \
     --dtype "${DTYPE}" \

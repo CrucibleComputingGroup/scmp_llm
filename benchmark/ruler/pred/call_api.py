@@ -58,10 +58,20 @@ class HuggingFaceModel:
         sc_attn_granularity: str,
         dtype: torch.dtype,
         device: str,
+        quant_config: str = "fp16",
     ) -> None:
         self.device = device
         self.max_new_len = max_new_len
         self.mode = mode
+
+        if mode == "quant":
+            # Integer PTQ baseline: plain HF + SmoothQuant + fake-quant (no SC).
+            from benchmark.quant.eval_quant import build_model
+            llm, tokenizer = build_model(model_name, quant_config, device_map=device)
+            llm.eval()
+            self.llm = llm
+            self.tokenizer = tokenizer
+            return
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         llm = load_sc_model(model_name, dtype=dtype, device_map=device)
@@ -140,6 +150,8 @@ def get_output(
 def mode_tag(args: argparse.Namespace) -> str:
     if args.mode == "fp16":
         return "fp16"
+    if args.mode == "quant":
+        return f"quant_{args.quant_config}"
     if args.mode == "sc_linear":
         return f"sc_linear_prec{args.sc_prec}_stoc{args.sc_stoc_len}"
     return f"sc_prec{args.sc_prec}_stoc{args.sc_stoc_len}"
@@ -198,6 +210,7 @@ def main(args: argparse.Namespace) -> None:
         sc_attn_granularity=args.sc_attn_granularity,
         dtype=dtype,
         device=args.device,
+        quant_config=args.quant_config,
     )
 
     threads: list[threading.Thread] = []

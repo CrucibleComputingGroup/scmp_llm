@@ -67,8 +67,24 @@ Usage: $0 [flags]
                 Or 'none' as an alias for the int8 uniform baseline.
                 Default: int8,len192,int7,len96.
   --method      Comma-separated subset of
-                {act,grad,grad_sc,act_global,grad_global,measured}.
+                {act,grad,grad_sc,act_global,grad_global,measured,
+                 measured_marg,grad_group}.
                 Default: act,grad.
+                  measured_marg — FIX 1: 'measured' with a MARGINAL probe
+                         (knock each group down a small step from baseline via
+                         MEASURE_MARG_FRAC, not to the floor) so ΔL stays in the
+                         locally-linear regime at every precision. Fixes the
+                         int7/len96 inconsistency of plain 'measured'. Env knobs:
+                         MEASURE_MARG_FRAC (def 0.25), MEASURE_FLOOR_FRAC
+                         (def 0.05), MEASURE_WINDOWS (def 4), MEASURE_CTX
+                         (def 1024).
+                  grad_group    — FIX 2: gradient aggregated to a per-group
+                         cross-layer weight W_g = mean|∂L/∂y| (winsorized),
+                         act σ WITHIN group. No per-row g·σ multiply, so it
+                         avoids grad_global's budget over-concentration + cliff.
+                         Env knobs: GRAD_GROUP_POW (def 1.0), GRAD_GROUP_CLIP
+                         (def 99), MEASURE_FLOOR_FRAC (def 0.05), plus the grad
+                         memory knobs GRAD_WINDOWS / GRAD_CTX.
                   act_global  — cross-layer budget: ONE global shared-λ solve
                          (calibrate_mp_thresholds.py --budget-scope global), act
                          objective. Lets budget flow across layers/operators
@@ -113,7 +129,9 @@ Usage: $0 [flags]
                 Calibration: number of layer buckets. Default: 4.
   --grad-windows
                 grad-method: number of forward+backward calibration windows
-                (maps to --num_calib_sequences). Default: same as --calib-seqs.
+                (maps to --num_calib_sequences). Default: 8 (NOT --calib-seqs;
+                GRAD_WINDOWS is set unconditionally below, so the :- fallback
+                never fires — pass --grad-windows / GRAD_WINDOWS to override).
   --grad-ctx    grad-method: ctx_len for the forward+backward pass. Default:
                 same as --ctx. Lower this (e.g. 512) for 30B-MoE to keep the
                 backward activation memory under the GPU cap.
@@ -147,6 +165,10 @@ RECALIBRATE=0
 CALIB_ONLY=0
 CALIB_SEQS=4
 CALIB_BUCKETS=4
+# Grad-method calibration windows. Set unconditionally, so the
+# ${GRAD_WINDOWS:-$CALIB_SEQS} fallback in the dispatch never fires (grad methods
+# always run 8 windows, independent of --calib-seqs). Kept at 8 deliberately —
+# changing it alters the grad_global/grad_group thresholds and thus their PPL.
 GRAD_WINDOWS=8
 GRAD_CTX=""
 GRAD_ALPHA=1.0
@@ -252,13 +274,19 @@ export HF_DATASETS_CACHE="$HF_HOME/datasets"
 mkdir -p /scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/tmp || true
 export TMPDIR=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/tmp
 
-unset SC_DISABLE_OWEN
-export SC_SCRAMBLE_RESCALE=1
-# Owen scramble family. 'bitrev' keeps counter's equipartition but breaks the
-# "low bits run consecutively" adjacency so per-D correlations don't resonate
-# with the mask period. Calibration + PPL inherit this same env, so thresholds
-# stay consistent. Override by exporting SC_OWEN_MODE before invoking.
+# Owen scramble family. 'bitrev' is equipartitioned and breaks the "low bits
+# run consecutively" adjacency so per-D correlations don't resonate with the
+# mask period. Calibration + PPL inherit this same env, so thresholds stay
+# consistent. Override by exporting SC_OWEN_MODE before invoking.
+# (SC_DISABLE_OWEN and SC_SCRAMBLE_RESCALE were removed from the kernel:
+#  scramble-before-rescale is always on; use SC_OWEN_MODE=off to disable.)
 export SC_OWEN_MODE="${SC_OWEN_MODE:-bitrev}"
+# Number of distinct bitrev masks M = min(SC_SCRAMBLE_MASKS, 2^sc_prec).
+# Kernel default is 64 (6-bit mask pattern). WARNING: PPL is only comparable
+# across runs with the SAME M — the _mp_overnight_xlayer_fix table (and every
+# table before 2026-06-03) ran at M=256; to reproduce or patch those cells,
+# export SC_SCRAMBLE_MASKS=256 before invoking.
+export SC_SCRAMBLE_MASKS="${SC_SCRAMBLE_MASKS:-64}"
 
 if [[ $DRY -eq 0 ]]; then
   mkdir -p "$OUTDIR" "$CALIB_DIR"
@@ -423,6 +451,58 @@ ensure_calibration() {
         --measure-baseline-stoclen $m_base \
         --measure-windows $m_win --measure-ctx $m_ctx \
         --output_json $table_abs"
+    elif [[ "$method" == "measured_marg" ]]; then
+      # FIX 1 — measured with a MARGINAL probe: knock each group down a small
+      # step from baseline (not to the floor), so ΔL is a finite-difference
+      # ∂L/∂budget that stays in the locally-linear regime at every precision.
+      # This removes the floor/cliff confound that makes plain 'measured'
+      # inconsistent at int7/len96. More windows + softer floor = lower-variance,
+      # more-discriminating cross-layer weights.
+      local m_base="${MEASURE_BASELINE_STOCLEN:-0}"
+      local m_frac="${MEASURE_MARG_FRAC:-0.25}"
+      local m_floor="${MEASURE_FLOOR_FRAC:-0.05}"
+      local m_win="${MEASURE_WINDOWS:-4}"
+      local m_ctx="${MEASURE_CTX:-1024}"
+      cmd="MODEL_PATH=$hf python -u $PPL_DIR/calibrate_mp_thresholds.py \
+        --model_path $hf \
+        --mp_levels $levels \
+        --budget_ratio $ratio \
+        --budget_ref_stoc_len $ref \
+        --sc_prec $sc_prec --halve $HALVE \
+        --num_calib_sequences $CALIB_SEQS \
+        --ctx_len $CTX \
+        --layer_buckets $CALIB_BUCKETS \
+        --cross-layer-weight measured_marg \
+        --measure-marg-frac $m_frac \
+        --measure-floor-frac $m_floor \
+        --measure-baseline-stoclen $m_base \
+        --measure-windows $m_win --measure-ctx $m_ctx \
+        --output_json $table_abs"
+    elif [[ "$method" == "grad_group" ]]; then
+      # FIX 2 — gradient as a GROUP-level cross-layer weight: one backward
+      # captures g_row for all layers; we take the per-(op,layer-bucket) MEAN of
+      # |∂L/∂y| (winsorized) as W_g and keep act σ WITHIN group — no per-row g·σ
+      # multiply. Averaging kills the per-row gradient noise that makes
+      # grad_global over-concentrate budget and cross the cliff. Uses the grad
+      # (forward+backward) windows/ctx knobs for memory headroom on big models.
+      local grad_seqs="${GRAD_WINDOWS:-$CALIB_SEQS}"
+      local grad_ctx="${GRAD_CTX:-$CTX}"
+      local gg_pow="${GRAD_GROUP_POW:-1.0}"
+      local gg_clip="${GRAD_GROUP_CLIP:-99}"
+      local gg_floor="${MEASURE_FLOOR_FRAC:-0.05}"
+      cmd="MODEL_PATH=$hf python -u $PPL_DIR/calibrate_mp_thresholds.py \
+        --model_path $hf \
+        --mp_levels $levels \
+        --budget_ratio $ratio \
+        --budget_ref_stoc_len $ref \
+        --sc_prec $sc_prec --halve $HALVE \
+        --num_calib_sequences $grad_seqs \
+        --ctx_len $grad_ctx \
+        --layer_buckets $CALIB_BUCKETS \
+        --cross-layer-weight grad_group \
+        --grad-group-pow $gg_pow --grad-group-clip $gg_clip \
+        --measure-floor-frac $gg_floor \
+        --output_json $table_abs"
     else
       echo "unknown method: $method" >&2
       exit 1
@@ -486,7 +566,7 @@ for SHORT in "${MODELS[@]}"; do
       # Skip PPL re-run if this config's log already contains a completed
       # SC line (avoids burning 30-90 min/config when resuming after a
       # disk-full / printer-bug crash on later configs).
-      if [[ -f "$LOG" ]] && grep -q "SC AdaptiveMPConfig.*×.* vs fp16" "$LOG" 2>/dev/null; then
+      if [[ -f "$LOG" ]] && grep -qE "SC (AdaptiveMPConfig|sl=).*vs fp16" "$LOG" 2>/dev/null; then
         echo "  [skip] $LOG already has a completed SC PPL line"
         continue
       fi
@@ -509,6 +589,8 @@ for SHORT in "${MODELS[@]}"; do
         echo "  DRY: $CMD"
         continue
       fi
+      # n3: $CMD interpolates $HF/$OUTDIR/wrapper paths then eval's — safe for the
+      # current space-free repo/HF paths; a --outdir containing spaces would break.
       eval "$CMD" 2>&1 | tee -a "$LOG"
       status=${PIPESTATUS[0]}
       if [[ $status -ne 0 ]]; then

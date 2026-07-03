@@ -295,7 +295,9 @@ differ only in **what objective sets the thresholds**:
 | `grad_sc` | same, but `g` measured on the **SC-noisy** trajectory via a straight-through estimator (`--grad-on-sc`) | does noisy-trajectory gradient help where clean grad fails (high noise)? |
 | `act_global` | minimize Σσ with **ONE global budget** (`--budget-scope global`) | cross-layer: let budget flow from insensitive to sensitive layers |
 | `grad_global` | gradient-weighted σ, global budget | cross-layer with a gradient signal |
-| `measured` | global budget, each (op,layer) group weighted by **measured ΔLoss** from a knock-down probe, `act` quantile within (`--cross-layer-weight measured`) | cross-layer with a ground-truth loss-sensitivity signal |
+| `measured` | global budget, each (op,layer) group weighted by **measured ΔLoss** from a knock-down probe **to the floor**, `act` quantile within (`--cross-layer-weight measured`) | cross-layer with a ground-truth loss-sensitivity signal |
+| `measured_marg` | **FIX 1** for `measured`: probe knocks each group down a *small step* from baseline (`--measure-marg-frac`, not to the floor), so ΔL ≈ ∂L/∂budget stays in the locally-linear regime at every precision (`--cross-layer-weight measured_marg`) | does a *marginal* (non-cliff) probe fix measured's int7/len96 inconsistency? |
+| `grad_group` | **FIX 2** for `grad`: aggregate g to ONE per-group `W_g=mean\|∂L/∂y\|` (winsorized), `act` σ within group — no per-row g·σ multiply (`--cross-layer-weight grad_group`) | does using gradient only as a coarse cross-layer weight (averaging out per-row noise) beat act_global without the cliff blowup? |
 
 ### Precision configs (`--prec`)
 
@@ -332,10 +334,22 @@ python benchmark/ppl/calibrate_mp_thresholds.py --model_path <hf> \
   --output_json benchmark/ppl/mp_calib/<safe>__int7_act_global.json
 ```
 
-The sweep sets `SC_OWEN_MODE=bitrev`, `SC_SCRAMBLE_RESCALE=1` (Owen scramble ON,
-deterministic). Calibration and PPL inherit the same Owen mode — they MUST match
-or thresholds won't transfer. `--recalibrate` forces fresh tables (needed after
-changing Owen mode or the calibrator).
+The sweep sets `SC_OWEN_MODE=bitrev` (Owen scramble ON, deterministic) and
+`SC_SCRAMBLE_MASKS=64`. Calibration and PPL inherit the same Owen mode AND mask
+count — they MUST match or thresholds won't transfer. `--recalibrate` forces
+fresh tables (needed after changing Owen mode, mask count, or the calibrator).
+
+**Scramble knobs (consolidated 2026-06-03):** valid `SC_OWEN_MODE` values are
+`bitrev` (default) / `random` / `off`. Bitrev's mask for dim `d` is
+`bit_reverse(d mod M)` with `M = min(SC_SCRAMBLE_MASKS, 2^sc_prec)`; the kernel
+default is **64** (6-bit mask pattern). Removed knobs — all fail loudly if set:
+`SC_OWEN_MODE=counter`, `SC_DISABLE_OWEN=1` (use `SC_OWEN_MODE=off`), and
+`SC_SCRAMBLE_RESCALE` (scramble-before-rescale is now always on; the `=0`
+legacy path shared one Sobol trajectory across dims and was known-catastrophic
+at short stoc_len). **Comparability warning:** every table produced before
+2026-06-03 — including `_mp_overnight_xlayer_fix` — ran at `M=256`; to
+reproduce or patch those cells, `export SC_SCRAMBLE_MASKS=256`. PPL at `M=64`
+is a different operating point and needs a fresh int8/FP16-relative baseline.
 
 ### Findings (iso-budget, wikitext2 65k tokens, ctx 1024, SmoothQuant α=0.5, bitrev)
 
@@ -377,6 +391,33 @@ Reproduce: `bash tests/reproduce_crosslayer.sh` (table via
   `act`; `grad_global` is catastrophic at high noise (4B int7 PPL ~58). Gradient
   magnitude is a poor precision-importance signal for SC.
 
+### Why measured/gradient lose, and the two fixes (`measured_marg`, `grad_group`)
+
+Root cause (see `arch_impl/DESIGN_measured_grad_fix.md`): every weighted variant
+shares the skeleton **global budget · per-group weight W_g · act σ-quantile within
+group**, and differs only in how W_g is sourced. The loss signal they add is
+lower-fidelity than σ in the tested regimes:
+
+- `measured`'s probe knocks a whole group to `min(levels)` (the floor). At len192
+  the floor (64) is mild → ΔL ≈ marginal sensitivity → wins; at int7/len96 the
+  floor (32) is at/past the **collapse cliff** → ΔL saturates nonlinearly →
+  inconsistent.
+- `grad/grad_global` use a per-row `g·σ` objective; g is heavy-tailed, clean-
+  trajectory, first-order → concentrates the global budget on a few rows (rest hit
+  the cliff), and double-counts σ. "grad also uses σ" does NOT make it ≥ act: grad
+  *replaces* act's objective, and a biased weight loses to a uniform one.
+
+Fixes (additive, opt-in; existing methods byte-identical):
+- **`measured_marg`** — marginal probe (small step from baseline, grid-independent),
+  so ΔL stays locally-linear at every precision.
+- **`grad_group`** — gradient aggregated to a per-group W_g (mean |∂L/∂y|,
+  winsorized), act σ within group; the per-row noise averages out.
+
+Run all four for the comparison: `--method act_global,measured,measured_marg,grad_group`.
+Oracle: the fix's PPL must be ≤ `act_global` per cell, especially at int7/len96.
+**Pending overnight results on 4B/8B/14B/30B-A3B/32B** — launch via
+`arch_impl/launch_overnight_xlayer.sh` (3-GPU fan-out).
+
 ### Two bugs that gated cross-layer (fixed — don't reintroduce)
 
 Cross-layer only works because of two fixes in the **global** solve (per-bucket
@@ -396,6 +437,81 @@ Cross-layer only works because of two fixes in the **global** solve (per-bucket
 Each calibration table records `expected_avg_stoc_len` (predicted row-weighted
 budget) and `global_lambda` — use them to confirm a global table actually holds
 budget before trusting its PPL.
+
+### MoE empty-expert calibration bug (fixed — don't reintroduce)
+
+Calibrating a **MoE** model (Qwen3-30B-A3B) was never actually run before — the
+findings above are dense-only (4B/8B/14B). The first 30B-A3B calibration crashed in
+`_normalize_metric` with `min(): Expected reduction dim ... numel() == 0`: under
+sparse top-k routing an expert can receive **zero tokens** in a forward, so its
+`gate/up/down_proj` gets an empty `(0, D)` input and `abs().amax(-1).min()` reduces
+over an empty dim. Fixed by skipping the SCLinear calibration hook when
+`x_flat.shape[0] == 0` and hardening `_normalize_metric` for empty input
+(`calibrate_mp_thresholds.py`). This affects **all** methods on MoE, not just the
+new ones.
+
+A **second** MoE bug surfaced in the gradient path: `PendingMerger` keyed its
+per-row g accumulator by `(operator, block_idx)`, but MoE experts share both the
+op-name and the layer index while receiving **different token counts**, so
+`g_sum + g` crashed on a size mismatch (e.g. 41 vs 8 rows). Fixed by keying the
+accumulator on **call position** (`cid`) — unique per matmul call within a forward
+and stable across SC draws (routing is deterministic; the gate is FP/excluded), so
+it is byte-identical for dense models and disambiguates MoE experts. This affects
+**all** gradient methods on MoE (`grad`/`grad_global`/`grad_sc`/`grad_group`).
+
+### Large-model grad backward
+
+`grad`/`grad_group`/`grad_sc` need a backward pass. Gradient checkpointing now fires
+for 14B/30B/32B (was MoE-only) so the backward fits in 98 GB; force with
+`CALIB_GRAD_CKPT=1`. Lower `--grad-ctx` (e.g. 512) for extra headroom. SmoothQuant
+`act_scales_*.pt` for 30B-A3B and 32B are already calibrated; MP calibration + PPL
+for them are wired but only first run in the `xlayer_fix` overnight sweep.
+
+## Precision trace (energy/latency simulator input)
+
+`scmp_kernels/trace.py` logs, for **every `sc_matmul` call** (MP and uniform),
+the effective precision (`stoc_len` = true cycle count, post-halving) plus
+shape and identity. Zero overhead when off (one bool read); records only
+host-side shape metadata — never tensor values, so no device sync.
+
+```bash
+SC_MP_TRACE=out.json          python benchmark/ppl/ppl.py   # summary (default)
+SC_MP_TRACE=out.json SC_MP_TRACE_MODE=trace ...             # per-call JSONL
+```
+
+- **summary** (`scmp-trace-summary-v1`): per-(block, op, unit, stoc_len,
+  rng_levels, smoothed) groups with `calls / rows / macs / row_cycles`;
+  `d_in`/`d_out` are representative payload (NOT key — attention dims grow
+  per decode step; such groups carry `dims_vary: true` while macs/rows stay
+  exact). Energy = Σ macs × E(stoc_len). `rng_levels` is the RESOLVED
+  enable-grid size (never null). A few hundred KB for PPL runs.
+- **trace** (`scmp-trace-v1` JSONL): one ordered record per call (`seq`) —
+  latency timeline replay. Spills to disk every 100k records (bounded RAM
+  on long decodes); after a spill the flush-path override is ignored.
+- `unit` = MoE expert index (from digit-named ModuleList ancestors at
+  `replace_linears_with_sc` time) or attention head index in the per-(B,H)
+  MP dispatch (uniform attention records are one 3D call, `batch=B*H`,
+  `unit=null` — consumers must accept both flavors). The MoE router `gate`
+  never appears. **Coverage is SC matmuls only** — lm_head, embeddings,
+  norms, softmax run FP16 and are absent (header carries a `coverage` note);
+  level-0 (drop) rows issue no matmul and are not recorded.
+- `ppl.py` writes one file per sweep config (`<base>_sl<N>.json`) with
+  model/config/ppl **and join metadata** (MP_CONFIG_JSON path, total_blocks,
+  SmoothQuant setting) in the header; `check_mse.py`/`check_gen.py` are
+  wired the same way. An `atexit` hook flushes for apps that never call
+  `flush()` (header marked `"atexit": true` — may span multiple configs).
+  `calibrate_mp_thresholds.py` **disables** tracing (probe workloads are not
+  simulator input). Context is thread-local; accumulation is locked.
+- Identity comes from `trace.set_context(...)` — scmp_llm sets it in
+  `SCLinear.forward` and every SC attention path (incl. the STE and
+  knock-down-probe helpers); other apps (diffusion/ViT) need only that one
+  call to adopt.
+- Validated: 4B MP run — rows conserve exactly (Σ per-op rows = tokens;
+  qk = H×tokens), trace avg_sl == mp_tracker avg_sl, macs == rows·d_in·d_out;
+  30B MoE — per-expert rows sum to tokens×top_k (2048 = 256×8), load
+  imbalance visible (0–89 rows/expert). Tracing does not change PPL
+  (bit-identical reruns). Reviewed by a 3-lens adversarial pass; all
+  confirmed findings fixed.
 
 ## Common failure modes
 

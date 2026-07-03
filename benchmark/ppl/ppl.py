@@ -39,6 +39,11 @@ from loader import load_sc_model, apply_mp_config_from_env  # noqa: E402
 from model.smoothquant_apply import apply_smoothquant_from_env  # noqa: E402
 from model.sc_common import mp_tracker_reset, mp_tracker_avg_stoc_len  # noqa: E402
 
+try:  # precision trace for the energy/latency simulator (SC_MP_TRACE=<path>)
+    from scmp_kernels import trace as sc_trace
+except ImportError:
+    sc_trace = None
+
 MODEL_PATH = os.environ.get("MODEL_PATH", "meta-llama/Llama-3.1-8B-Instruct")
 PPL_DATASET = os.environ.get("PPL_DATASET", "wikitext")
 PPL_DATASET_CONFIG = os.environ.get("PPL_DATASET_CONFIG", "wikitext-2-raw-v1")
@@ -143,6 +148,8 @@ def main() -> None:
         model.config.sc_granularity = SC_ATTN_GRANULARITY
         model.config.sc_halve_bipolar_stoc_len = SC_HALVE
         mp_tracker_reset()
+        if sc_trace is not None and sc_trace._ENABLED:
+            sc_trace.reset()          # one trace file per sweep config
         eff_sl = (2 ** (SC_PREC - 1)) if SC_HALVE else stoc_len
         ppl_sc, n, secs = compute_ppl(model, tokenizer, enc)
         halved_tag = " (halved)" if SC_HALVE else ""
@@ -162,6 +169,29 @@ def main() -> None:
         rel = ppl_sc / ppl_fp16
         print(f"{name:<28}  {ppl_sc:10.4f}  {n:8d}  {secs:7.1f}  "
               f"{secs * 1000 / n_win:8.0f}  (×{rel:.3f} vs fp16)")
+
+        if sc_trace is not None and sc_trace._ENABLED:
+            base = os.environ.get("SC_MP_TRACE", "")
+            root, ext = os.path.splitext(base)
+            out = sc_trace.flush(
+                f"{root}_sl{stoc_len}{ext or '.json'}",
+                # Join keys back to the producing MP calibration table +
+                # everything needed to reproduce/attribute this trace.
+                header_extra={"model": MODEL_PATH, "config": name,
+                              "ppl": ppl_sc, "eval_tokens": n, "ctx": CTX,
+                              "mp_config_json": os.environ.get(
+                                  "MP_CONFIG_JSON", ""),
+                              "total_blocks": getattr(
+                                  model.config, "_sc_total_blocks", None),
+                              "sc_halve": SC_HALVE,
+                              "attn_granularity": SC_ATTN_GRANULARITY,
+                              "use_smoothquant": os.environ.get(
+                                  "USE_SMOOTHQUANT", "0"),
+                              "smoothquant_alpha": os.environ.get(
+                                  "SMOOTHQUANT_ALPHA", "")},
+            )
+            if out:
+                print(f"[trace] wrote {out}")
 
 
 if __name__ == "__main__":

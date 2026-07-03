@@ -15,7 +15,9 @@ import sys
 import glob
 
 KNOWN_PRECS = ["int8", "len192", "int7", "len96"]   # check len192 before len96
-KNOWN_METHODS = ["act_global", "grad_global", "measured", "act"]  # longest first
+# longest first; new fixed variants measured_marg / grad_group included.
+KNOWN_METHODS = ["measured_marg", "grad_group", "act_global", "grad_global",
+                 "measured", "grad_sc", "grad", "act"]
 PREC_TARGET = {"int8": 128, "len192": 91, "int7": 64, "len96": 48}
 
 
@@ -88,7 +90,10 @@ def main():
     models = [m for m in ["4B", "8B", "14B", "30B-A3B", "32B"] if m in models] + \
              [m for m in models if m not in ["4B", "8B", "14B", "30B-A3B", "32B"]]
     precs = [p for p in ["len192", "int7", "len96"] if p in precs]
-    methods = [m for m in ["act", "act_global", "grad_global", "measured"] if m in methods]
+    _METHOD_ORDER = ["act", "act_global", "grad", "grad_global", "grad_sc",
+                     "measured", "measured_marg", "grad_group"]
+    methods = [m for m in _METHOD_ORDER if m in methods] + \
+              [m for m in methods if m not in _METHOD_ORDER]
 
     def fval(s):
         try:
