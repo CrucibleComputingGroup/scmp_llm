@@ -29,7 +29,7 @@ model/llama_sc_legacy.py
 benchmark/ruler/data/synthetic/json/*.json
 benchmark/ruler/ruler_eval_result/
 benchmark/ruler/_sbatch_logs/
-benchmark/LongBench/results/
+benchmark/LongBench/results
 
 # MP calibration / sweep artifacts (regenerable). Tables, sweep output dirs,
 # and SmoothQuant scales are all reproduced by tests/run_mp_sweep.sh /
@@ -48,5 +48,5 @@ benchmark/ppl/_alpha_sweep_*/
 benchmark/ppl/_halved_fix_*/
 
 # hpca runtime artifacts (results live on Turbo; these are local eval caches)
-benchmark/LongBench/results/
+benchmark/LongBench/results
 benchmark/ruler/ruler_eval_result/
