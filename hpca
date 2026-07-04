@@ -81,6 +81,7 @@ done
 # model shortname -> HF id
 declare -A MODEL_ID=(
   [1.7B]="Qwen/Qwen3-1.7B"
+  [4B]="Qwen/Qwen3-4B-Instruct-2507"
   [14B]="Qwen/Qwen3-14B"
   [30B]="Qwen/Qwen3-30B-A3B-Instruct-2507"
   [llama8B]="meta-llama/Llama-3.1-8B-Instruct"

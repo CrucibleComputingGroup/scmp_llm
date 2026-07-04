@@ -1,5 +1,184 @@
 # scmp_llm — reproduction guide
 
+> ═══════════════════════════════════════════════════════════════════════════
+> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-03
+>
+> **Read this block first.** The reproduction guide below is accurate on
+> mechanics but its *Findings* tables (§"Mixed-precision (MP) calibration") are
+> **pre-Jul-2 kernel-confounded numbers** — see "What's citable" below.
+>
+> ### What we're doing (the thesis)
+> Argue that **stochastic computing (SC) enables finer-grained mixed precision
+> than fixed-point, and that finer MP beats uniform precision at the same
+> compute budget.** SC precision = `stoc_len` (stream cycle count), a *per-call
+> runtime knob* — any integer cycle count works (incl. non-pow2 like 96/48) via
+> early termination of one `sc_prec=8` Sobol stream, no datapath change. Compute
+> budget = average `stoc_len` (cycles); iso-budget = MP@avg_sl N vs uniform@N.
+> Target venue: HPCA. The claim has **two halves** — track both:
+>   1. **"MP beats uniform @ iso budget"** — partially tested (see gaps).
+>   2. **"SC is finer-grained than fixed-point"** — **NO experiment yet.**
+>
+> ### Status of the algorithm (STABLE — this is the method we ship)
+> Per-row stream-length MP. Offline calibration (FP teacher over a few wikitext2
+> windows) measures each row's activation metric `|x|.amax(-1)` and per-level SC
+> reconstruction error σ; a **cross-layer Lagrangian** (one shared λ over all 36
+> = 9-operator × 4-layer-bucket groups, costs priced by true row counts `rep_g`)
+> picks each row's level; counts → metric thresholds → JSON table → runtime
+> per-row dispatch (`model/sc_common.py`). **Ship `act_global` (recon-error σ,
+> global budget) under config C (global metric-normalization on BOTH calibration
+> and runtime sides).** Method ranking (4B int7, config C): **act_global 15.49 <
+> measured 17.96 < measured_marg 24.90 << grad_group 639**. Root cause of the
+> losers = whole-group *attention starvation* sub-cliff (attention = ~90% of
+> runtime rows); gradient has a post-softmax scale artifact, marg is probe-noise
+> dominated (ICC 0.46). Full story: `arch_impl/ROOT_CAUSE_abc_configs.md`.
+> Configs A (per-head runtime norm — old, has a rescue artifact), B (per-head
+> both sides — scale-blind), C (global both sides — **current code**, shipped).
+>
+> ### ONE PPL protocol (arch_impl `ppl.py` REMOVED 2026-07-04)
+> Everything — INT baselines, SC uniform, AND per-row MP — now runs through the
+> **HPCA protocol**: `benchmark/quant/eval_quant.py` (full wikitext-2 ~298k tok,
+> ctx 2048, SmoothQuant α=0.5), driven by `./hpca`. fp16 14B = 8.64.
+> **MP in the HPCA protocol:** set `QUANT_CONFIG=mp` + `MP_CONFIG_JSON=<wrapper.json>`
+> (a calibrate_mp_thresholds.py table) — eval_quant loads it into `cfg.sc_mp_config`
+> and dispatches per-row MP through the SAME path as the uniform `sc_*` cells, so
+> MP is finally apples-to-apples with uniform + INT. The old `benchmark/ppl/ppl.py`
+> (65k tok, ctx 1024) + `tests/run_mp_sweep.sh` + `summarize_mp_results.py` are
+> DELETED — they were a second incompatible PPL scale that only polluted
+> comparisons. **All pre-2026-07-04 arch_impl PPL numbers below (Findings tables,
+> the 15.49/17.10 4B int7 figures, etc.) are in the removed protocol — do NOT cite
+> them; re-run in the HPCA protocol.** Calibration still uses
+> `calibrate_mp_thresholds.py` (now `--ctx_len 2048` to match deploy).
+>
+> ### Experiments so far
+> **CLEAN (post-Jul-2 kernel, config C, arch_impl protocol) — only 6 cells** in
+> `benchmark/ppl/_mp_overnight_m1fix_global/`:
+> - 4B int7: act_global **15.49**@63.2 / measured 17.96 / marg 24.90 / grad_group 639.3 (fp16 11.27)
+> - 32B int7: act_global **10.41**@64.6 / marg 10.81 (fp16 8.71)
+>
+> **CONFOUNDED but ranking-consistent** (Jun 2–4, pre-kernel-edit; M=256 before
+> 06-03): the full 4B/8B/14B × int7/len96/len192 × {act,act_global,grad_global,
+> measured} matrix in `_mp_overnight_full_bitrev_qkfix/`, plus 30B/32B in
+> `_mp_overnight_xlayer_fix/`. Pattern: act_global ≥ act in 8/9 cells, gradient
+> always worst. Absolute PPLs NOT citable. (These are the §Findings tables below.)
+>
+> **HPCA baselines (Turbo `/nfs/turbo/coe-nbleier/allenjin/hpca/results/`):**
+> - INT: `results_bitmod_protocol.tsv` (Jul 3 18:12, DONE) — fp16→W4A4, all 4
+>   models. asymm beats symm below W6A6.
+> - SC uniform: `results_sc_uniform.tsv` (tag sc_uniform, launched Jul 3 ~19:00)
+>   — **BROKEN/in-flight.** Only completed cell 1.7B sc_int8 = **PPL 61,116**
+>   (should be ~1.0–1.1× fp16). Harness bug — likely uniform-under-halve path.
+>
+> ### What's citable
+> Nothing before **2026-07-02**. Pre-06-03 = SC_SCRAMBLE_MASKS=256; a kernel edit
+> landed ~Jul 2 23:52 (`arch_impl/logs/_scramble_ref_preedit.pt`) between the
+> `_mp_overnight_m1fix_spot` (superseded, worse) and `_mp_overnight_m1fix_global`
+> (clean) runs. All clean cells are single-run (no seed variance) at realized
+> avg_sl 62–66 vs target 64.
+>
+> ### HPCA plan
+> - **Phase 1 — INT quant baselines** (`./hpca` default configs): DONE, canonical
+>   in `results_bitmod_protocol.tsv`. fp16 + {W8..W4}×{symm,asymm}, SmoothQuant
+>   α=0.5 + RTN fake-quant, full protocol. (LongBench/RULER **silently never
+>   record** — known bug; SC cells skip them by design.)
+> - **Phase 2 — SC uniform baselines** (`./hpca --configs sc_int8,sc_avg192,
+>   sc_int7,sc_avg96,sc_int6 --metrics ppl`, tag sc_uniform): 20 cells =
+>   {1.7B,14B,30B,llama8B} × {128,96,64,48,32 cycles}. IN FLIGHT + first cell
+>   broken. This supplies uniform PPL-vs-cycles curves + energy/latency traces.
+>
+> ### Open issues / immediate next actions (priority order)
+> 1. **Diagnose the sc_uniform harness bug** (1.7B sc_int8 = 61,116). ~~Suspect the
+>    uniform-under-halve path~~ **RULED OUT (session-2, 20:30 ET, diag on gl1808 +
+>    trace forensics):** the trace shows all 252 groups at (stoc_len=128,
+>    rng_levels=128), rows conserve exactly, linears smoothed=true. Bisection
+>    (`~/hpca_diag_sc.py` on 1.7B, log `~/hpca_diag_sc_gl1808.log`): fp16 20.5,
+>    LINEAR-only SC 21.3 (fine!), **ATTN-only SC 17,125 (the bug)**; plain(None)
+>    path == explicit{} path bit-identical (23175.380 both) so the harness wiring
+>    is NOT the cause; noSQ still broken. **The bug is SC per_head attention
+>    itself.** RESOLVED (session-2, ~21:00 ET, `~/hpca_confirm_perrow.py`,
+>    `~/hpca_localize.py`, 6-window ctx-1024 slices): the broken uniform cells
+>    routed attention through the **per_head** kernel, while the shipped MP
+>    runs use **per_row** (`_sc_attention_matmul_ab_t` hardcodes per_row in the
+>    mp branch). **FIX APPLIED:** attention is now per_row-only in `model/
+>    sc_common.py` (`_sc_attention_matmul_ab_t` uniform branch + `_sc_attn_ab_t_at_
+>    stoc_len`; default `sc_granularity=per_row`; per_head removed). per_head was
+>    size-dependent: 14B 1.39×, 4B 2.6×, **1.7B 830×** (17125). per_row fixes the
+>    catastrophe: 4B 1.13× (14.77), 14B ~lossless. **Masks 256 REFUTED** (user
+>    asked; tested 1.7B+4B): no help — 1.7B qk-only 64.5@m64 vs 71.0@m256, 4B qk
+>    ~14 at both. **Residual is 1.7B-specific Q·Kᵀ in EARLY layers** (per_row
+>    1.7B: qk-only 64.5 ≈ full 66.5, av-only 20.9 ≈ fp16 20.5, layer0-alone 36.7;
+>    4B qk-only 13.9 ≈ fp16 13.1). qk already at 128 cyc = SC max, so SC cannot
+>    resolve 1.7B early-layer attention scores — an intrinsic SC limit on that
+>    model, NOT masks/scramble/per_head. OPEN: why 1.7B early-qk (Q/K outliers?);
+>    options = drop 1.7B, or keep early-layer qk fp16 for a usable 1.7B SC number.
+>    Broken sc_uniform streams killed; sc_uniform tsv rows 1.7B sc_int8..avg96 are
+>    garbage — delete + RE-RUN with the per_row fix before reuse. (Discriminator
+>    `~/hpca_diag_sc2.py` tests masks/owen — do NOT run: user set masks=64 fixed,
+>    no other scrambling.)
+> 2. **The iso-budget comparator does not exist and sc_uniform can't supply it:**
+>    clean MP cells are **4B/32B on arch_impl protocol**; sc_uniform is
+>    **1.7B/14B/30B/llama8B on HPCA protocol** — zero model overlap, incompatible
+>    protocols. Must run **uniform SC {128,96,64,48} on 4B+32B in the arch_impl
+>    protocol** (explicit-stoc_len path), pinned single GPU, to get "MP@64 vs
+>    uniform@64."
+> 3. **The "finer than fixed-point" half needs an experiment:** flagship int7
+>    levels [128,64,32] are all pow2 → don't even exercise fine granularity. Add
+>    a pow2-restricted vs fine-level MP ablation at matched avg_sl, and ideally a
+>    fixed-point-MP baseline + an E(stoc_len) energy table (GPU wall-clock does
+>    NOT track stoc_len, ~4% over 256→16 — cost story rests on the cycle/trace
+>    model, `scmp_kernels/trace.py`).
+> 4. **Extend clean config-C MP** to ≥3 models × ≥2 budgets (currently 2×1) and
+>    **replicate** act_global-C 2–3× (seed variance unknown).
+> 5. **Calibration runs WITHOUT SmoothQuant while eval applies α=0.5** — undocumented
+>    train/deploy mismatch; run one control to validate or fix.
+>
+> ### Live runs (as of 2026-07-03 ~19:15 ET — verify before trusting)
+> - gl1802 (job 52830052, 9d left): stream A = 14B sc_uniform — SAFE.
+> - gl1808 (job 52794122, **~3h35m left, dies ~22:51 ET**): stream B = 1.7B/
+>   llama8B/30B sc_uniform (15 cells) — **will be walltime-killed mid-run.**
+> - Monitor: `column -t -s$'\t' /nfs/turbo/coe-nbleier/allenjin/hpca/results/results_sc_uniform.tsv`
+> - done markers `~/hpca_sc_{a,b}.done` (touch is UNCONDITIONAL — grep log for
+>   `!!! FAILED`); logs `~/hpca_sc_{a,b}.log`.
+>
+> ### Key parameters (canonical operating point)
+> `sc_prec=8`, `halve_bipolar_stoc_len=1` (cap = 128; a level value **is** the
+> halved cycle count), `SC_OWEN_MODE=bitrev`, `SC_SCRAMBLE_MASKS=64`,
+> SmoothQuant α=0.5, budget_ratio=0.5, 36 groups (9 ops × 4 layer buckets, 1
+> timestep bucket). MP levels: int8=[128] (uniform ceiling), len192=[128,96,64]
+> (avg 91), int7=[128,64,32] (avg 64), len96=[64,48,32] (avg 48). Generation
+> cliff ≈ stoc_len 48 (level 32 is sub-cliff). Env: conda `annstention`,
+> `HF_HOME=/nfs/turbo/coe-nbleier/allenjin/hf_cache`.
+>
+> ### Commands (ONE protocol — HPCA/eval_quant.py)
+> ```bash
+> # 1) Calibrate an MP table (ctx 2048 to match deploy; produces <table>.json).
+> #    Near-lossless WF-RQ = --objective sigma2; act_global baseline omits it.
+> python benchmark/ppl/calibrate_mp_thresholds.py --model_path <hf> \
+>   --mp_levels 128,96,64 --budget_ratio 0.67 --budget_ref_stoc_len 128 \
+>   --sc_prec 8 --halve 1 --ctx_len 2048 --budget-scope global \
+>   --objective sigma2 --output_json benchmark/ppl/mp_calib/<safe>__wfrq.json
+> #    then write <safe>__wfrq_wrapper.json = {"type":"AdaptiveMPConfig",
+> #    "stoc_len_levels":[128,96,64],"threshold_table_path":"<safe>__wfrq.json"}
+>
+> # 2) Evaluate MP in the HPCA protocol (same driver as INT + SC-uniform):
+> MODEL_PATH=<hf> QUANT_CONFIG=mp CTX=2048 SQ_ALPHA=0.5 \
+>   MP_CONFIG_JSON=benchmark/ppl/mp_calib/<safe>__wfrq_wrapper.json \
+>   ACT_SCALES_DIR=benchmark/ppl python -u benchmark/quant/eval_quant.py
+>
+> # INT baselines / SC uniform baselines (unchanged):
+> bash hpca --metrics ppl                                    # INT baselines
+> bash hpca --tag sc_uniform --configs sc_int8,sc_avg192,sc_int7,sc_avg96,sc_int6 \
+>   --metrics ppl --models 14B                               # SC uniform
+> ```
+>
+> ### Repo state
+> Branch `feat/mp-config-wiring`, HEAD `fc57656` (mp/trace wiring, M1 global qk
+> classify, marg/grad_group calibrators). The calibrator IS committed here — the
+> old "269-line uncommitted diff" note is stale. Per-session memory index:
+> `~/.claude/projects/-home-allenjin-Projects/memory/MEMORY.md`
+> ([[scmp-mp-root-cause]], [[scmp-claim-evidence-audit]], [[hpca-sc-uniform-launch]],
+> [[hpca-baseline-fairness-audit]]).
+> ═══════════════════════════════════════════════════════════════════════════
+
 This repo swaps every `torch.matmul` / `nn.Linear` inside Llama-3.1-8B with
 stochastic-computing (SC) kernels from `scmp_kernels`. The goal is to measure
 quality and speed of an LLM running entirely on SC matmul, and to localize
@@ -314,11 +493,17 @@ uniform no-MP ceiling.
 
 ### How to run
 
+> ⚠ **DEPRECATED (2026-07-04): `run_mp_sweep.sh` / `reproduce_crosslayer.sh` /
+> `ppl.py` were DELETED** (they were the arch_impl 65k/ctx-1024 protocol that
+> polluted comparisons). Calibrate with `calibrate_mp_thresholds.py --ctx_len
+> 2048` then evaluate via `QUANT_CONFIG=mp MP_CONFIG_JSON=<wrapper>
+> benchmark/quant/eval_quant.py` (see the ⚑ STATUS "Commands" block). The block
+> below is retained only for the calibrator flag reference.
+
 ```bash
-# One-command reproduction (all models × precs × methods, then prints the table).
-# Serial on one GPU (~1 day); see the header for the parallel-per-node form.
-bash tests/reproduce_crosslayer.sh
-bash tests/reproduce_crosslayer.sh --max-tokens 4096          # quick smoke
+# (deprecated driver — kept for flag reference only; ppl.py/run_mp_sweep removed)
+# bash tests/reproduce_crosslayer.sh
+# bash tests/reproduce_crosslayer.sh --max-tokens 4096          # quick smoke
 
 # Or drive the sweep directly (one or more models/precs/methods):
 bash tests/run_mp_sweep.sh --models 4B,8B,14B \
@@ -352,6 +537,12 @@ reproduce or patch those cells, `export SC_SCRAMBLE_MASKS=256`. PPL at `M=64`
 is a different operating point and needs a fresh int8/FP16-relative baseline.
 
 ### Findings (iso-budget, wikitext2 65k tokens, ctx 1024, SmoothQuant α=0.5, bitrev)
+
+> ⚠ **These tables are the Jun-2 `_mp_overnight_full_bitrev_qkfix` run — PRE-Jul-2
+> kernel and M=256 before 06-03: method *rankings* hold but absolute PPLs are NOT
+> citable.** The clean post-kernel-fix numbers (config C) are in the ⚑ STATUS
+> block at the top. `uniform sl=128` here is 2× the int7 budget — it is a
+> budget-halving ceiling, NOT the iso-budget uniform@64 comparator (still missing).
 
 PPL @ realized avg_sl (halved cycles). **bold** = best method in the row.
 
@@ -415,8 +606,15 @@ Fixes (additive, opt-in; existing methods byte-identical):
 
 Run all four for the comparison: `--method act_global,measured,measured_marg,grad_group`.
 Oracle: the fix's PPL must be ≤ `act_global` per cell, especially at int7/len96.
-**Pending overnight results on 4B/8B/14B/30B-A3B/32B** — launch via
-`arch_impl/launch_overnight_xlayer.sh` (3-GPU fan-out).
+
+> **RESOLVED (2026-07-03):** the fixes were run through Phase 2–4 (see ⚑ STATUS
+> block). Neither fix beats `act_global` under the clean config C: at 4B int7,
+> act_global 15.49 < measured 17.96 < measured_marg 24.90 << grad_group 639.
+> **Decision: ship `act_global` config C.** `grad_group` has a structural
+> post-softmax scale artifact (all qk buckets clamp to floor → sub-cliff);
+> `measured_marg` is probe-noise dominated (ICC 0.46). The 3-GPU fan-out
+> (`arch_impl/launch_overnight_xlayer.sh`) also introduced GPU non-reproducibility
+> — **run the deciding/paper cells on a single pinned GPU.**
 
 ### Two bugs that gated cross-layer (fixed — don't reintroduce)
 

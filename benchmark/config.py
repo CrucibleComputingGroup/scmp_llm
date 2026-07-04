@@ -37,9 +37,9 @@ def parse_sc_args(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
         "--sc_stoc_len", type=int, default=256,
         help="SC stochastic stream length. Used when --mode sc.")
     parser.add_argument(
-        "--sc_attn_granularity", type=str, default="per_head",
-        choices=["per_head", "per_row"],
-        help="SC quant granularity for the two attention matmuls "
-             "(Q·Kᵀ and softmax·V). per_head = one scale per head; "
-             "per_row = one scale per row within each head (finer).")
+        "--sc_attn_granularity", type=str, default="per_row",
+        choices=["per_row"],
+        help="DEPRECATED / ignored — attention SC is always per_row "
+             "(per_head kernel removed 2026-07-03). Kept so scripts that "
+             "still pass this flag parse.")
     return parser

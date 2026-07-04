@@ -17,8 +17,10 @@ Knobs read from ``model.config``:
   * ``sc_prec`` (int, default 8) — quantization precision.
   * ``sc_stoc_len`` (int, default 256) — stochastic stream length.
   * ``sc_mode`` (str, default "bipolar") — bipolar vs unipolar.
-  * ``sc_granularity`` (str, default "per_head") — attention SC granularity.
   * ``sc_linear_granularity`` (str, default "per_row") — linear SC granularity.
+  (Attention granularity is NOT a knob — always per_row. The ``per_head`` kernel
+  was removed 2026-07-03: catastrophic for small models at M=64, e.g. 1.7B
+  uniform-128 attn-only PPL 17125 vs per_row 66.)
   * ``sc_linear_chunk_d`` (int, default 128) — D-chunking for linear path.
 """
 from __future__ import annotations
@@ -65,7 +67,6 @@ SC_CONFIG_DEFAULTS = {
     "sc_prec": 8,
     "sc_stoc_len": 256,
     "sc_mode": "bipolar",
-    "sc_granularity": "per_head",
     "sc_linear_granularity": "per_row",
     "sc_linear_chunk_d": 128,
     # When True, route through the wu-hpca2022 sign-magnitude cycle-halving
@@ -279,10 +280,15 @@ class SCLinear(nn.Linear):
                 )
                 out_flat[indices] = out_sub
         else:
-            # When halving, pass stoc_len=None so the kernel sets both stoc_len
-            # and rng_levels to 2**(sc_prec-1). Passing the config int would
-            # only halve rng_levels and silently keep the full-length stream.
-            call_stoc_len = None if sc_halve else sc_stoc_len
+            # UNIFORM linear (no MP / STE / group_map). Under halve the level is
+            # in halved space (cap 2**(sc_prec-1)); clamp to that cap so the config
+            # default (2**sc_prec) resolves to the halved ceiling — BIT-IDENTICAL
+            # to the old stoc_len=None path — while a sub-cap request (e.g. 64) is
+            # now EXPRESSIBLE instead of silently pinned to the ceiling. (Passing
+            # the config int > cap verbatim would keep the full-length stream on a
+            # halved grid, which the None path avoided; the min-clamp does too.)
+            call_stoc_len = (min(int(sc_stoc_len), 2 ** (sc_prec - 1))
+                             if sc_halve else sc_stoc_len)
             out_flat = _sc_matmul(
                 x_flat, w_fp32,
                 granularity=sc_gran, mode=sc_mode,
@@ -383,7 +389,6 @@ def _sc_attention_matmul_ab_t(
     a: torch.Tensor,
     b: torch.Tensor,
     *,
-    granularity: str,
     mode: str,
     sc_prec: int,
     stoc_len: int,
@@ -499,54 +504,35 @@ def _sc_attention_matmul_ab_t(
                 out3[bh, indices] = out_sub
         return out3.reshape(B, H, N, M).to(orig_dtype)
 
-    call_stoc_len = None if halve_bipolar_stoc_len else stoc_len
+    # UNIFORM (mp_config is None) is the degenerate single-level case: all rows
+    # at one stoc_len. This is THE single attention SC path — the STE and
+    # knock-down-probe call sites route here too (mp_config=None), so uniform and
+    # MP can never drift apart. per_head was removed 2026-07-03 (catastrophic for
+    # small models at M=64: 1.7B uniform-128 attn-only PPL 17125 vs per_row 66);
+    # attention is per_row only, so `granularity` is ignored.
+    #
+    # Under halve the level lives in halved space (cap 2**(sc_prec-1)); clamp to
+    # that cap so the config default (2**sc_prec) resolves to the halved ceiling
+    # — BIT-IDENTICAL to the old stoc_len=None path — while a sub-cap request
+    # (e.g. 64) is now EXPRESSIBLE instead of silently pinned to the ceiling.
+    # (Old bug: None always forced the ceiling, so uniform-<cap needed the
+    # sc_group_stoclen={} escape hatch, and two attention functions existed.)
+    call_stoc_len = (min(int(stoc_len), 2 ** (sc_prec - 1))
+                     if halve_bipolar_stoc_len else stoc_len)
     out3 = _sc_matmul(
         a3, b3,
-        granularity=granularity, mode=mode,
+        granularity="per_row", mode=mode,
         sc_prec=sc_prec, stoc_len=call_stoc_len,
         halve_bipolar_stoc_len=halve_bipolar_stoc_len,
     )
     return out3.reshape(B, H, N, M).to(orig_dtype)
 
 
-def _sc_attn_ab_t_at_stoc_len(
-    a: torch.Tensor,
-    b: torch.Tensor,
-    *,
-    mode: str,
-    sc_prec: int,
-    stoc_len: int,
-    halve_bipolar_stoc_len: bool,
-    operator: Optional[str] = None,
-    block_idx: Optional[int] = None,
-) -> torch.Tensor:
-    """``a @ b.T`` at one EXPLICIT stoc_len. 4D in/out, per_head bipolar.
-
-    Unlike :func:`_sc_attention_matmul_ab_t` (which passes ``stoc_len=None``
-    when halving, forcing the kernel to the full 2**(sc_prec-1) stream), this
-    helper always passes ``stoc_len`` through verbatim. With halving on, that
-    means the halved RNG grid (2**(sc_prec-1) levels) but a stream truncated to
-    ``stoc_len`` — i.e. ``stoc_len`` is interpreted in halved space, matching
-    the calibration levels and ``calibrate_mp_thresholds._sc_attn_matmul_at_level``.
-    Used by the STE noisy-trajectory forward (``sc_ste_grad``) and the
-    sc_group_stoclen knock-down probe. ``operator``/``block_idx`` tag the
-    precision trace (without them these paths would inherit the stale
-    context of the last SCLinear, mislabeling attention records).
-    """
-    if _sc_trace._ENABLED:
-        _sc_trace.set_context(operator, block_idx, None)
-    orig_dtype = a.dtype
-    B, H, N, K = a.shape
-    M = b.shape[-2]
-    a3 = a.reshape(B * H, N, K).to(torch.float32).contiguous()
-    b3 = b.reshape(B * H, M, K).to(torch.float32).contiguous()
-    out3 = _sc_matmul(
-        a3, b3,
-        granularity="per_head", mode=mode,
-        sc_prec=sc_prec, stoc_len=int(stoc_len),
-        halve_bipolar_stoc_len=halve_bipolar_stoc_len,
-    )
-    return out3.reshape(B, H, N, M).to(orig_dtype)
+# NOTE: the former _sc_attn_ab_t_at_stoc_len (explicit single-stoc_len attention)
+# was MERGED into _sc_attention_matmul_ab_t above — its uniform (mp_config=None)
+# branch IS that computation (per_row, stoc_len passed through the min-clamp). The
+# STE / knock-down-probe call sites below call _sc_attention_matmul_ab_t(mp_config
+# =None) directly, so there is exactly ONE attention SC implementation.
 
 
 def sc_eager_attention_forward(
@@ -569,7 +555,6 @@ def sc_eager_attention_forward(
 
     config = getattr(module, "config", None)
     use_sc = _HAS_SC and bool(getattr(config, "use_sc_attn", True))
-    sc_gran = getattr(config, "sc_granularity", "per_head")
     sc_mode = getattr(config, "sc_mode", "bipolar")
     sc_prec = int(getattr(config, "sc_prec", 8))
     sc_stoc_len = int(getattr(config, "sc_stoc_len", 256))
@@ -586,7 +571,7 @@ def sc_eager_attention_forward(
         # Calibration-only per-(op, block) UNIFORM stoc_len override (measured
         # ΔLoss knock-down probe). Explicit stoc_len in halved space; no MP.
         sl_qk = int(group_map.get(("qk", block_idx), sc_stoc_len))
-        attn_weights = _sc_attn_ab_t_at_stoc_len(
+        attn_weights = _sc_attention_matmul_ab_t(
             query, key_states, mode=sc_mode, sc_prec=sc_prec,
             stoc_len=sl_qk, halve_bipolar_stoc_len=sc_halve,
             operator="qk", block_idx=block_idx,
@@ -596,7 +581,7 @@ def sc_eager_attention_forward(
         # Uniform explicit stoc_len, MP dispatch bypassed.
         fp_attn = torch.matmul(query, key_states.transpose(2, 3)) * scaling
         with torch.no_grad():
-            sc_attn = _sc_attn_ab_t_at_stoc_len(
+            sc_attn = _sc_attention_matmul_ab_t(
                 query, key_states, mode=sc_mode, sc_prec=sc_prec,
                 stoc_len=sc_stoc_len, halve_bipolar_stoc_len=sc_halve,
                 operator="qk", block_idx=block_idx,
@@ -605,7 +590,7 @@ def sc_eager_attention_forward(
     elif use_sc:
         attn_weights = _sc_attention_matmul_ab_t(
             query, key_states,
-            granularity=sc_gran, mode=sc_mode,
+            mode=sc_mode,
             sc_prec=sc_prec, stoc_len=sc_stoc_len,
             halve_bipolar_stoc_len=sc_halve,
             mp_config=mp_config,
@@ -627,7 +612,7 @@ def sc_eager_attention_forward(
 
     if use_sc and group_map is not None:
         sl_av = int(group_map.get(("av", block_idx), sc_stoc_len))
-        attn_output = _sc_attn_ab_t_at_stoc_len(
+        attn_output = _sc_attention_matmul_ab_t(
             attn_weights, value_states.transpose(-2, -1),
             mode=sc_mode, sc_prec=sc_prec,
             stoc_len=sl_av, halve_bipolar_stoc_len=sc_halve,
@@ -637,7 +622,7 @@ def sc_eager_attention_forward(
         # Straight-through softmax·V: forward = SC-noisy, backward = FP Jacobian.
         fp_av = torch.matmul(attn_weights, value_states)
         with torch.no_grad():
-            sc_av = _sc_attn_ab_t_at_stoc_len(
+            sc_av = _sc_attention_matmul_ab_t(
                 attn_weights, value_states.transpose(-2, -1),
                 mode=sc_mode, sc_prec=sc_prec,
                 stoc_len=sc_stoc_len, halve_bipolar_stoc_len=sc_halve,
@@ -647,7 +632,7 @@ def sc_eager_attention_forward(
     elif use_sc:
         attn_output = _sc_attention_matmul_ab_t(
             attn_weights, value_states.transpose(-2, -1),
-            granularity=sc_gran, mode=sc_mode,
+            mode=sc_mode,
             sc_prec=sc_prec, stoc_len=sc_stoc_len,
             halve_bipolar_stoc_len=sc_halve,
             mp_config=mp_config,

@@ -105,8 +105,14 @@ def get_act_scales(model_path: str, tokenizer, model, *, recalibrate=False):
 
 
 def build_sc_model(model_path: str, tag: str, *, device_map="auto",
-                   alpha: float = 0.5):
-    """SC uniform-baseline model for an ``sc_*`` tag.
+                   alpha: float = 0.5, mp_table: str = ""):
+    """SC model for an ``sc_*`` uniform tag, OR a calibrated per-row MP table.
+
+    When ``mp_table`` (a path to a calibrate_mp_thresholds.py wrapper/table JSON,
+    or set via MP_CONFIG_JSON) is given, the model runs per-row mixed-precision
+    dispatch (``cfg.sc_mp_config``) instead of a uniform stream length — the SAME
+    HPCA protocol (full wikitext-2, ctx 2048, SmoothQuant α) as the uniform sc_*
+    and INT baselines, so MP is finally apples-to-apples with them.
 
     Fairness contract with the INT cells:
       * SAME SmoothQuant act_scales cache (ACT_SCALES_DIR) + same alpha. SC
@@ -122,7 +128,7 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
         (sc_common passes stoc_len=None under halve), so it CANNOT express
         the sub-128 cells.
     """
-    cycles = SC_CONFIGS[tag]
+    cycles = SC_CONFIGS.get(tag, 128)   # MP uses 128 as the stream envelope
     os.environ.setdefault("SC_OWEN_MODE", "bitrev")
     os.environ.setdefault("SC_SCRAMBLE_MASKS", "64")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -165,12 +171,29 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
     cfg.sc_prec = 8
     cfg.sc_stoc_len = cycles       # halved space: the value IS the cycle count
     cfg.sc_halve_bipolar_stoc_len = True
-    cfg.sc_mp_config = None
-    cfg.sc_group_stoclen = {}      # empty map => uniform explicit stoc_len
-    print(f"[sc] {tag}: uniform {cycles} cycles "
-          f"(sc_prec=8, halve=on, owen={os.environ['SC_OWEN_MODE']}, "
-          f"masks={os.environ['SC_SCRAMBLE_MASKS']}), "
-          f"smoothquant on {n} SCLinear layers (alpha={alpha})")
+    if mp_table:
+        # Per-row mixed precision: load the calibrated table into sc_mp_config;
+        # sc_common's MP dispatch handles per-row stoc_len (uniform path bypassed).
+        os.environ["MP_CONFIG_JSON"] = mp_table
+        from loader import apply_mp_config_from_env
+        cfg.sc_mp_config = None
+        cfg.sc_group_stoclen = None
+        apply_mp_config_from_env(model)   # sets cfg.sc_mp_config from MP_CONFIG_JSON
+        mp = getattr(cfg, "sc_mp_config", None)
+        if mp is None:
+            raise SystemExit(f"[sc] MP table did not load: {mp_table}")
+        levels = getattr(mp, "stoc_len_levels", "?")
+        print(f"[sc] MP (per-row) levels={levels} table={os.path.basename(mp_table)} "
+              f"(sc_prec=8, halve=on, owen={os.environ['SC_OWEN_MODE']}, "
+              f"masks={os.environ['SC_SCRAMBLE_MASKS']}), "
+              f"smoothquant on {n} SCLinear layers (alpha={alpha})")
+    else:
+        cfg.sc_mp_config = None
+        cfg.sc_group_stoclen = {}  # empty map => uniform explicit stoc_len
+        print(f"[sc] {tag}: uniform {cycles} cycles "
+              f"(sc_prec=8, halve=on, owen={os.environ['SC_OWEN_MODE']}, "
+              f"masks={os.environ['SC_SCRAMBLE_MASKS']}), "
+              f"smoothquant on {n} SCLinear layers (alpha={alpha})")
     return model, tokenizer
 
 
@@ -183,6 +206,13 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
     nn.Linear inputs, then quant is applied to a fresh load.
     sc_* -> SC uniform baseline (see build_sc_model).
     """
+    mp_table = os.environ.get("MP_CONFIG_JSON", "").strip()
+    if mp_table or tag == "mp" or tag.startswith("mp_"):
+        if not mp_table:
+            raise SystemExit(
+                f"MP tag {tag!r} requires MP_CONFIG_JSON=<calibrated table.json>.")
+        return build_sc_model(model_path, tag, device_map=device_map,
+                              alpha=alpha, mp_table=mp_table)
     if tag in SC_CONFIGS:
         return build_sc_model(model_path, tag, device_map=device_map, alpha=alpha)
     if tag.lower().startswith("sc_"):
@@ -271,9 +301,19 @@ def main():
     enc = enc[: (enc.shape[0] // ctx) * ctx]
     if sc_trace is not None and sc_trace._ENABLED:
         sc_trace.reset()   # drop anything recorded before the eval proper
+    # Realized budget: for MP cells report the DEPLOYMENT row-weighted avg
+    # stoc_len (mp_tracker) so PPL is quoted at the ACTUAL budget, not just the
+    # calibration target — different metrics/allocations drift differently.
+    try:
+        from model.sc_common import mp_tracker_reset, mp_tracker_avg_stoc_len
+        mp_tracker_reset()
+        _has_mptrack = True
+    except Exception:
+        _has_mptrack = False
     ppl, n, secs = compute_ppl(model, enc, ctx, stride)
+    realized_sl = mp_tracker_avg_stoc_len() if _has_mptrack else 0.0
     print(f"[RESULT] model={model_path} config={tag} metric=ppl "
-          f"value={ppl:.4f} tokens={n} sec={secs:.1f}")
+          f"value={ppl:.4f} tokens={n} sec={secs:.1f} realized_avg_sl={realized_sl:.2f}")
     if sc_trace is not None and sc_trace._ENABLED:
         # Per-call SC precision/shape log -> energy/latency simulator input.
         # Join metadata mirrors benchmark/ppl/ppl.py so simulator tooling can
@@ -283,10 +323,11 @@ def main():
             "eval_tokens": n, "ctx": ctx, "stride": stride,
             "ppl_max_tokens": max_tok,
             "sc_cycles": SC_CONFIGS.get(tag),
-            "sc_halve": tag in SC_CONFIGS, "sc_prec": 8,
-            "mp_config_json": "",   # uniform cells: no MP table to join
+            "sc_halve": tag in SC_CONFIGS or bool(os.environ.get("MP_CONFIG_JSON")),
+            "sc_prec": 8,
+            "mp_config_json": os.environ.get("MP_CONFIG_JSON", ""),
             "total_blocks": getattr(model.config, "_sc_total_blocks", None),
-            "attn_granularity": getattr(model.config, "sc_granularity", None),
+            "attn_granularity": "per_row",  # attention is always per_row (per_head removed 2026-07-03)
             "owen_mode": os.environ.get("SC_OWEN_MODE", "bitrev"),
             "scramble_masks": os.environ.get("SC_SCRAMBLE_MASKS", "64"),
             "use_smoothquant": "1",

@@ -103,6 +103,17 @@ def _relative_l2_rows(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return (pred_f - target_f).norm(dim=-1) / denom
 
 
+def _spearman(x: np.ndarray, y: np.ndarray) -> float:
+    """Spearman rank correlation, numpy-only (rank then Pearson)."""
+    if x.size < 3:
+        return float("nan")
+    rx = np.argsort(np.argsort(x)).astype(np.float64)
+    ry = np.argsort(np.argsort(y)).astype(np.float64)
+    rx -= rx.mean(); ry -= ry.mean()
+    d = float(np.sqrt((rx * rx).sum() * (ry * ry).sum()))
+    return float((rx * ry).sum() / d) if d > 0 else float("nan")
+
+
 def _relative_l2_heads(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     # pred/target: [B, H, N, M] -> per-head error vector of length H.
     pred_h = pred.float().permute(1, 0, 2, 3).reshape(pred.shape[1], -1)
@@ -265,8 +276,15 @@ def _sc_linear_at_level(
     stoc_len: int,
     halve: bool,
     chunk_d: int,
+    smooth_scales: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Mimic SCLinear.forward for a single explicit stoc_len level.
+
+    ``smooth_scales`` (open-issue #5): when the deployment applies SmoothQuant
+    (eval runs USE_SMOOTHQUANT=1 α=0.5), the SC error must be measured on the
+    SAME smoothed activation the kernel will quantize (apply_smoothing → a/s),
+    else the per-level σ table — and thus the level allocation — is calibrated
+    on the wrong (unsmoothed) distribution. None = original (byte-identical).
 
     Returns float32 output of shape (..., out_features).
     """
@@ -278,6 +296,7 @@ def _sc_linear_at_level(
         granularity="per_row", mode="bipolar",
         sc_prec=sc_prec, stoc_len=int(stoc_len), chunk_d=chunk_d,
         halve_bipolar_stoc_len=halve,
+        smooth_scales=smooth_scales,
     )
     out = out_flat.reshape(*orig_shape[:-1], weight.shape[0])
     if bias is not None:
@@ -333,7 +352,29 @@ class ThresholdCalibrator:
         grad_as_group_weight: bool = False,
         grad_group_pow: float = 1.0,
         grad_group_clip: float = 99.0,
+        refine_mode: str = "none",
     ):
+        # 2nd-stage refinement on top of the (global) solve. "none" = original
+        # behaviour, byte-identical. "sigma" = greedy residual-budget fill: the
+        # discrete argmin at the feasible-side λ leaves the realized row-weighted
+        # avg_sl UNDER target; spend that slack on the rows with the highest
+        # marginal error reduction per added cycle (Δσ/Δcost), strictly lowering
+        # Σσ while staying ≤ the iso-budget target. See _refine_residual_fill.
+        self.refine_mode = str(refine_mode)
+        self._refined_assignments: dict = {}
+        self.refine_stats: dict = {}
+        # WF-RQ C1: allocation objective. "sigma" = relative-L2 recon error
+        # (original). "sigma2" = squared error = propagated-loss surrogate; in
+        # the NEAR-LOSSLESS regime this water-fills the attention pool while the
+        # rep_g cost pricing keeps the high-σ linears pinned near 128 (do NOT
+        # additionally row-weight linears — that collapses them to the floor).
+        self.objective = "sigma"
+        # open-issue #5: measure per-level σ on the SmoothQuant-transformed
+        # activation (a/s) that the deployed kernel actually quantizes, so the
+        # calibration distribution matches eval. Set by main() from the
+        # SmoothQuant env/flag; the per-module smooth vector is read off the
+        # module buffer in the hook. Off → byte-identical original.
+        self.calib_smoothquant = False
         self.levels = levels
         self.operators = set(operators)
         # Cross-layer budget: "per_bucket" (each (op,layer-bucket) pinned to the
@@ -363,6 +404,15 @@ class ThresholdCalibrator:
         self.grad_group_clip = float(grad_group_clip)
         self._grad_group_sum: dict = defaultdict(float)
         self._grad_group_cnt: dict = defaultdict(int)
+        # FisherMP: reparameterization-invariant Gauss-Newton cross-group weight
+        # Ŵ_g = winsorized mean_row(‖y_row‖² · ‖g_row‖²). Unlike grad_group's
+        # mean|g|, the ‖y‖² factor makes it invariant to y→c·y / g→g/c rescaling,
+        # so the post-softmax attention undercount (tiny y, large g) that clamped
+        # grad_group's qk buckets to the floor (639 PPL) cannot recur. Linear-only
+        # here (attention keeps W_g=1, structurally protected). Set by main().
+        self.fisher_group = False
+        self._fisher_sum: dict = defaultdict(float)
+        self._fisher_cnt: dict = defaultdict(int)
         self.costs = np.asarray(levels, dtype=np.float64)
         self.records: dict = defaultdict(lambda: {"metrics": [], "errors": []})
         # True (un-subsampled) per-forward row count accumulated per group. The
@@ -384,6 +434,7 @@ class ThresholdCalibrator:
         metric_norm: torch.Tensor,
         errors_by_level: list,
         grad_rows: Optional[torch.Tensor] = None,
+        energy_rows: Optional[torch.Tensor] = None,
     ):
         """Record one matmul call's per-row metric + per-level SC error.
 
@@ -420,7 +471,23 @@ class ThresholdCalibrator:
                     f"({metrics.shape[0]}) for operator={operator} "
                     f"block_idx={block_idx}."
                 )
-            if self.grad_as_group_weight:
+            if self.fisher_group:
+                # FisherMP: Ŵ_g = winsorized mean(‖y_row‖²·‖g_row‖²). g_row is the
+                # L2 grad so g**2 = ‖g‖². energy_rows = ‖y_row‖² (captured for
+                # linear ops only; attention leaves energy None → no fisher weight
+                # → stays W_g=1, structurally protected from starvation). errors
+                # falls through unchanged (act σ within group).
+                if energy_rows is not None:
+                    e = energy_rows.detach().float().reshape(-1).cpu().numpy()
+                    if e.shape[0] == g.shape[0]:
+                        fw = e * (g ** 2)
+                        if 0.0 < self.grad_group_clip < 100.0 and fw.size:
+                            cap = float(np.percentile(fw, self.grad_group_clip))
+                            fw = np.minimum(fw, cap)
+                        lb_f = _bucket_index(block_idx, self.total_blocks, self.layer_buckets)
+                        self._fisher_sum[(operator, lb_f)] += float(fw.sum())
+                        self._fisher_cnt[(operator, lb_f)] += int(fw.size)
+            elif self.grad_as_group_weight:
                 # grad_group: do NOT reweight per-row errors (keep act σ). Instead
                 # accumulate a robust per-(op, layer-bucket) loss-sensitivity that
                 # becomes the cross-layer weight W_g. Winsorize per call so a few
@@ -472,10 +539,48 @@ class ThresholdCalibrator:
         return {k: self._grad_group_sum[k] / max(self._grad_group_cnt[k], 1)
                 for k in self._grad_group_sum}
 
+    def fisher_group_raw_weights(self) -> dict:
+        """Per-(operator, layer-bucket) mean Gauss-Newton importance for FisherMP:
+        mean_row(‖y_row‖²·‖g_row‖²), winsorized per call in ``add``. Fed through
+        the bounded-blend in main() to become the cross-layer W_g. Only linear
+        groups are populated (attention energy is not captured → W_g=1 there)."""
+        return {k: self._fisher_sum[k] / max(self._fisher_cnt[k], 1)
+                for k in self._fisher_sum}
+
+    def metric_fidelity_rho(self) -> dict:
+        """Diagnostic (the near-lossless lever). Runtime assigns each row a level
+        by RANKING it on the dispatch metric (|x|.amax). This measures how well
+        that ranking matches the row's TRUE need for cycles: Spearman ρ(metric,
+        σ-benefit) per operator, where σ-benefit = σ(min level) − σ(max level)
+        (the recon error the max stream removes). ρ≈1 ⇒ metric ranks correctly
+        (granularity is the only lever left); ρ low/negative ⇒ the METRIC
+        misranks rows and a better metric — not more levels/buckets — is the win.
+        av is the prime suspect (peak attention weight vs σ)."""
+        per_op = defaultdict(lambda: {"m": [], "b": []})
+        for key, rec in self.records.items():
+            if not rec["metrics"]:
+                continue
+            m = np.concatenate(rec["metrics"], axis=0)
+            e = np.concatenate(rec["errors"], axis=0)     # [n, L] descending levels
+            benefit = e[:, -1] - e[:, 0]                   # σ(min L) − σ(max L) ≥ 0
+            per_op[key[0]]["m"].append(m)
+            per_op[key[0]]["b"].append(benefit)
+        out = {}
+        for op, d in per_op.items():
+            m = np.concatenate(d["m"]); b = np.concatenate(d["b"])
+            out[op] = {"rho": _spearman(m, b), "n": int(m.size),
+                       "benefit_mean": float(b.mean())}
+        return out
+
     def _fit_group(self, metrics: np.ndarray, errors: np.ndarray,
                    lam: Optional[float] = None, weight: float = 1.0,
-                   rep: float = 1.0) -> dict:
-        if lam is None:
+                   rep: float = 1.0,
+                   override_assignment: Optional[np.ndarray] = None) -> dict:
+        if override_assignment is not None:
+            # sigma_refine 2nd stage: use the greedily-refined per-row levels
+            # instead of the raw λ argmin (counts/thresholds recomputed below).
+            assignment = np.asarray(override_assignment, dtype=np.int64)
+        elif lam is None:
             # Per-group budget: pin this group to budget_ratio·ref average.
             budget_total = self.budget_ratio * self.budget_ref_stoc_len * metrics.size
             assignment = _cost_assignments(errors, self.costs, budget_total)
@@ -485,7 +590,8 @@ class ThresholdCalibrator:
             # cheaply (consistent with the R_g-weighted budget — see
             # _global_lambda). weight = W_g importance; within-group quantile is
             # act-style (rep/weight are per-group constants).
-            objective = (weight * errors) + lam * rep * self.costs[None, :]
+            err_obj = errors ** 2 if self.objective == "sigma2" else errors
+            objective = (weight * err_obj) + lam * rep * self.costs[None, :]
             assignment = objective.argmin(axis=1)
         counts = np.bincount(assignment, minlength=len(self.levels))
         thresholds = _thresholds_from_counts(metrics, counts)
@@ -524,6 +630,8 @@ class ThresholdCalibrator:
             werrs, row_counts = [], []
             for key, rec in self.records.items():
                 e = np.concatenate(rec["errors"], axis=0)
+                if self.objective == "sigma2":
+                    e = e ** 2          # match _fit_group's squared objective
                 werrs.append(self._weight_for_key(key) * e)
                 # True per-forward row weight R_g (un-subsampled). Fall back to
                 # the stored count if (unexpectedly) missing.
@@ -532,7 +640,97 @@ class ThresholdCalibrator:
                 werrs, self.costs, self.budget_ratio,
                 float(self.budget_ref_stoc_len), row_counts)
             payload["global_lambda"] = float(global_lam)
+            if self.refine_mode == "sigma":
+                self._refined_assignments = self._refine_residual_fill(global_lam)
+                payload["refine_mode"] = "sigma"
+                payload["refine_stats"] = self.refine_stats
         return self._export_body(payload, summary_rows, global_lam)
+
+    def _refine_residual_fill(self, global_lam) -> dict:
+        """sigma_refine 2nd stage (opt-in). act_global's per-row levels come from
+        a hard argmin at the feasible-side shared λ, so the realized row-weighted
+        avg_sl lands UNDER the iso-budget target (e.g. 63.2 vs 64). This spends
+        the residual budget optimally: greedily upgrade the rows with the largest
+        marginal error reduction per added cycle (Δσ/Δcost) until the target is
+        reached. For a per-row error curve with diminishing returns this marginal
+        greedy fill is the optimal way to spend the residual — it strictly lowers
+        the calibrator's own Σσ objective while keeping avg_sl ≤ target, so it is
+        a guaranteed, iso-budget-fair improvement over act_global.
+
+        Operates ONLY on the per-bucket groups that will be exported (size ≥
+        min_bucket_units), i.e. exactly the groups counted in
+        expected_avg_stoc_len and used by the runtime per-bucket dispatch.
+        Returns {key: refined_assignment}."""
+        import heapq
+        costs = self.costs                      # e.g. [128., 64., 32.]
+        keys = [k for k in self.records
+                if sum(int(m.size) for m in self.records[k]["metrics"])
+                >= self.min_bucket_units]
+        data, total_R, realized = {}, 0.0, 0.0
+        for key in keys:
+            errors = np.concatenate(self.records[key]["errors"], axis=0)  # [n,L]
+            w = self._weight_for_key(key)
+            rep = self._rep_for_key(key)
+            R = float(self.true_counts.get(key, errors.shape[0]))
+            obj = (w * errors) + global_lam * rep * costs[None, :]
+            assign = obj.argmin(axis=1).astype(np.int64)   # == _fit_group's argmin
+            data[key] = {"errors": errors, "w": w, "rep": rep, "assign": assign}
+            total_R += R
+            realized += rep * float(costs[assign].sum())    # = R_g · mean_row cost
+        target = self.budget_ratio * self.budget_ref_stoc_len * total_R
+        residual = target - realized
+        base_avg = (realized / total_R) if total_R else 0.0
+        if residual <= 0 or not keys:
+            self.refine_stats = {"note": "no residual (>=target); no-op",
+                                 "base_avg_sl": base_avg, "residual": residual}
+            return {k: data[k]["assign"] for k in keys}
+        # Max-heap (min-heap on -priority) of single-step upgrades j -> j-1
+        # (fewer index = more cycles). Each row keeps exactly one live entry.
+        heap = []
+        for key in keys:
+            d = data[key]
+            for i in range(d["assign"].shape[0]):
+                j = int(d["assign"][i])
+                if j > 0:
+                    dsig = d["w"] * (float(d["errors"][i, j]) - float(d["errors"][i, j - 1]))
+                    dcost = d["rep"] * (float(costs[j - 1]) - float(costs[j]))
+                    if dcost > 0 and dsig > 0:
+                        heapq.heappush(heap, (-(dsig / dcost), key, i))
+        spent = upgrades = 0
+        spent_cost = 0.0
+        while heap and residual > 1e-9:
+            _negpri, key, i = heapq.heappop(heap)
+            d = data[key]
+            j = int(d["assign"][i])
+            if j <= 0:
+                continue
+            dcost = d["rep"] * (float(costs[j - 1]) - float(costs[j]))
+            # Next step (j-1 -> j-2) costs strictly MORE for pow2-spaced levels,
+            # so an unaffordable row is done (safe to drop without re-push).
+            if dcost > residual + 1e-9:
+                continue
+            d["assign"][i] = j - 1
+            residual -= dcost
+            spent_cost += dcost
+            upgrades += 1
+            if j - 1 > 0:
+                dsig2 = d["w"] * (float(d["errors"][i, j - 1]) - float(d["errors"][i, j - 2]))
+                dcost2 = d["rep"] * (float(costs[j - 2]) - float(costs[j - 1]))
+                if dcost2 > 0 and dsig2 > 0:
+                    heapq.heappush(heap, (-(dsig2 / dcost2), key, i))
+        refined = {k: data[k]["assign"] for k in keys}
+        new_realized = 0.0
+        for key in keys:
+            new_realized += data[key]["rep"] * float(costs[data[key]["assign"]].sum())
+        self.refine_stats = {
+            "base_avg_sl": base_avg,
+            "target_avg_sl": self.budget_ratio * self.budget_ref_stoc_len,
+            "refined_avg_sl": (new_realized / total_R) if total_R else 0.0,
+            "upgrades": int(upgrades),
+            "residual_cycles_left": float(residual),
+            "n_groups_refined": len(keys),
+        }
+        return refined
 
     def _rep_for_key(self, key) -> float:
         """rep_g = R_g / n_g for one (op, l_bucket) group (cost scale for the
@@ -587,7 +785,8 @@ class ThresholdCalibrator:
             operator, t_bucket, l_bucket = key
             fitted = self._fit_group(metrics, errors, lam=global_lam,
                                      weight=self._weight_for_key(key),
-                                     rep=self._rep_for_key(key))
+                                     rep=self._rep_for_key(key),
+                                     override_assignment=self._refined_assignments.get(key))
             bucket_key = f"{operator}:t{t_bucket}:l{l_bucket}"
             payload["buckets"][bucket_key] = fitted
             summary_rows.append({
@@ -698,12 +897,20 @@ class PendingMerger:
         if grad_reduce is None:
             grad_reduce = self._row_grad
         cid = self._new_id()
+        # FisherMP: capture per-row output energy ‖y_row‖² (linear ops only; the
+        # FP-teacher output y is deterministic, so no draw-averaging needed).
+        energy = None
+        if getattr(self.calibrator, "fisher_group", False) and operator in LINEAR_OPS:
+            with torch.no_grad():
+                y = output.detach().reshape(-1, output.shape[-1]).float()
+                energy = (y * y).sum(dim=-1)          # ‖y_row‖²
         self._pending[cid] = {
             "operator": operator,
             "block_idx": block_idx,
             "metric": metric_norm.detach(),
             "errors": [e.detach() for e in errors_by_level],
             "grad": None,
+            "energy": energy,
             "n_rows": int(metric_norm.reshape(-1).shape[0]),
         }
         if output.requires_grad:
@@ -758,6 +965,7 @@ class PendingMerger:
                     "block_idx": rec["block_idx"],
                     "metric": rec["metric"],
                     "errors": rec["errors"],
+                    "energy": rec.get("energy"),
                     "g_sum": g,
                     "draws": 1,
                 }
@@ -785,7 +993,7 @@ class PendingMerger:
             g_avg = acc["g_sum"] / max(acc["draws"], 1)
             self.calibrator.add(
                 acc["operator"], acc["block_idx"], acc["metric"],
-                acc["errors"], grad_rows=g_avg,
+                acc["errors"], grad_rows=g_avg, energy_rows=acc.get("energy"),
             )
         self._accum.clear()
 
@@ -841,6 +1049,9 @@ def _make_sclinear_hook(
             else:
                 teacher = output.reshape(-1, output.shape[-1])
             row_metric = _normalize_metric(x_flat.float().abs().amax(dim=-1))
+            # #5: match the deployed smoothed-activation error distribution.
+            calib_smooth = (getattr(module, "smooth_scales", None)
+                            if calibrator.calib_smoothquant else None)
             level_errors = []
             for sl in levels:
                 if sl == 0:
@@ -849,6 +1060,7 @@ def _make_sclinear_hook(
                     sc_out = _sc_linear_at_level(
                         x_flat, module.weight, module.bias,
                         sc_prec=sc_prec, stoc_len=sl, halve=halve, chunk_d=chunk_d,
+                        smooth_scales=calib_smooth,
                     )
                 level_errors.append(_relative_l2_rows(sc_out, teacher))
         merger.record(op, block_idx, row_metric, level_errors, output)
@@ -1280,8 +1492,37 @@ def _build_parser():
                         "'global': ONE shared λ over all groups, so budget flows "
                         "across layers/operators (SkewQ-style). With "
                         "--loss-weight-by-grad off → act-global; on → grad-global.")
+    p.add_argument("--calib-smoothquant", dest="calib_smoothquant",
+                   action="store_true", default=False,
+                   help="open-issue #5 fix: measure per-level σ on the "
+                        "SmoothQuant-transformed activation (a/s) that the "
+                        "deployed kernel quantizes, matching the eval "
+                        "(USE_SMOOTHQUANT=1 α=0.5). Also auto-enabled when the "
+                        "USE_SMOOTHQUANT=1 env is set. Off → byte-identical.")
+    p.add_argument("--objective", dest="objective",
+                   choices=["sigma", "sigma2"], default="sigma",
+                   help="Allocation objective. 'sigma' (default): minimize Σ "
+                        "relative-L2 recon error. 'sigma2': minimize Σσ² "
+                        "(propagated-loss surrogate) — the near-lossless "
+                        "water-filling objective; keeps high-σ linears pinned "
+                        "near 128 while water-filling the attention pool.")
+    p.add_argument("--refine", dest="refine_mode",
+                   choices=["none", "sigma"], default="none",
+                   help="2nd-stage refinement on top of the (global) solve. "
+                        "'none' (default): original, byte-identical. 'sigma': "
+                        "greedy residual-budget fill — act_global's discrete "
+                        "argmin leaves realized avg_sl under target; spend the "
+                        "slack on the highest Δσ/Δcost row upgrades (guaranteed "
+                        "iso-budget-fair improvement). Requires --budget-scope "
+                        "global.")
+    p.add_argument("--fisher-eps", dest="fisher_eps", type=float, default=0.5,
+                   help="FisherMP bounded-blend strength: W_g = 1 + eps·(clip(Ŵ_g,"
+                        "1/κ,κ)−1). eps=0 → act_global byte-identical.")
+    p.add_argument("--fisher-kappa", dest="fisher_kappa", type=float, default=2.0,
+                   help="FisherMP per-group weight clip [1/κ, κ] so no bounded "
+                        "weight can starve a group (attention is protected anyway).")
     p.add_argument("--cross-layer-weight", dest="cross_layer_weight",
-                   choices=["uniform", "measured", "measured_marg", "grad_group"],
+                   choices=["uniform", "measured", "measured_marg", "grad_group", "fisher"],
                    default="uniform",
                    help="Per-group importance weight W_g for --budget-scope "
                         "global. 'uniform' (default): W_g=1 (act_global). "
@@ -1420,6 +1661,10 @@ def main():
     budget_scope = args.budget_scope
     cross_layer_weight = args.cross_layer_weight
     grad_as_group_weight = False
+    if args.refine_mode == "sigma" and budget_scope != "global":
+        budget_scope = "global"          # residual-fill only defined for the global solve
+        print("[calib] --refine sigma forces --budget-scope global (the residual "
+              "budget fill operates on the cross-layer global allocation).")
     if cross_layer_weight in ("measured", "measured_marg"):
         budget_scope = "global"          # measured weights only make sense globally
         if grad_weight:
@@ -1436,6 +1681,14 @@ def main():
         print("[calib] --cross-layer-weight grad_group: collecting clean "
               "loss-gradient, aggregating to a per-group cross-layer weight W_g "
               "(act σ quantile WITHIN group; no per-row g·σ multiply).")
+    elif cross_layer_weight == "fisher":
+        budget_scope = "global"          # group weights only make sense globally
+        grad_weight = True               # need one backward to capture g_row
+        grad_on_sc = False               # clean-trajectory grad
+        grad_as_group_weight = False     # FisherMP has its own accumulation
+        print("[calib] --cross-layer-weight fisher (FisherMP): per-group W_g = "
+              "1+ε·(clip(mean‖y‖²‖g‖²)−1), reparam-invariant Gauss-Newton "
+              "(linear ops; attention W_g=1). act σ quantile WITHIN group.")
     ref_sl = args.budget_ref_stoc_len or max(levels)
     measure_baseline_sl = int(args.measure_baseline_stoclen) or max(
         1, int(round(args.budget_ratio * ref_sl)))
@@ -1464,6 +1717,18 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     model = load_sc_model(args.model_path, dtype=torch.float16, device_map="auto")
     model.eval()
+    # open-issue #5: if deployment applies SmoothQuant, attach the SAME smooth
+    # vectors here so the per-level σ measurement quantizes the deployed (a/s)
+    # activation. calib_smoothquant is set on the calibrator below; the hook
+    # reads module.smooth_scales. Enabled by --calib-smoothquant (or the
+    # USE_SMOOTHQUANT env the eval already uses). No-op otherwise.
+    calib_smoothquant = bool(args.calib_smoothquant or
+                             os.environ.get("USE_SMOOTHQUANT", "") == "1")
+    if calib_smoothquant:
+        from model.smoothquant_apply import apply_smoothquant_from_env
+        n_sq = apply_smoothquant_from_env(model)
+        print(f"[calib] #5 fix: SmoothQuant attached to {n_sq} SCLinear modules "
+              f"for the σ measurement (α={os.environ.get('SMOOTHQUANT_ALPHA','?')}).")
     # SC must be wired (so SCLinear instances exist and _sc_op_name is tagged).
     # In the act / FP-grad paths the SC dispatch is DISABLED so forwards run in
     # FP teacher mode. In the STE g_SC path SCLinear runs with sc_ste_grad on:
@@ -1545,7 +1810,11 @@ def main():
         grad_as_group_weight=grad_as_group_weight,
         grad_group_pow=args.grad_group_pow,
         grad_group_clip=args.grad_group_clip,
+        refine_mode=args.refine_mode,
     )
+    calibrator.calib_smoothquant = calib_smoothquant
+    calibrator.fisher_group = (cross_layer_weight == "fisher")
+    calibrator.objective = args.objective
     merger = PendingMerger(calibrator)
 
     hooks = []
@@ -1643,8 +1912,38 @@ def main():
             "normalized_weights": {f"{op}:l{lb}": float(v) for (op, lb), v in norm_w.items()},
         }
 
+    elif cross_layer_weight == "fisher":
+        raw_w = calibrator.fisher_group_raw_weights()
+        norm_w = _normalize_group_weights(raw_w, floor_frac=args.measure_floor_frac)
+        eps, kappa = float(args.fisher_eps), float(args.fisher_kappa)
+        # Bounded blend around 1 so budget interpretation holds and no group is
+        # starved: W_g = 1 + eps·(clip(Ŵ_g_norm, 1/κ, κ) − 1). Attention groups
+        # are absent from raw_w → default W_g=1 (protected).
+        blended = {k: 1.0 + eps * (min(max(v, 1.0 / kappa), kappa) - 1.0)
+                   for k, v in norm_w.items()}
+        calibrator.group_weights = blended
+        print(f"[calib] fisher: built {len(blended)} linear W_g "
+              f"(eps={eps}, kappa={kappa}); attention W_g=1.")
+        measured_info = {
+            "source": "fisher", "fisher_eps": eps, "fisher_kappa": kappa,
+            "floor_frac": args.measure_floor_frac,
+            "raw_group_fisher": {f"{op}:l{lb}": float(v) for (op, lb), v in raw_w.items()},
+            "blended_weights": {f"{op}:l{lb}": float(v) for (op, lb), v in blended.items()},
+        }
+
+    # Metric-fidelity diagnostic: does the dispatch metric rank rows by their
+    # true need for cycles? Low ρ (esp. av/qk) ⇒ the METRIC is the near-lossless
+    # lever, not level/bucket granularity.
+    rho = calibrator.metric_fidelity_rho()
+    print("[calib] metric-fidelity ρ(metric, σ-benefit) per op "
+          "(≈1 good; low/neg ⇒ metric misranks → headroom):")
+    for op in sorted(rho, key=lambda o: rho[o]["rho"] if rho[o]["rho"] == rho[o]["rho"] else 9):
+        d = rho[op]
+        print(f"    {op:<11} ρ={d['rho']:+.3f}  n={d['n']:>7}  σ-benefit_mean={d['benefit_mean']:.4f}")
+
     # Export.
     payload, summary_rows = calibrator.export()
+    payload["metric_fidelity_rho"] = {op: rho[op]["rho"] for op in rho}
     payload["model_path"] = args.model_path
     payload["sc_prec"] = sc_prec
     payload["halve_bipolar_stoc_len"] = halve
@@ -1675,12 +1974,22 @@ def main():
         method = "measured_marg_xlayer"
     elif cross_layer_weight == "grad_group":
         method = "grad_group_xlayer"
+    elif cross_layer_weight == "fisher":
+        method = "fisher_xlayer"
     elif grad_on_sc:
         method = "grad_sc_global" if budget_scope == "global" else "grad_sc"
     elif grad_weight:
         method = "grad_global" if budget_scope == "global" else "grad"
     else:
         method = "act_global" if budget_scope == "global" else "act"
+    if args.refine_mode == "sigma":
+        method = method + "_refine"
+    if calib_smoothquant:
+        method = method + "_sq"
+        payload["calib_smoothquant"] = True
+    if args.objective == "sigma2":
+        method = method + "_s2"
+        payload["objective"] = "sigma2"
     payload["method"] = method
 
     out_json = Path(args.output_json)
