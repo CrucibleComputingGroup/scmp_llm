@@ -46,3 +46,7 @@ benchmark/ppl/act_scales_*.pt
 .DS_Store
 benchmark/ppl/_alpha_sweep_*/
 benchmark/ppl/_halved_fix_*/
+
+# hpca runtime artifacts (results live on Turbo; these are local eval caches)
+benchmark/LongBench/results/
+benchmark/ruler/ruler_eval_result/
