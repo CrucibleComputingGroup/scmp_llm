@@ -27,7 +27,7 @@ model/llama_sc_legacy.py
 # Benchmark downloaded data + run artifacts. Re-fetch with the
 # download_paulgraham_essay.py / download_qa_dataset.sh scripts.
 benchmark/ruler/data/synthetic/json/*.json
-benchmark/ruler/ruler_eval_result/
+benchmark/ruler/ruler_eval_result
 benchmark/ruler/_sbatch_logs/
 benchmark/LongBench/results
 
@@ -49,4 +49,4 @@ benchmark/ppl/_halved_fix_*/
 
 # hpca runtime artifacts (results live on Turbo; these are local eval caches)
 benchmark/LongBench/results
-benchmark/ruler/ruler_eval_result/
+benchmark/ruler/ruler_eval_result
