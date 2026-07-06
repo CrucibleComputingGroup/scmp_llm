@@ -74,7 +74,7 @@ run_cell(){  # method protect_frac compensate
     echo "levels=128,64,32 target=48 protect_flags=[$protect_flags]"
     if [[ ! -s "$table" ]]; then
       env CUDA_VISIBLE_DEVICES="$GPU" SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" SQ_ALPHA="$SQ_ALPHA" \
-        timeout "$CELL_TIMEOUT" python -u benchmark/ppl/calibrate_mp_thresholds.py \
+        timeout -k 2m "$CELL_TIMEOUT" python -u benchmark/ppl/calibrate_mp_thresholds.py \
           --model_path "$HF" --mp_levels 128,64,32 --budget_ratio 0.375 \
           --budget_ref_stoc_len 128 --sc_prec 8 --halve 1 --ctx_len "$CTX" \
           --budget-scope global --budget-weight macs --mac-weights-trace "$TRACE" \
@@ -87,7 +87,7 @@ run_cell(){  # method protect_frac compensate
     env CUDA_VISIBLE_DEVICES="$GPU" MODEL_PATH="$HF" QUANT_CONFIG=mp SQ_ALPHA="$SQ_ALPHA" \
       PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$CTX" SC_OWEN_MODE="$SC_OWEN_MODE" \
       SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" MP_CONFIG_JSON="$wrapper" ACT_SCALES_DIR="$ACT_SCALES_DIR" \
-      timeout "$CELL_TIMEOUT" python -u benchmark/quant/eval_quant.py
+      timeout -k 2m "$CELL_TIMEOUT" python -u benchmark/quant/eval_quant.py
   } >> "$log" 2>&1
   local ppl avg flop exp
   ppl=$(grep "\[RESULT\]" "$log" | grep -oE "value=[0-9.eE+-]+|value=nan|value=inf" | sed 's/value=//' | tail -1)
