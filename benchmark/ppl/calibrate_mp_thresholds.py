@@ -304,6 +304,64 @@ def _sc_linear_at_level(
     return out
 
 
+def _sc_linear_protected_at_level(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    protected_indices: list[int],
+    *,
+    protected_stoc_len: int,
+    residual_stoc_len: int,
+    sc_prec: int,
+    halve: bool,
+    chunk_d: int,
+    smooth_scales: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Linear SC with salient input channels fixed at protected_stoc_len."""
+    if not protected_indices:
+        return _sc_linear_at_level(
+            x, weight, bias, sc_prec=sc_prec, stoc_len=residual_stoc_len,
+            halve=halve, chunk_d=chunk_d, smooth_scales=smooth_scales)
+    orig_shape = x.shape
+    x_flat = x.reshape(-1, orig_shape[-1]).to(torch.float32).contiguous()
+    w = weight.to(torch.float32).contiguous()
+    idx = torch.tensor(
+        sorted({int(i) for i in protected_indices
+                if 0 <= int(i) < x_flat.shape[1]}),
+        dtype=torch.long, device=x_flat.device)
+    if idx.numel() == 0:
+        return _sc_linear_at_level(
+            x, weight, bias, sc_prec=sc_prec, stoc_len=residual_stoc_len,
+            halve=halve, chunk_d=chunk_d, smooth_scales=smooth_scales)
+    mask = torch.ones(x_flat.shape[1], dtype=torch.bool, device=x_flat.device)
+    mask[idx] = False
+    rest = mask.nonzero(as_tuple=True)[0]
+    out_flat = torch.zeros(
+        (x_flat.shape[0], weight.shape[0]), dtype=torch.float32,
+        device=x_flat.device)
+    smooth_p = (smooth_scales.index_select(0, idx).contiguous()
+                if smooth_scales is not None else None)
+    out_flat += _sc_matmul(
+        x_flat.index_select(1, idx).contiguous(),
+        w.index_select(1, idx).contiguous(),
+        granularity="per_row", mode="bipolar",
+        sc_prec=sc_prec, stoc_len=int(protected_stoc_len), chunk_d=chunk_d,
+        halve_bipolar_stoc_len=halve, smooth_scales=smooth_p)
+    if rest.numel() and residual_stoc_len > 0:
+        smooth_r = (smooth_scales.index_select(0, rest).contiguous()
+                    if smooth_scales is not None else None)
+        out_flat += _sc_matmul(
+            x_flat.index_select(1, rest).contiguous(),
+            w.index_select(1, rest).contiguous(),
+            granularity="per_row", mode="bipolar",
+            sc_prec=sc_prec, stoc_len=int(residual_stoc_len), chunk_d=chunk_d,
+            halve_bipolar_stoc_len=halve, smooth_scales=smooth_r)
+    out = out_flat.reshape(*orig_shape[:-1], weight.shape[0])
+    if bias is not None:
+        out = out + bias.to(torch.float32)
+    return out
+
+
 def _sc_attn_matmul_at_level(
     a: torch.Tensor,
     b: torch.Tensor,
@@ -433,10 +491,67 @@ class ThresholdCalibrator:
         # main() (per-operator MACs/row from a trace).
         self.budget_weight = "rows"
         self.mac_per_row: dict = {}
+        # Offline salient-channel protection. Keys are
+        # (operator, block_idx, unit_idx); unit_idx is only used for MoE experts.
+        self.protect_channel_frac = 0.0
+        self.protect_channel_metric = "none"
+        self.protect_channel_stoc_len = 128
+        self.protect_compensate_budget = False
+        self.protected_channel_indices: dict = {}
+        self.protected_channel_dims: dict = {}
+        self.protected_channel_scores: dict = {}
         self._rng = np.random.default_rng(rng_seed)
 
     def use_operator(self, op: str) -> bool:
         return op in self.operators
+
+    def protected_indices_for_module(
+        self, operator: str, block_idx: int, unit_idx: Optional[int] = None,
+    ) -> list[int]:
+        key = (operator, int(block_idx), unit_idx)
+        vals = self.protected_channel_indices.get(key)
+        if vals is not None:
+            return vals
+        return self.protected_channel_indices.get((operator, int(block_idx), None), [])
+
+    def _protected_key_to_str(self, key) -> str:
+        op, block_idx, unit_idx = key
+        s = f"{op}:b{int(block_idx)}"
+        if unit_idx is not None:
+            s += f":u{int(unit_idx)}"
+        return s
+
+    def _protected_frac_for_key(self, key) -> float:
+        operator, _t_bucket, l_bucket = key
+        vals = []
+        for pkey, idxs in self.protected_channel_indices.items():
+            op, block_idx, _unit_idx = pkey
+            if op != operator:
+                continue
+            if _bucket_index(int(block_idx), self.total_blocks, self.layer_buckets) != l_bucket:
+                continue
+            dim = int(self.protected_channel_dims.get(pkey, 0))
+            if dim > 0:
+                vals.append(float(len(idxs)) / float(dim))
+        return float(np.mean(vals)) if vals else 0.0
+
+    def _protected_adjusted_avg(self, key, residual_avg: float) -> float:
+        frac = self._protected_frac_for_key(key)
+        if frac <= 0.0:
+            return float(residual_avg)
+        return frac * float(self.protect_channel_stoc_len) + \
+            (1.0 - frac) * float(residual_avg)
+
+    def _global_protected_fraction(self) -> float:
+        num = den = 0.0
+        for key, rec in self.records.items():
+            n = sum(int(m.size) for m in rec["metrics"])
+            if n < self.min_bucket_units:
+                continue
+            Rw = float(self._weight_count(key, n))
+            num += Rw * self._protected_frac_for_key(key)
+            den += Rw
+        return (num / den) if den else 0.0
 
     def add(
         self,
@@ -661,6 +776,52 @@ class ThresholdCalibrator:
         # Global cross-layer: find ONE shared λ over all per-bucket groups so the
         # budget can flow across layers/operators. Per-bucket scope leaves λ=None
         # (each group independently pinned to budget_ratio·ref — original).
+        if self.protected_channel_indices:
+            protected = {
+                "stoc_len": int(self.protect_channel_stoc_len),
+                "frac": float(self.protect_channel_frac),
+                "metric": self.protect_channel_metric,
+                "compensate_budget": bool(self.protect_compensate_budget),
+                "indices": {
+                    self._protected_key_to_str(k): [int(i) for i in v]
+                    for k, v in sorted(self.protected_channel_indices.items(),
+                                       key=lambda kv: self._protected_key_to_str(kv[0]))
+                },
+                "dims": {
+                    self._protected_key_to_str(k): int(v)
+                    for k, v in sorted(self.protected_channel_dims.items(),
+                                       key=lambda kv: self._protected_key_to_str(kv[0]))
+                },
+                "score_summary": {
+                    self._protected_key_to_str(k): v
+                    for k, v in sorted(self.protected_channel_scores.items(),
+                                       key=lambda kv: self._protected_key_to_str(kv[0]))
+                },
+            }
+            p_global = self._global_protected_fraction()
+            protected["global_mac_weighted_frac"] = float(p_global)
+            protected["uncompensated_target_avg_stoc_len"] = (
+                float(self.budget_ratio) * float(self.budget_ref_stoc_len)
+                + p_global * (float(self.protect_channel_stoc_len)
+                              - float(self.budget_ratio) * float(self.budget_ref_stoc_len))
+            )
+            if self.protect_compensate_budget and p_global > 0.0:
+                target = float(self.budget_ratio) * float(self.budget_ref_stoc_len)
+                rest_target = (
+                    target - p_global * float(self.protect_channel_stoc_len)
+                ) / max(1.0 - p_global, 1e-12)
+                if rest_target <= 0.0:
+                    raise SystemExit(
+                        "[calib] protected-channel compensation produced "
+                        f"non-positive residual target {rest_target:.4f}; "
+                        "lower --protect-channel-frac or stoc_len.")
+                protected["original_budget_ratio"] = float(self.budget_ratio)
+                protected["residual_budget_ratio"] = (
+                    float(rest_target) / float(self.budget_ref_stoc_len))
+                protected["residual_target_avg_stoc_len"] = float(rest_target)
+                self.budget_ratio = protected["residual_budget_ratio"]
+                payload["budget_ratio"] = self.budget_ratio
+            payload["protected_channels"] = protected
         global_lam = None
         if self.budget_scope == "global":
             werrs, row_counts = [], []
@@ -842,6 +1003,12 @@ class ThresholdCalibrator:
                                      weight=self._weight_for_key(key),
                                      rep=self._rep_for_key(key),
                                      override_assignment=self._refined_assignments.get(key))
+            pfrac = self._protected_frac_for_key(key)
+            if pfrac > 0.0:
+                fitted["protected_channel_frac"] = pfrac
+                fitted["protected_channel_stoc_len"] = int(self.protect_channel_stoc_len)
+                fitted["avg_stoc_len_with_protection"] = self._protected_adjusted_avg(
+                    key, fitted["avg_stoc_len"])
             bucket_key = f"{operator}:t{t_bucket}:l{l_bucket}"
             payload["buckets"][bucket_key] = fitted
             summary_rows.append({
@@ -860,7 +1027,9 @@ class ThresholdCalibrator:
             operator, _t, lpart = bkey.split(":")
             l = int(lpart[1:])
             R = float(self.true_counts.get((operator, 0, l), fitted["num_units"]))
-            num += R * fitted["avg_stoc_len"]
+            avg = float(fitted.get("avg_stoc_len_with_protection",
+                                   fitted["avg_stoc_len"]))
+            num += R * avg
             den += R
         payload["expected_avg_stoc_len"] = (num / den) if den else 0.0
         # Budget-weighted expectation — under --budget-weight macs this is the
@@ -874,7 +1043,9 @@ class ThresholdCalibrator:
                 l = int(lpart[1:])
                 Rw = float(self._weight_count((operator, 0, l),
                                               fitted["num_units"]))
-                fnum += Rw * fitted["avg_stoc_len"]
+                avg = float(fitted.get("avg_stoc_len_with_protection",
+                                       fitted["avg_stoc_len"]))
+                fnum += Rw * avg
                 fden += Rw
             payload["expected_flop_avg_stoc_len"] = (fnum / fden) if fden else 0.0
             # Per-op MACs/row (from --mac-weights-trace): lets the RUNTIME
@@ -1131,9 +1302,17 @@ def _make_sclinear_hook(
             # #5: match the deployed smoothed-activation error distribution.
             calib_smooth = (getattr(module, "smooth_scales", None)
                             if calibrator.calib_smoothquant else None)
+            protected = calibrator.protected_indices_for_module(
+                op, block_idx, getattr(module, "_sc_unit_idx", None))
             level_errors = []
             for sl in levels:
-                if sl == 0:
+                if protected:
+                    sc_out = _sc_linear_protected_at_level(
+                        x_flat, module.weight, module.bias, protected,
+                        protected_stoc_len=calibrator.protect_channel_stoc_len,
+                        residual_stoc_len=sl, sc_prec=sc_prec, halve=halve,
+                        chunk_d=chunk_d, smooth_scales=calib_smooth)
+                elif sl == 0:
                     sc_out = torch.zeros_like(teacher)
                 else:
                     sc_out = _sc_linear_at_level(
@@ -1752,6 +1931,25 @@ def _build_parser():
     p.add_argument("--mac-weights-trace", dest="mac_weights_trace", default=None,
                    help="scmp trace JSON (summary) whose per-op rows+macs give "
                         "macs_per_row[op] for --budget-weight macs.")
+    p.add_argument("--protect-channel-frac", dest="protect_channel_frac",
+                   type=float, default=0.0,
+                   help="Offline salient input-channel protection for SCLinear: "
+                        "top fraction of channels per linear module run at "
+                        "--protect-channel-stoc-len, residual channels still use "
+                        "row MP. 0.0 (default) disables and preserves old tables.")
+    p.add_argument("--protect-channel-metric", dest="protect_channel_metric",
+                   choices=["act_weight", "weight"], default="act_weight",
+                   help="Salience metric for protected channels. act_weight "
+                        "uses cached SmoothQuant act_scales^2 times weight-column "
+                        "energy; weight uses weight-column energy only.")
+    p.add_argument("--protect-channel-stoc-len", dest="protect_channel_stoc_len",
+                   type=int, default=128,
+                   help="stoc_len for protected channels. Default 128.")
+    p.add_argument("--protect-compensate-budget",
+                   dest="protect_compensate_budget", action="store_true",
+                   help="Strict iso-compute mode: lower the residual MP target so "
+                        "protected@stoc_len plus residual MP lands at the original "
+                        "target. Off reports the intentional overhead.")
     p.add_argument("--output_json", required=True)
     p.add_argument("--output_summary_csv", default=None,
                    help="Defaults to <output_json without .json>_summary.csv.")
@@ -1770,6 +1968,78 @@ def _expand_levels(value: str) -> list:
 
 def _parse_csv_set(value: str) -> set:
     return {x.strip() for x in value.split(",") if x.strip()}
+
+
+def _configure_protected_channels(
+    calibrator: ThresholdCalibrator,
+    model: nn.Module,
+    act_scales: Optional[dict],
+    *,
+    frac: float,
+    metric: str,
+    stoc_len: int,
+    compensate_budget: bool,
+) -> int:
+    """Select offline salient input channels for protected-channel MP."""
+    frac = float(frac)
+    if frac <= 0.0:
+        return 0
+    if frac >= 1.0:
+        raise SystemExit("[calib] --protect-channel-frac must be < 1.0")
+    if metric == "act_weight" and not act_scales:
+        raise SystemExit(
+            "[calib] --protect-channel-metric act_weight requires act scales; "
+            "use --calib-smoothquant or choose --protect-channel-metric weight.")
+    calibrator.protect_channel_frac = frac
+    calibrator.protect_channel_metric = metric
+    calibrator.protect_channel_stoc_len = int(stoc_len)
+    calibrator.protect_compensate_budget = bool(compensate_budget)
+    n_mod = n_ch = missing = 0
+    for name, mod in model.named_modules():
+        if not isinstance(mod, SCLinear):
+            continue
+        op = getattr(mod, "_sc_op_name", None)
+        block_idx = getattr(mod, "_sc_block_idx", None)
+        if op not in LINEAR_OPS or block_idx is None:
+            continue
+        w = mod.weight.detach().float()
+        D = int(w.shape[1])
+        if D <= 0:
+            continue
+        w2 = w.pow(2).sum(dim=0).detach().cpu()
+        if metric == "act_weight":
+            a = act_scales.get(name) if act_scales else None
+            if a is None:
+                missing += 1
+                continue
+            score = a.detach().float().cpu().pow(2) * w2
+        elif metric == "weight":
+            score = w2
+        else:  # pragma: no cover - argparse choices guard this.
+            raise SystemExit(f"[calib] unknown protected-channel metric {metric}")
+        k = max(1, int(math.ceil(frac * D)))
+        idx = torch.topk(score, k=min(k, D), largest=True).indices
+        idx_list = sorted(int(i) for i in idx.tolist())
+        key = (op, int(block_idx), getattr(mod, "_sc_unit_idx", None))
+        calibrator.protected_channel_indices[key] = idx_list
+        calibrator.protected_channel_dims[key] = D
+        calibrator.protected_channel_scores[key] = {
+            "score_min": float(score[idx].min().item()) if idx.numel() else 0.0,
+            "score_max": float(score[idx].max().item()) if idx.numel() else 0.0,
+            "score_mean": float(score[idx].mean().item()) if idx.numel() else 0.0,
+        }
+        n_mod += 1
+        n_ch += len(idx_list)
+    if n_mod == 0:
+        raise SystemExit(
+            "[calib] protected-channel selection matched 0 SCLinear modules.")
+    if missing:
+        print(f"[calib] protected-channel: skipped {missing} modules missing "
+              "act_scales.")
+    print(f"[calib] protected-channel: selected {n_ch} channels across {n_mod} "
+          f"linear modules (frac={frac}, metric={metric}, stoc_len={stoc_len}, "
+          f"compensate={bool(compensate_budget)}).")
+    return n_mod
 
 
 def main():
@@ -1909,6 +2179,7 @@ def main():
     calib_smoothquant = bool(args.calib_smoothquant or
                              os.environ.get("USE_SMOOTHQUANT", "") == "1")
     sq_alpha = sq_path = None
+    sq_act_scales = None
     if calib_smoothquant:
         # Self-sufficient: resolve the SAME act_scales file + alpha the eval
         # applies (ACT_SCALES_DIR + SQ_ALPHA). The old delegation to
@@ -1933,8 +2204,8 @@ def main():
                 "the eval applies)")
         sq_alpha = float(os.environ.get(
             "SQ_ALPHA", os.environ.get("SMOOTHQUANT_ALPHA", "0.5")))
-        _sq_scales = torch.load(sq_path, map_location="cpu", weights_only=True)
-        n_sq = apply_smoothquant_to_model(model, _sq_scales, alpha=sq_alpha)
+        sq_act_scales = torch.load(sq_path, map_location="cpu", weights_only=True)
+        n_sq = apply_smoothquant_to_model(model, sq_act_scales, alpha=sq_alpha)
         if n_sq == 0:
             raise SystemExit(
                 f"--calib-smoothquant: 0 SCLinear modules matched {sq_path} — "
@@ -2043,6 +2314,13 @@ def main():
         print("[calib] budget-weight=MACS (iso-compute). macs/row: "
               + ", ".join(f"{op}={calibrator.mac_per_row[op]:.2e}"
                           for op in sorted(calibrator.mac_per_row)))
+    _configure_protected_channels(
+        calibrator, model, sq_act_scales,
+        frac=args.protect_channel_frac,
+        metric=args.protect_channel_metric,
+        stoc_len=args.protect_channel_stoc_len,
+        compensate_budget=args.protect_compensate_budget,
+    )
     merger = PendingMerger(calibrator)
 
     hooks = []
@@ -2263,6 +2541,10 @@ def main():
     if args.objective == "sigma2":
         method = method + "_s2"
         payload["objective"] = "sigma2"
+    if calibrator.protected_channel_indices:
+        method = method + f"_pc{args.protect_channel_frac:g}x{args.protect_channel_stoc_len}"
+        if args.protect_compensate_budget:
+            method = method + "_comp"
     payload["method"] = method
     # Preserve the EXACT settings so every table is self-documenting: reusable
     # (MP_CONFIG_JSON=<wrapper>, no recalibration) AND reproducible (re-run

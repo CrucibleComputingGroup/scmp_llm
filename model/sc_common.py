@@ -145,7 +145,20 @@ def mp_tracker_flop_avg_stoc_len() -> float:
     return (s["mac_sl"] / s["macs"]) if s.get("macs") else 0.0
 
 
-def _record_assignment(assignment, op=None) -> None:
+def _record_stoc_len(sl: int, n: int, op=None, mac_scale: float = 1.0) -> None:
+    if n == 0 or mac_scale <= 0.0:
+        return
+    state = _mp_tracker()
+    weighted_n = float(n) * float(mac_scale)
+    state["weighted_sl"] += float(sl) * weighted_n
+    state["rows"] += weighted_n
+    mac = _MP_MAC_PER_ROW.get(op) if op is not None else None
+    if mac:
+        state["mac_sl"] += float(sl) * weighted_n * mac
+        state["macs"] += weighted_n * mac
+
+
+def _record_assignment(assignment, op=None, mac_scale: float = 1.0) -> None:
     """Accumulate weighted-sum of per-row stoc_len for reporting.
 
     Each level's stoc_len is the *effective* cycle count seen by the kernel
@@ -153,18 +166,12 @@ def _record_assignment(assignment, op=None) -> None:
     is on — they're just sliced from [0, 2**(sc_prec-1)]).
     With ``op`` + a mac_per_row map set, also accumulates the MAC-weighted
     (iso-compute) average. Observe-only — never affects dispatch.
+    ``mac_scale`` is the input-channel fraction for split-channel matmuls;
+    default 1.0 preserves legacy full-width accounting.
     """
-    state = _mp_tracker()
-    mac = _MP_MAC_PER_ROW.get(op) if op is not None else None
     for sl, idxs in assignment.level_row_indices.items():
         n = int(idxs.numel())
-        if n == 0:
-            continue
-        state["weighted_sl"] += float(sl) * n
-        state["rows"] += n
-        if mac:
-            state["mac_sl"] += float(sl) * n * mac
-            state["macs"] += n * mac
+        _record_stoc_len(int(sl), n, op=op, mac_scale=mac_scale)
 
 
 def apply_sc_config_defaults(config) -> None:
@@ -172,6 +179,21 @@ def apply_sc_config_defaults(config) -> None:
     for k, v in SC_CONFIG_DEFAULTS.items():
         if not hasattr(config, k):
             setattr(config, k, v)
+
+
+def _channel_index_tensor(indices, width: int, device) -> torch.Tensor:
+    vals = sorted({int(i) for i in (indices or []) if 0 <= int(i) < width})
+    if not vals:
+        return torch.empty(0, dtype=torch.long, device=device)
+    return torch.tensor(vals, dtype=torch.long, device=device)
+
+
+def _complement_channel_indices(width: int, selected: torch.Tensor, device) -> torch.Tensor:
+    if selected.numel() == 0:
+        return torch.arange(width, dtype=torch.long, device=device)
+    mask = torch.ones(width, dtype=torch.bool, device=device)
+    mask[selected] = False
+    return mask.nonzero(as_tuple=True)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -271,13 +293,31 @@ class SCLinear(nn.Linear):
             # Per-row mixed-precision dispatch. Classify each token row by
             # its abs-max along D, then call sc_matmul once per stoc_len
             # level on that level's row subset and scatter back.
-            metric = x_flat.abs().amax(dim=-1)
+            op_name = getattr(self, "_sc_op_name", None)
+            block_idx = getattr(self, "_sc_block_idx", None)
+            unit_idx = getattr(self, "_sc_unit_idx", None)
+            protected_idx = torch.empty(0, dtype=torch.long, device=x_flat.device)
+            rest_idx = None
+            if AdaptiveMPConfig is not None and isinstance(mp_config, AdaptiveMPConfig):
+                protected = mp_config.get_protected_channels(
+                    operator=op_name, block_idx=block_idx, unit_idx=unit_idx)
+                protected_idx = _channel_index_tensor(
+                    protected, x_flat.shape[1], x_flat.device)
+                if protected_idx.numel() > 0:
+                    rest_idx = _complement_channel_indices(
+                        x_flat.shape[1], protected_idx, x_flat.device)
+            if rest_idx is not None and rest_idx.numel() == 0:
+                metric = torch.zeros(x_flat.shape[0], dtype=torch.float32,
+                                     device=x_flat.device)
+            else:
+                metric_source = x_flat if rest_idx is None else x_flat.index_select(1, rest_idx)
+                metric = metric_source.abs().amax(dim=-1)
             if AdaptiveMPConfig is not None and isinstance(mp_config, AdaptiveMPConfig):
                 assignment = adaptive_classify_rows(
                     metric,
                     mp_config,
-                    operator=getattr(self, "_sc_op_name", None),
-                    block_idx=getattr(self, "_sc_block_idx", None),
+                    operator=op_name,
+                    block_idx=block_idx,
                     total_blocks=getattr(config, "_sc_total_blocks", None),
                 )
             else:
@@ -286,27 +326,65 @@ class SCLinear(nn.Linear):
                     mp_config.stoc_len_levels,
                     mp_config.level_fractions,
                 )
-            _record_assignment(assignment, getattr(self, "_sc_op_name", None))
-            out_flat = torch.empty(
-                (x_flat.shape[0], self.out_features),
-                dtype=torch.float32,
-                device=x_flat.device,
-            )
+            width = max(x_flat.shape[1], 1)
+            protected_scale = float(protected_idx.numel()) / float(width)
+            residual_scale = 1.0 - protected_scale
+            if protected_idx.numel() > 0:
+                out_flat = torch.zeros(
+                    (x_flat.shape[0], self.out_features),
+                    dtype=torch.float32,
+                    device=x_flat.device,
+                )
+                x_prot = x_flat.index_select(1, protected_idx).contiguous()
+                w_prot = w_fp32.index_select(1, protected_idx).contiguous()
+                smooth_prot = (smooth.index_select(0, protected_idx).contiguous()
+                               if smooth is not None else None)
+                protect_sl = int(getattr(mp_config, "protected_channel_stoc_len", None)
+                                 or max(mp_config.stoc_len_levels))
+                out_flat += _sc_matmul(
+                    x_prot, w_prot,
+                    granularity=sc_gran, mode=sc_mode,
+                    sc_prec=sc_prec, stoc_len=protect_sl, chunk_d=sc_chunk_d,
+                    halve_bipolar_stoc_len=sc_halve,
+                    smooth_scales=smooth_prot,
+                )
+                _record_stoc_len(protect_sl, x_flat.shape[0], op=op_name,
+                                 mac_scale=protected_scale)
+                x_dispatch = x_flat.index_select(1, rest_idx).contiguous()
+                w_dispatch = w_fp32.index_select(1, rest_idx).contiguous()
+                smooth_dispatch = (smooth.index_select(0, rest_idx).contiguous()
+                                   if smooth is not None else None)
+            else:
+                out_flat = torch.empty(
+                    (x_flat.shape[0], self.out_features),
+                    dtype=torch.float32,
+                    device=x_flat.device,
+                )
+                x_dispatch = x_flat
+                w_dispatch = w_fp32
+                smooth_dispatch = smooth
+            _record_assignment(assignment, op_name, mac_scale=residual_scale)
             for sl, indices in assignment.level_row_indices.items():
+                if residual_scale <= 0.0:
+                    continue
                 if indices.numel() == 0:
                     continue
                 if sl <= 0:
-                    out_flat[indices] = 0.0
+                    if protected_idx.numel() == 0:
+                        out_flat[indices] = 0.0
                     continue
-                x_sub = x_flat.index_select(0, indices).contiguous()
+                x_sub = x_dispatch.index_select(0, indices).contiguous()
                 out_sub = _sc_matmul(
-                    x_sub, w_fp32,
+                    x_sub, w_dispatch,
                     granularity=sc_gran, mode=sc_mode,
                     sc_prec=sc_prec, stoc_len=int(sl), chunk_d=sc_chunk_d,
                     halve_bipolar_stoc_len=sc_halve,
-                    smooth_scales=smooth,
+                    smooth_scales=smooth_dispatch,
                 )
-                out_flat[indices] = out_sub
+                if protected_idx.numel() > 0:
+                    out_flat[indices] += out_sub
+                else:
+                    out_flat[indices] = out_sub
         else:
             # UNIFORM linear (no MP / STE / group_map). Under halve the level is
             # in halved space (cap 2**(sc_prec-1)); clamp to that cap so the config
