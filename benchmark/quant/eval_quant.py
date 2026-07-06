@@ -66,6 +66,29 @@ SC_CONFIGS = {
     "sc_int6": 32,
 }
 
+# MP budgets are named by the NOMINAL (pre-halving) convention — the SAME config
+# token as the uniform twin — keyed by the calibrated (halved) level set. So an MP
+# run and its uniform baseline share the budget token: mp avg192 <-> sc_avg192,
+# int7 <-> sc_int7, avg96 <-> sc_avg96. The NAME is nominal (= 2 x halved); the
+# levels/cycles in code stay halved. Naming MP by the halved number is WRONG:
+# "avg96" for the [128,96,64] / halved-96 run would collide with uniform sc_avg96,
+# which is the 2x-smaller nominal-96 (halved-48) budget.
+MP_BUDGET_NAMES = {
+    (128,): "int8",
+    (128, 96, 64): "avg192",
+    (128, 64, 32): "int7",
+    (64, 48, 32): "avg96",
+}
+
+
+def mp_budget_name(levels) -> str:
+    """Pre-halving MP config name (uniform-twin) for a level set."""
+    try:
+        return MP_BUDGET_NAMES.get(tuple(levels),
+                                   "levels" + "-".join(map(str, levels)))
+    except TypeError:
+        return "levels?"
+
 
 def parse_config(tag: str):
     """'fp16' -> None (pure fp16). 'W8A8_symm' -> QuantConfig(8,8,True)."""
@@ -183,7 +206,10 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
         if mp is None:
             raise SystemExit(f"[sc] MP table did not load: {mp_table}")
         levels = getattr(mp, "stoc_len_levels", "?")
-        print(f"[sc] MP (per-row) levels={levels} table={os.path.basename(mp_table)} "
+        bname = mp_budget_name(levels)
+        print(f"[sc] MP (per-row) config=mp_{bname} (nominal name; twin uniform "
+              f"sc_{bname}; levels below are halved) "
+              f"levels={levels} table={os.path.basename(mp_table)} "
               f"(sc_prec=8, halve=on, owen={os.environ['SC_OWEN_MODE']}, "
               f"masks={os.environ['SC_SCRAMBLE_MASKS']}), "
               f"smoothquant on {n} SCLinear layers (alpha={alpha})")

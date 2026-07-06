@@ -408,9 +408,11 @@ class ThresholdCalibrator:
         # Ŵ_g = winsorized mean_row(‖y_row‖² · ‖g_row‖²). Unlike grad_group's
         # mean|g|, the ‖y‖² factor makes it invariant to y→c·y / g→g/c rescaling,
         # so the post-softmax attention undercount (tiny y, large g) that clamped
-        # grad_group's qk buckets to the floor (639 PPL) cannot recur. Linear-only
-        # here (attention keeps W_g=1, structurally protected). Set by main().
+        # grad_group's qk buckets to the floor (639 PPL) cannot recur. Linear ops
+        # by default; qk/av weighted too when fisher_attn is set (--fisher-attn),
+        # each normalized in its OWN pool. Set by main().
         self.fisher_group = False
+        self.fisher_attn = False
         self._fisher_sum: dict = defaultdict(float)
         self._fisher_cnt: dict = defaultdict(int)
         self.costs = np.asarray(levels, dtype=np.float64)
@@ -422,6 +424,15 @@ class ThresholdCalibrator:
         # max_units_per_call erases that, which otherwise lets the global
         # allocation silently overspend at runtime.
         self.true_counts: dict = defaultdict(int)
+        # Budget weighting: "rows" (row-serial LATENCY, original) or "macs"
+        # (FLOP/ENERGY). Row-weighting prices the FLOP-heavy linears as cheap
+        # (few rows) and the cheap-FLOP attention as expensive (90% of rows), so
+        # "iso-budget" is NOT iso-compute and act_global starves qk despite its
+        # high σ. MAC-weighting (R_g → R_g·macs_per_row[op]) makes iso-budget
+        # iso-compute: linears expensive, attention cheap. mac_per_row is set by
+        # main() (per-operator MACs/row from a trace).
+        self.budget_weight = "rows"
+        self.mac_per_row: dict = {}
         self._rng = np.random.default_rng(rng_seed)
 
     def use_operator(self, op: str) -> bool:
@@ -474,9 +485,9 @@ class ThresholdCalibrator:
             if self.fisher_group:
                 # FisherMP: Ŵ_g = winsorized mean(‖y_row‖²·‖g_row‖²). g_row is the
                 # L2 grad so g**2 = ‖g‖². energy_rows = ‖y_row‖² (captured for
-                # linear ops only; attention leaves energy None → no fisher weight
-                # → stays W_g=1, structurally protected from starvation). errors
-                # falls through unchanged (act σ within group).
+                # linear ops, and qk/av too under --fisher-attn; otherwise attention
+                # leaves energy None → no fisher weight → W_g=1). errors falls
+                # through unchanged (act σ within group).
                 if energy_rows is not None:
                     e = energy_rows.detach().float().reshape(-1).cpu().numpy()
                     if e.shape[0] == g.shape[0]:
@@ -546,6 +557,30 @@ class ThresholdCalibrator:
         groups are populated (attention energy is not captured → W_g=1 there)."""
         return {k: self._fisher_sum[k] / max(self._fisher_cnt[k], 1)
                 for k in self._fisher_sum}
+
+    def apply_measured_curve(self, curves: dict) -> int:
+        """measured_curve: replace each group's per-row recon-error matrix with
+        that group's per-LEVEL ΔLoss curve (broadcast to all its rows), so the
+        global-λ solve minimizes  Σ ΔLoss + λ·budget  DIRECTLY — the true
+        loss-optimal allocation — instead of W_g × recon-error (which leaks
+        recon-error's blindness to qk). Because the curve is constant across a
+        group's rows, the per-row argmin lands every row on one level → per-group
+        (operator × layer-bucket) uniform. W_g stays 1. Returns #groups overridden.
+        Must be called AFTER the σ-collection (records populated) and BEFORE
+        export()."""
+        self.group_weights = {}          # ΔLoss is IN the errors now → no W_g tilt
+        L = len(self.levels)
+        n_over = 0
+        for key, rec in self.records.items():
+            op, _, lb = key
+            curve = curves.get((op, lb))
+            if curve is None or not rec["metrics"]:
+                continue
+            n = int(sum(int(m.size) for m in rec["metrics"]))
+            c = np.clip(np.asarray(curve, dtype=np.float64).reshape(1, L), 0.0, None)
+            rec["errors"] = [np.tile(c, (n, 1))]   # [n, L], every row = the curve
+            n_over += 1
+        return n_over
 
     def metric_fidelity_rho(self) -> dict:
         """Diagnostic (the near-lossless lever). Runtime assigns each row a level
@@ -633,9 +668,10 @@ class ThresholdCalibrator:
                 if self.objective == "sigma2":
                     e = e ** 2          # match _fit_group's squared objective
                 werrs.append(self._weight_for_key(key) * e)
-                # True per-forward row weight R_g (un-subsampled). Fall back to
-                # the stored count if (unexpectedly) missing.
-                row_counts.append(float(self.true_counts.get(key, e.shape[0])))
+                # Per-group budget weight R_g (un-subsampled): rows (latency) or
+                # MACs (FLOP/energy) per self.budget_weight. Fall back to the
+                # stored count if (unexpectedly) missing.
+                row_counts.append(self._weight_count(key, e.shape[0]))
             global_lam = _global_lambda(
                 werrs, self.costs, self.budget_ratio,
                 float(self.budget_ref_stoc_len), row_counts)
@@ -671,7 +707,7 @@ class ThresholdCalibrator:
             errors = np.concatenate(self.records[key]["errors"], axis=0)  # [n,L]
             w = self._weight_for_key(key)
             rep = self._rep_for_key(key)
-            R = float(self.true_counts.get(key, errors.shape[0]))
+            R = self._weight_count(key, errors.shape[0])
             obj = (w * errors) + global_lam * rep * costs[None, :]
             assign = obj.argmin(axis=1).astype(np.int64)   # == _fit_group's argmin
             data[key] = {"errors": errors, "w": w, "rep": rep, "assign": assign}
@@ -732,22 +768,34 @@ class ThresholdCalibrator:
         }
         return refined
 
+    def _weight_count(self, key, n_fallback=None) -> float:
+        """Per-group budget weight R_g: row count (default) OR MAC count
+        (budget_weight='macs' → R_g·macs_per_row[op]). Drives the global-λ budget
+        + rep_g, so with MAC weighting iso-budget = iso-compute."""
+        n = (n_fallback if n_fallback is not None
+             else sum(int(m.size) for m in self.records[key]["metrics"]))
+        R = float(self.true_counts.get(key, n))
+        if self.budget_weight == "macs":
+            R *= float(self.mac_per_row.get(key[0], 1.0))
+        return R
+
     def _rep_for_key(self, key) -> float:
         """rep_g = R_g / n_g for one (op, l_bucket) group (cost scale for the
-        global assignment). n_g = stored subsampled row count."""
+        global assignment). n_g = stored subsampled row count. R_g is row- or
+        MAC-weighted per self.budget_weight."""
         n = sum(int(m.size) for m in self.records[key]["metrics"])
-        R = float(self.true_counts.get(key, n))
-        return R / max(n, 1)
+        return self._weight_count(key, n) / max(n, 1)
 
     def _rep_for_op(self, operator) -> float:
-        """rep for the operator_default fallback (sum over its buckets)."""
-        n = R = 0
+        """rep for the operator_default fallback (sum over its buckets). R_g is
+        row- or MAC-weighted per self.budget_weight."""
+        n = R = 0.0
         for key, rec in self.records.items():
             if key[0] != operator:
                 continue
             ng = sum(int(m.size) for m in rec["metrics"])
             n += ng
-            R += self.true_counts.get(key, ng)
+            R += self._weight_count(key, ng)
         return (R / max(n, 1)) if n else 1.0
 
     def _export_body(self, payload, summary_rows, global_lam):
@@ -897,10 +945,15 @@ class PendingMerger:
         if grad_reduce is None:
             grad_reduce = self._row_grad
         cid = self._new_id()
-        # FisherMP: capture per-row output energy ‖y_row‖² (linear ops only; the
-        # FP-teacher output y is deterministic, so no draw-averaging needed).
+        # FisherMP: capture per-row output energy ‖y_row‖² (FP-teacher output y is
+        # deterministic, so no draw-averaging needed). Linear ops always; qk/av too
+        # when --fisher-attn (else attention stays energy=None → W_g=1). For qk/av
+        # `output` is the qk_node/av_node, so output.reshape(-1, output.shape[-1])
+        # yields the same B*H*N rows as the attention grad reduce → ‖y‖²‖g‖² aligns.
         energy = None
-        if getattr(self.calibrator, "fisher_group", False) and operator in LINEAR_OPS:
+        _energy_ops = LINEAR_OPS | (
+            ATTN_OPS if getattr(self.calibrator, "fisher_attn", False) else set())
+        if getattr(self.calibrator, "fisher_group", False) and operator in _energy_ops:
             with torch.no_grad():
                 y = output.detach().reshape(-1, output.shape[-1]).float()
                 energy = (y * y).sum(dim=-1)          # ‖y_row‖²
@@ -1110,11 +1163,25 @@ def _patch_attention_for_calibration(
         from transformers.models.qwen3_moe import modeling_qwen3_moe
     except ImportError:
         modeling_qwen3_moe = None
+    try:
+        from transformers.models.llama import modeling_llama
+    except ImportError:
+        modeling_llama = None
 
-    if modeling_qwen3 is None and modeling_qwen3_moe is None:
-        raise RuntimeError("qwen3 / qwen3_moe modeling modules not importable.")
-
-    targets = [m for m in (modeling_qwen3, modeling_qwen3_moe) if m is not None]
+    # calib_eager uses the standardized HF attention-interface signature and
+    # module.{num_key_value_groups,layer_idx}, so it patches Llama's
+    # eager_attention_forward identically to Qwen3 (both loaded eager by
+    # loader.make_*_sc). WITHOUT patching Llama here, Llama attention runs the
+    # eval-side SC patch with use_sc_attn=False (FP, no recording) → qk/av are
+    # never calibrated → the MP table has no qk/av thresholds → eval crashes at
+    # the first attention layer. Patch every importable family exposing the fn.
+    _mods = (modeling_qwen3, modeling_qwen3_moe, modeling_llama)
+    targets = [m for m in _mods
+               if m is not None and hasattr(m, "eager_attention_forward")]
+    if not targets:
+        raise RuntimeError(
+            "no eager_attention_forward to patch among qwen3/qwen3_moe/llama "
+            "(transformers version mismatch?).")
     originals = [(m, m.eager_attention_forward) for m in targets]
 
     from model.sc_common import _repeat_kv as repeat_kv
@@ -1396,6 +1463,77 @@ def _measure_group_sensitivity(
     return weights, L0
 
 
+def _measure_group_curve(
+    model, enc, levels, total_blocks, layer_buckets, operators,
+    n_windows, ctx, device,
+):
+    """measured_curve: per-group per-LEVEL ΔLoss CURVE (leave-one-out from max).
+
+    Reference L0 = every group at the HIGHEST level. For each (operator,
+    layer-bucket) group and each candidate level ℓ, re-run with ONLY that group
+    knocked to ℓ (all else at max) and record ΔL(g, ℓ) = L_gℓ − L0. ΔL(g, max)=0
+    by construction, so each group gets a monotone loss-vs-precision curve.
+
+    Unlike ``_measure_group_sensitivity`` (ONE scalar W_g per group used to
+    reweight recon-error), this is the TRUE loss curve, so the global solve can
+    allocate by  min Σ ΔLoss + λ·budget  directly — no recon-error factor to
+    blind it to qk. ~|ops|·layer_buckets·(|levels|−1) + 1 SC forwards.
+    Returns {(operator, l_bucket): [ΔL per level, in ``levels`` order]}, L0.
+    """
+    ops = [o for o in _ALL_SC_OPS if o in operators]
+    cfg = model.config
+    prev = {k: getattr(cfg, k, None) for k in (
+        "use_sc_linear", "use_sc_attn", "sc_ste_grad", "sc_mp_config",
+        "sc_stoc_len", "sc_group_stoclen")}
+    cfg.use_sc_linear = True
+    cfg.use_sc_attn = True
+    cfg.sc_ste_grad = False
+    cfg.sc_mp_config = None
+    top = int(max(levels))
+    cfg.sc_stoc_len = top
+
+    def bucket(b):
+        return _bucket_index(b, total_blocks, layer_buckets)
+
+    base_map = {(op, b): top for op in ops for b in range(total_blocks)}
+    windows = list(_iter_calib_windows(enc, ctx, n_windows))
+
+    def mean_loss(gmap):
+        cfg.sc_group_stoclen = gmap
+        tot, n = 0.0, 0
+        with torch.no_grad():
+            for w in windows:
+                ids = w.unsqueeze(0).to(device)
+                tot += float(model(input_ids=ids, labels=ids).loss)
+                n += 1
+        return tot / max(n, 1)
+
+    L0 = mean_loss(base_map)
+    print(f"[curve] baseline L0={L0:.5f} (all groups at max sl={top}, "
+          f"{len(windows)} windows × {ctx} ctx)")
+    curves = {}
+    for op in ops:
+        for lb in range(layer_buckets):
+            blks = [b for b in range(total_blocks) if bucket(b) == lb]
+            if not blks:
+                continue
+            row = []
+            for lv in levels:
+                if int(lv) >= top:
+                    row.append(0.0)
+                    continue
+                gmap = dict(base_map)
+                for b in blks:
+                    gmap[(op, b)] = int(lv)
+                row.append(float(mean_loss(gmap) - L0))
+            curves[(op, lb)] = row
+            print(f"[curve] {op:9s} bucket{lb}: "
+                  f"ΔL={['%+.4f' % x for x in row]} blocks={len(blks)}")
+    for k, v in prev.items():
+        setattr(cfg, k, v)
+    return curves, L0
+
+
 def _normalize_group_weights(raw: dict, floor_frac: float = 0.1) -> dict:
     """Floor ΔL at a small positive fraction of the mean (so no group is fully
     starved by measurement noise / negative ΔL), then normalize to mean 1 so the
@@ -1520,9 +1658,16 @@ def _build_parser():
                         "1/κ,κ)−1). eps=0 → act_global byte-identical.")
     p.add_argument("--fisher-kappa", dest="fisher_kappa", type=float, default=2.0,
                    help="FisherMP per-group weight clip [1/κ, κ] so no bounded "
-                        "weight can starve a group (attention is protected anyway).")
+                        "weight can starve a group (the primary anti-starvation "
+                        "guardrail once attention is weighted).")
+    p.add_argument("--fisher-attn", dest="fisher_attn", action="store_true",
+                   help="FisherMP: also weight qk and av by their GN ‖y‖²‖g‖², "
+                        "removing the W_g=1 attention protection. qk and av are "
+                        "each normalized in their OWN pool (never a shared "
+                        "attention weight). Off (default) = linear-only, "
+                        "byte-identical to shipped fisher.")
     p.add_argument("--cross-layer-weight", dest="cross_layer_weight",
-                   choices=["uniform", "measured", "measured_marg", "grad_group", "fisher"],
+                   choices=["uniform", "measured", "measured_marg", "grad_group", "fisher", "measured_curve"],
                    default="uniform",
                    help="Per-group importance weight W_g for --budget-scope "
                         "global. 'uniform' (default): W_g=1 (act_global). "
@@ -1570,6 +1715,17 @@ def _build_parser():
                    help="Number of windows for each measured-probe forward. Default 2.")
     p.add_argument("--measure-ctx", dest="measure_ctx", type=int, default=512,
                    help="ctx_len for the measured-probe forwards. Default 512.")
+    p.add_argument("--budget-weight", dest="budget_weight",
+                   choices=["rows", "macs"], default="rows",
+                   help="Budget cost weighting. 'rows' (default): row-serial "
+                        "latency Σ R_g·L_g — FLOP-heavy linears are cheap (few "
+                        "rows), so 'iso-budget' is NOT iso-compute and act_global "
+                        "starves high-σ qk. 'macs': FLOP/energy Σ MAC_g·L_g — "
+                        "iso-budget = iso-compute (linears expensive, attention "
+                        "cheap). Needs --mac-weights-trace for per-op MACs/row.")
+    p.add_argument("--mac-weights-trace", dest="mac_weights_trace", default=None,
+                   help="scmp trace JSON (summary) whose per-op rows+macs give "
+                        "macs_per_row[op] for --budget-weight macs.")
     p.add_argument("--output_json", required=True)
     p.add_argument("--output_summary_csv", default=None,
                    help="Defaults to <output_json without .json>_summary.csv.")
@@ -1665,7 +1821,7 @@ def main():
         budget_scope = "global"          # residual-fill only defined for the global solve
         print("[calib] --refine sigma forces --budget-scope global (the residual "
               "budget fill operates on the cross-layer global allocation).")
-    if cross_layer_weight in ("measured", "measured_marg"):
+    if cross_layer_weight in ("measured", "measured_marg", "measured_curve"):
         budget_scope = "global"          # measured weights only make sense globally
         if grad_weight:
             grad_weight = False          # measured uses act objective within groups
@@ -1688,7 +1844,9 @@ def main():
         grad_as_group_weight = False     # FisherMP has its own accumulation
         print("[calib] --cross-layer-weight fisher (FisherMP): per-group W_g = "
               "1+ε·(clip(mean‖y‖²‖g‖²)−1), reparam-invariant Gauss-Newton "
-              "(linear ops; attention W_g=1). act σ quantile WITHIN group.")
+              "(linear ops%s). act σ quantile WITHIN group." %
+              (" + qk/av per-class" if getattr(args, "fisher_attn", False)
+               else "; attention W_g=1"))
     ref_sl = args.budget_ref_stoc_len or max(levels)
     measure_baseline_sl = int(args.measure_baseline_stoclen) or max(
         1, int(round(args.budget_ratio * ref_sl)))
@@ -1814,7 +1972,23 @@ def main():
     )
     calibrator.calib_smoothquant = calib_smoothquant
     calibrator.fisher_group = (cross_layer_weight == "fisher")
+    calibrator.fisher_attn = bool(getattr(args, "fisher_attn", False)) and \
+        (cross_layer_weight == "fisher")
     calibrator.objective = args.objective
+    # Budget weighting: rows (latency, default) or MACs (FLOP/energy → iso-compute).
+    calibrator.budget_weight = args.budget_weight
+    if args.budget_weight == "macs":
+        if not args.mac_weights_trace:
+            raise SystemExit("[calib] --budget-weight macs requires "
+                             "--mac-weights-trace <scmp trace json>.")
+        _tr = json.load(open(args.mac_weights_trace))
+        _r, _m = defaultdict(float), defaultdict(float)
+        for g in _tr["groups"]:
+            _r[g["op"]] += g["rows"]; _m[g["op"]] += g["macs"]
+        calibrator.mac_per_row = {op: _m[op] / _r[op] for op in _m if _r[op] > 0}
+        print("[calib] budget-weight=MACS (iso-compute). macs/row: "
+              + ", ".join(f"{op}={calibrator.mac_per_row[op]:.2e}"
+                          for op in sorted(calibrator.mac_per_row)))
     merger = PendingMerger(calibrator)
 
     hooks = []
@@ -1914,21 +2088,58 @@ def main():
 
     elif cross_layer_weight == "fisher":
         raw_w = calibrator.fisher_group_raw_weights()
-        norm_w = _normalize_group_weights(raw_w, floor_frac=args.measure_floor_frac)
         eps, kappa = float(args.fisher_eps), float(args.fisher_kappa)
+        # Normalize WITHIN each operator class so the linear pool, qk, and av each
+        # get their OWN mean-1 scale before the bounded blend. qk/av GN magnitudes
+        # (softmax scores / attention outputs) sit at very different scales than
+        # linear-projection outputs; a single shared pool + κ clip would saturate
+        # every attention group to κ and every linear to 1/κ (a degenerate 2-vs-0.5
+        # split). Per-class keeps W_g a WITHIN-operator cross-layer reweight and
+        # leaves cross-operator budget balance to the σ + rep_g global-λ solve.
+        # With --fisher-attn OFF, raw_w has no qk/av keys → those pools are empty →
+        # byte-identical to the shipped linear-only fisher.
+        def _pool(pred):
+            sub = {k: v for k, v in raw_w.items() if pred(k[0])}
+            return (_normalize_group_weights(sub, floor_frac=args.measure_floor_frac)
+                    if sub else {})
+        norm_w = {}
+        norm_w.update(_pool(lambda op: op in LINEAR_OPS))
+        norm_w.update(_pool(lambda op: op == "qk"))   # own pool
+        norm_w.update(_pool(lambda op: op == "av"))   # own pool
         # Bounded blend around 1 so budget interpretation holds and no group is
-        # starved: W_g = 1 + eps·(clip(Ŵ_g_norm, 1/κ, κ) − 1). Attention groups
-        # are absent from raw_w → default W_g=1 (protected).
+        # starved: W_g = 1 + eps·(clip(Ŵ_g_norm, 1/κ, κ) − 1).
         blended = {k: 1.0 + eps * (min(max(v, 1.0 / kappa), kappa) - 1.0)
                    for k, v in norm_w.items()}
         calibrator.group_weights = blended
-        print(f"[calib] fisher: built {len(blended)} linear W_g "
-              f"(eps={eps}, kappa={kappa}); attention W_g=1.")
+        n_attn = sum(1 for (op, _lb) in blended if op in ATTN_OPS)
+        print(f"[calib] fisher: built {len(blended)} W_g ({n_attn} attention) "
+              f"(eps={eps}, kappa={kappa}, fisher_attn={calibrator.fisher_attn}).")
         measured_info = {
             "source": "fisher", "fisher_eps": eps, "fisher_kappa": kappa,
+            "fisher_attn": bool(calibrator.fisher_attn),
             "floor_frac": args.measure_floor_frac,
             "raw_group_fisher": {f"{op}:l{lb}": float(v) for (op, lb), v in raw_w.items()},
             "blended_weights": {f"{op}:l{lb}": float(v) for (op, lb), v in blended.items()},
+        }
+
+    elif cross_layer_weight == "measured_curve":
+        print("[calib] measuring per-group per-level ΔLoss CURVE (measured_curve): "
+              f"reference = all groups at max sl={max(levels)}, "
+              f"{args.measure_windows} windows × {args.measure_ctx} ctx...")
+        curves, L0 = _measure_group_curve(
+            model, enc, levels, total_blocks, args.layer_buckets, operators,
+            n_windows=args.measure_windows, ctx=args.measure_ctx, device=device,
+        )
+        n_over = calibrator.apply_measured_curve(curves)
+        print(f"[calib] measured_curve: overrode {n_over} group error curves with "
+              "true per-level ΔLoss → allocation = min Σ ΔLoss + λ·budget "
+              "(per-group uniform, no recon-error factor).")
+        measured_info = {
+            "source": "measured_curve",
+            "baseline_loss": L0,
+            "reference": f"all_max_sl={max(levels)}",
+            "delta_loss_curve": {f"{op}:l{lb}": [float(x) for x in c]
+                                 for (op, lb), c in curves.items()},
         }
 
     # Metric-fidelity diagnostic: does the dispatch metric rank rows by their
@@ -1976,6 +2187,8 @@ def main():
         method = "grad_group_xlayer"
     elif cross_layer_weight == "fisher":
         method = "fisher_xlayer"
+    elif cross_layer_weight == "measured_curve":
+        method = "measured_curve"
     elif grad_on_sc:
         method = "grad_sc_global" if budget_scope == "global" else "grad_sc"
     elif grad_weight:
@@ -1984,6 +2197,8 @@ def main():
         method = "act_global" if budget_scope == "global" else "act"
     if args.refine_mode == "sigma":
         method = method + "_refine"
+    if args.budget_weight == "macs":
+        method = method + "_fw"          # FLOP/energy-weighted (iso-compute) budget
     if calib_smoothquant:
         method = method + "_sq"
         payload["calib_smoothquant"] = True
@@ -1991,6 +2206,16 @@ def main():
         method = method + "_s2"
         payload["objective"] = "sigma2"
     payload["method"] = method
+    # Preserve the EXACT settings so every table is self-documenting: reusable
+    # (MP_CONFIG_JSON=<wrapper>, no recalibration) AND reproducible (re-run
+    # calib_command to regenerate byte-identically). Grep the table or the
+    # launcher MANIFEST for these fields — nothing has to be re-derived.
+    payload["calib_command"] = " ".join(sys.argv)
+    payload["mp_levels"] = args.mp_levels
+    payload["seed"] = int(args.seed)
+    payload["budget_weight"] = args.budget_weight
+    if args.budget_weight == "macs":
+        payload["mac_per_row"] = calibrator.mac_per_row
 
     out_json = Path(args.output_json)
     out_json.parent.mkdir(parents=True, exist_ok=True)

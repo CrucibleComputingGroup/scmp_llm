@@ -1,11 +1,15 @@
 # scmp_llm — reproduction guide
 
 > ═══════════════════════════════════════════════════════════════════════════
-> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-03
+> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-05
 >
-> **Read this block first.** The reproduction guide below is accurate on
-> mechanics but its *Findings* tables (§"Mixed-precision (MP) calibration") are
-> **pre-Jul-2 kernel-confounded numbers** — see "What's citable" below.
+> **Read this block first.** BIG RESULT 2026-07-05: the MP budget was **ROW-weighted
+> (a bug)**. Fixing it to **MAC/FLOP-weighted** (`--budget-weight macs`) makes
+> iso-compute MP **beat uniform EVERYWHERE** and makes simple `act_global` ≈
+> `measured`. Every lower §*Findings* / root-cause section that ranks `measured ≫
+> act_global`, ships row-weighted `act_global` config C, or reports MP *losing* on
+> llama8B is a **SUPERSEDED row-weighted artifact** — see "Status of the algorithm"
+> below. (The pre-Jul-2 kernel-confound caveat on those tables still also applies.)
 >
 > ### What we're doing (the thesis)
 > Argue that **stochastic computing (SC) enables finer-grained mixed precision
@@ -18,21 +22,70 @@
 >   1. **"MP beats uniform @ iso budget"** — partially tested (see gaps).
 >   2. **"SC is finer-grained than fixed-point"** — **NO experiment yet.**
 >
-> ### Status of the algorithm (STABLE — this is the method we ship)
+> ### Units convention — DISCUSS BUDGETS IN NOMINAL (before-halving) CYCLES
+> `halve_bipolar_stoc_len=1` runs bipolar streams at HALF the nominal length
+> (uSystolic/HUB sign-magnitude trick, no accuracy loss), so every budget has two
+> numbers that differ by 2×: **nominal** (before halving = the config name = the
+> 2^prec "int-N" stream / the `avgN` name) and **halved** (after halving = the
+> actual kernel cycle count). **Convention: in conversation, notes, plots, and the
+> paper we quote the NOMINAL number** (it matches the config names + the E(stoc_len)
+> energy/compute-budget story). CODE ARTIFACTS STAY HALVED — `--mp_levels`,
+> `--budget_ref_stoc_len`, `stoc_len` in JSON tables, `trace.py`, and the
+> `cycles`/`realized_avg_sl` columns in `hpca_results/*.csv` are all halved.
+> Convert with `nominal = 2 × halved`.
+>
+> | config | nominal (TALK IN THIS) | halved (code/CSV/JSON) |
+> |---|---|---|
+> | int8   | 256 | 128 |
+> | avg192 | 192 | 96  |
+> | int7   | 128 | 64  |
+> | avg96  | 96  | 48  |
+> | int6   | 64  | 32  |
+>
+> So "run MP at 128 and 96" (nominal) = the int7 and avg96 budgets = halved 64/48.
+> The `hpca_results/mp/` cells (halved `budget`/`realized_avg_sl` ≈ 96) are the
+> **nominal-192 (avg192)** budget — the mildest MP point; the untested aggressive
+> budgets are **nominal 128 and 96**.
+>
+> ### Status of the algorithm — iso-FLOP (MAC-weighted budget) is the fix
 > Per-row stream-length MP. Offline calibration (FP teacher over a few wikitext2
-> windows) measures each row's activation metric `|x|.amax(-1)` and per-level SC
-> reconstruction error σ; a **cross-layer Lagrangian** (one shared λ over all 36
-> = 9-operator × 4-layer-bucket groups, costs priced by true row counts `rep_g`)
-> picks each row's level; counts → metric thresholds → JSON table → runtime
-> per-row dispatch (`model/sc_common.py`). **Ship `act_global` (recon-error σ,
-> global budget) under config C (global metric-normalization on BOTH calibration
-> and runtime sides).** Method ranking (4B int7, config C): **act_global 15.49 <
-> measured 17.96 < measured_marg 24.90 << grad_group 639**. Root cause of the
-> losers = whole-group *attention starvation* sub-cliff (attention = ~90% of
-> runtime rows); gradient has a post-softmax scale artifact, marg is probe-noise
-> dominated (ICC 0.46). Full story: `arch_impl/ROOT_CAUSE_abc_configs.md`.
-> Configs A (per-head runtime norm — old, has a rescue artifact), B (per-head
-> both sides — scale-blind), C (global both sides — **current code**, shipped).
+> windows) measures each row's activation metric `|x|.amax(-1)` + per-level SC
+> reconstruction error σ; a cross-layer Lagrangian (one shared λ over 9-op × 4-layer
+> groups) picks each row's level; counts → metric thresholds → JSON table → runtime
+> per-row dispatch (`model/sc_common.py`).
+>
+> **ROOT-CAUSE FIX (2026-07-05): the budget must be FLOP-weighted, not row-weighted.**
+> `_global_lambda` priced cost as `Σ R_g·L_g` (rows). But attention (av+qk) is ~90%
+> of ROWS yet only ~7-14% of FLOPs (MACs/row varies ~100-290× av-vs-linear). The
+> row-budget therefore (a) made "iso-budget" NOT iso-compute (act_global@row-64 =
+> FLOP-118 ≈ 1.85× uniform's compute) and (b) STARVED qk despite qk having the
+> HIGHEST σ (0.58 vs linears 0.08-0.23) — its 90%-of-rows made it "expensive".
+> FIX: `--budget-weight macs --mac-weights-trace <sc_int7 trace>` prices cost by
+> MACs (per-op MACs/row read from a trace) → iso-budget = iso-compute (linears
+> expensive, attention cheap). Table `method` gets a `_fw` tag. Row-avg and FLOP-avg
+> now swap roles: a FLOP-64 allocation reads row-avg ≈ 116 in `realized_avg_sl`.
+>
+> **iso-FLOP results** (`hpca_results/llm/mp/fw_summary.tsv`; PPL vs uniform at
+> matched FLOP-avg 64=int7 / 48=len96; fp16 4B=10.04, llama8B=7.21):
+>
+> | model | budget | act_global | measured | measured_curve | uniform | best vs uni |
+> |---|---|---|---|---|---|---|
+> | 4B      | int7  | 12.77 | 12.82  | 12.63 | 16.94 | −25% |
+> | 4B      | len96 | **20.14** | 21.60 | 20.64 | 33.13 | −39% |
+> | llama8B | int7  | 8.42  | 8.31\* | 8.51  | 9.24  | −10% |
+> | llama8B | len96 | 9.97  | 9.80\* | 10.31 | 11.64 | −16% |
+>
+> **Conclusions:** (1) iso-compute MP beats uniform EVERYWHERE (−8 to −39%), incl.
+> "robust" llama8B that *lost* under row-weighting → the model-dependent-loss story
+> was a budget artifact. (2) Simple `act_global` (recon-σ) ≈ `measured` /
+> `measured_curve` at true iso-FLOP → the expensive ΔLoss probing was only
+> compensating for the budget bug; **unnecessary under a correct budget. SHIP
+> `act_global --budget-weight macs`.** (3) \*`measured` OVERSPENDS the FLOP budget
+> (llama8B FLOP-avg 74/54 vs 64/48) so its llama8B "edge" is non-iso-FLOP — fix its
+> budget realization before trusting. Every method improved 15-30% from the fix.
+> Harness: `benchmark/ppl/overnight_mp.{sh,sbatch}`; index `fw_manifest.tsv`
+> (grep → wrapper for reuse, `calib_command` for repro). `measured_curve` = allocate
+> by a probed per-level ΔLoss CURVE (not W_g×σ); competitive but not needed.
 >
 > ### ONE PPL protocol (arch_impl `ppl.py` REMOVED 2026-07-04)
 > Everything — INT baselines, SC uniform, AND per-row MP — now runs through the
@@ -50,16 +103,16 @@
 > `calibrate_mp_thresholds.py` (now `--ctx_len 2048` to match deploy).
 >
 > ### Experiments so far
-> **CLEAN (post-Jul-2 kernel, config C, arch_impl protocol) — only 6 cells** in
-> `benchmark/ppl/_mp_overnight_m1fix_global/`:
-> - 4B int7: act_global **15.49**@63.2 / measured 17.96 / marg 24.90 / grad_group 639.3 (fp16 11.27)
-> - 32B int7: act_global **10.41**@64.6 / marg 10.81 (fp16 8.71)
+> **CURRENT (2026-07-05, iso-FLOP / MAC-weighted, HPCA protocol) — the citable MP
+> result:** `hpca_results/llm/mp/fw_summary.tsv` — 4B + llama8B × {int7,len96} ×
+> {act_global, measured, measured_curve, fisher}, ALL beating uniform (table above).
+> 14B/1.7B breadth was in flight when this session ended (partial in `fw_results.tsv`).
 >
-> **CONFOUNDED but ranking-consistent** (Jun 2–4, pre-kernel-edit; M=256 before
-> 06-03): the full 4B/8B/14B × int7/len96/len192 × {act,act_global,grad_global,
-> measured} matrix in `_mp_overnight_full_bitrev_qkfix/`, plus 30B/32B in
-> `_mp_overnight_xlayer_fix/`. Pattern: act_global ≥ act in 8/9 cells, gradient
-> always worst. Absolute PPLs NOT citable. (These are the §Findings tables below.)
+> **SUPERSEDED (row-weighted budget — do NOT cite):** every `_mp_overnight_*`
+> arch_impl run — the 4B int7 act_global 15.49 / measured 17.96 numbers, the full
+> Jun 2–4 matrix, the §Findings tables below — used the row-weighted budget bug.
+> Their RANKINGS (measured ≫ act_global; MP loses on llama8B) are ARTIFACTS; the
+> iso-FLOP result inverts them (act_global ≈ measured; MP wins everywhere).
 >
 > **HPCA baselines (Turbo `/nfs/turbo/coe-nbleier/allenjin/hpca/results/`):**
 > - INT: `results_bitmod_protocol.tsv` (Jul 3 18:12, DONE) — fp16→W4A4, all 4
@@ -438,6 +491,14 @@ From `check_gen.py` with `NEW_TOKENS=64`:
 MSE alone is misleading: MSE 2.4 at `stoc_len=48` looks comparable to MSE 2.8 at `stoc_len=32`, but autoregressive feedback turns the former from one-bad-token-recoverable into total collapse.
 
 ## Mixed-precision (MP) calibration — per-token-row SC stream length
+
+> **⚠ BUDGET FIX 2026-07-05 — read the ⚑ STATUS block first.** The mechanics below
+> (per-row dispatch, calibrator flags, pipeline) are current, but the budget was
+> **row-weighted** (`Σ R_g·L_g`) which is NOT iso-compute. Always pass
+> **`--budget-weight macs --mac-weights-trace <sc_int7 trace>`** (FLOP/energy budget,
+> iso-compute). The **§Findings (iso-budget…)** and **§Why measured/gradient lose**
+> subsections below are **SUPERSEDED row-weighted artifacts** — under the MAC budget
+> `act_global ≈ measured` and MP beats uniform everywhere; ignore their rankings.
 
 Instead of one global `stoc_len`, MP assigns each **token row** (for linears /
 softmax·V) or **query row** (for Q·Kᵀ) its own `stoc_len` from a small set of
