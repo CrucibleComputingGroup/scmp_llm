@@ -296,6 +296,21 @@ fallback. Don't rename it back.
 Tested on Great Lakes node `gl1802` (NVIDIA RTX PRO 6000 Blackwell, 98 GB).
 Conda env name in our setup: `annstention`.
 
+Great Lakes launch rule for GPU experiments: prefer Slurm `nohup srun ... bash -lc
+'source ~/.bashrc; conda activate annstention; cd /home/allenjin/Projects/scmp_llm;
+...' > log 2>&1 &` from the login node. Do not default to SSH/tmux on a compute
+node unless a job allocation is already known and the user explicitly wants that
+style. From Codex's managed shell, background `nohup ... &` children may be
+reaped before they open stdout; use `sbatch` with the same resource request for
+persistent launches. The working reservation/partition pattern is:
+
+```bash
+nohup srun --account=nbleier_owned1 --reservation=rtx6000_arph_nodes \
+  --partition=gpu-rtx6000 --gres=gpu:1 --cpus-per-task=12 --mem=120G \
+  --time=40:00 bash -lc 'source ~/.bashrc; conda activate annstention; cd ...;
+  python -u ...' > /scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/<run>.out 2>&1 &
+```
+
 ```bash
 conda create -n annstention python=3.10 -y
 conda activate annstention

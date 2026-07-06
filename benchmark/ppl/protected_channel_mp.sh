@@ -40,7 +40,7 @@ append_result(){
 }
 
 append_manifest(){  # method frac comp ppl exp flop wrapper table
-  python3 - "$MODEL" "len96_burst" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$MANIFEST" <<'PYEOF'
+  python3 - "$MODEL" "len96_burst" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$MANIFEST" <<'PYEOF'
 import json, sys, fcntl
 model, budget, method, frac, comp, ppl, exp, flop, wrapper, table, manifest = sys.argv[1:12]
 d = json.load(open(table))
