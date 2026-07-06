@@ -8,6 +8,11 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$HERE"
 
 NGPU="${NGPU:-${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L 2>/dev/null | wc -l)}}"; NGPU="${NGPU:-1}"; [[ "$NGPU" -lt 1 ]] && NGPU=1
+# CALIB_SQ=1 (default): calibrate σ under the SAME SmoothQuant transform the
+# eval deploys (α from SQ_ALPHA, scales from ACT_SCALES_DIR) — fixes the
+# calib/deploy mismatch (open issue #5). Set CALIB_SQ=0 for the legacy
+# unsmoothed calibration (only for reproducing pre-2026-07-05 fw_* tables).
+CALIB_SQ="${CALIB_SQ:-1}"
 PPL_MAX_TOKENS="${PPL_MAX_TOKENS:-0}"        # 0 = full wikitext-2 (comparable to baselines)
 CTX="${CTX:-2048}"; SQ_ALPHA="${SQ_ALPHA:-0.5}"
 SC_OWEN_MODE="${SC_OWEN_MODE:-bitrev}"; SC_SCRAMBLE_MASKS="${SC_SCRAMBLE_MASKS:-64}"
@@ -74,6 +79,11 @@ run_cell(){  # <gpu> <model> <budget> <method>
   local sm; sm="$(safe "$hf")"; local tag="${model}__${budget}__${method}"
   local log="$LOGDIR/${tag}.log"
   grep -qP "^${model}\t${budget}\t${method}\t.*\tOK$" "$RESULTS" 2>/dev/null && { echo "[skip] $tag done"; return; }
+  # Cross-node cell lock (mkdir is atomic on NFS): lets multiple sbatch workers
+  # share one RESULTS file without duplicating in-flight cells. Held only while
+  # the cell runs; done-ness is governed by the RESULTS grep above.
+  local lockdir="$TABLES/.lock_${tag}"
+  if ! mkdir "$lockdir" 2>/dev/null; then echo "[skip] $tag in flight elsewhere ($lockdir)"; return; fi
   local lv; lv="$(budget_levels "$budget")"; local levels="${lv% *}" ratio="${lv#* }"
   local mflags; mflags="$(method_flags "$method")"
   local table="$TABLES/${sm}__${budget}__${method}.json"
@@ -90,12 +100,15 @@ run_cell(){  # <gpu> <model> <budget> <method>
   echo "[gpu$gpu] >>> $tag  levels=$levels ratio=$ratio $(date +%H:%M)"
   {
     echo "=== CELL $tag gpu=$gpu $(date) ==="; echo "levels=$levels ratio=$ratio flags=[$mflags]"
+    local sqflag=""
+    [[ "$CALIB_SQ" == "1" ]] && sqflag="--calib-smoothquant"
     if [[ ! -s "$table" ]]; then
       env CUDA_VISIBLE_DEVICES="$gpu" $ckpt SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" \
+        SQ_ALPHA="$SQ_ALPHA" \
         timeout "$CELL_TIMEOUT" python -u benchmark/ppl/calibrate_mp_thresholds.py \
           --model_path "$hf" --mp_levels "$levels" --budget_ratio "$ratio" \
           --budget_ref_stoc_len 128 --sc_prec 8 --halve 1 --ctx_len "$CTX" \
-          $mflags $budgetflags --output_json "$table" || echo "CALIB_RC=$?"
+          $mflags $budgetflags $sqflag --output_json "$table" || echo "CALIB_RC=$?"
     else echo "[calib] reuse $table"; fi
     if [[ ! -s "$table" ]]; then echo "=== $tag CALIB FAILED ==="; exit 21; fi
     python -c "import json;json.dump({'type':'AdaptiveMPConfig','stoc_len_levels':[int(x) for x in '$levels'.split(',')],'threshold_table_path':'$table'},open('$wrapper','w'))"
@@ -111,13 +124,15 @@ run_cell(){  # <gpu> <model> <budget> <method>
   if [[ -n "$ppl" ]]; then append "$model" "$budget" "$method" "${avg:--}" "$ppl" "OK"; manifest_append "$model" "$budget" "$method" "$ppl" "${avg:--}" "$table" "$wrapper"; echo "[gpu$gpu] [done] $tag ppl=$ppl avg=${avg:--}"
   elif [[ ! -s "$table" ]]; then append "$model" "$budget" "$method" "-" "-" "CALIB_FAILED"; echo "[gpu$gpu] [FAIL] $tag calib"
   else append "$model" "$budget" "$method" "${avg:--}" "-" "EVAL_FAILED"; echo "[gpu$gpu] [FAIL] $tag eval (see $log)"; fi
+  rmdir "$lockdir" 2>/dev/null
 }
 
 # ---------- build priority-ordered queue ----------
 QUEUE="$LOGDIR/queue.txt"; : > "$QUEUE"
 add(){ echo "$1 $2 $3" >> "$QUEUE"; }
 if [[ "${SMOKE:-0}" == "1" ]]; then
-  add 4B int7 act_global
+  IFS=, read -ra _SM <<<"${SMOKE_METHODS:-act_global}"
+  for w in "${_SM[@]}"; do add 4B int7 "$w"; done
 else
   # Tier 0 — THE key comparison at int7, iso-compute (FLOP-weighted budget):
   #   does act_global RECOVER now that qk is cheap? is measured/measured_curve
@@ -131,6 +146,10 @@ else
   for b in int7 len96; do for w in act_global measured measured_curve; do add 1.7B $b $w; done; done
   # Tier 3 — 30B tail (forward-only methods, OOM-safe)
   add 30B int7 act_global; add 30B int7 measured_curve
+fi
+# MODELS=14B,30B restricts the queue to those models (any other cell dropped).
+if [[ -n "${MODELS:-}" ]]; then
+  awk -v allow=",${MODELS}," 'index(allow, ","$1",")' "$QUEUE" > "$QUEUE.f" && mv "$QUEUE.f" "$QUEUE"
 fi
 
 pop(){ exec 8>"$QUEUE.lock"; flock 8; local l; l=$(head -n1 "$QUEUE"); [[ -n "$l" ]] && sed -i '1d' "$QUEUE"; flock -u 8; echo "$l"; }

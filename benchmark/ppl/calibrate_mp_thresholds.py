@@ -569,6 +569,7 @@ class ThresholdCalibrator:
         Must be called AFTER the σ-collection (records populated) and BEFORE
         export()."""
         self.group_weights = {}          # ΔLoss is IN the errors now → no W_g tilt
+        self._curve_applied = True       # enables the residual fill in export()
         L = len(self.levels)
         n_over = 0
         for key, rec in self.records.items():
@@ -676,9 +677,15 @@ class ThresholdCalibrator:
                 werrs, self.costs, self.budget_ratio,
                 float(self.budget_ref_stoc_len), row_counts)
             payload["global_lambda"] = float(global_lam)
-            if self.refine_mode == "sigma":
+            if self.refine_mode == "sigma" or getattr(self, "_curve_applied", False):
+                # measured_curve: the per-group-constant ΔLoss curve makes the
+                # cost landscape coarsely discrete, so the feasible-side λ
+                # bisection leaves budget slack (measured 2.7–7% under target)
+                # that nothing refilled — the residual greedy fill (MAC-priced
+                # via rep_g) closes it so measured_curve is honestly iso-budget.
                 self._refined_assignments = self._refine_residual_fill(global_lam)
-                payload["refine_mode"] = "sigma"
+                payload["refine_mode"] = ("sigma" if self.refine_mode == "sigma"
+                                          else "curve_residual_fill")
                 payload["refine_stats"] = self.refine_stats
         return self._export_body(payload, summary_rows, global_lam)
 
@@ -856,6 +863,25 @@ class ThresholdCalibrator:
             num += R * fitted["avg_stoc_len"]
             den += R
         payload["expected_avg_stoc_len"] = (num / den) if den else 0.0
+        # Budget-weighted expectation — under --budget-weight macs this is the
+        # TRUE iso-compute (FLOP-avg) check. Summaries must read THIS, not the
+        # operator_defaults fallback (whose mean-W_g fit is outside the joint
+        # budget and produced the phantom "measured overspends" numbers).
+        if self.budget_weight == "macs":
+            fnum = fden = 0.0
+            for bkey, fitted in payload["buckets"].items():
+                operator, _t, lpart = bkey.split(":")
+                l = int(lpart[1:])
+                Rw = float(self._weight_count((operator, 0, l),
+                                              fitted["num_units"]))
+                fnum += Rw * fitted["avg_stoc_len"]
+                fden += Rw
+            payload["expected_flop_avg_stoc_len"] = (fnum / fden) if fden else 0.0
+            # Per-op MACs/row (from --mac-weights-trace): lets the RUNTIME
+            # tracker accumulate a realized FLOP-avg so the transfer check can
+            # move to compute units (row-avg then demotes to a diagnostic).
+            payload["mac_per_row"] = {op: float(v)
+                                      for op, v in self.mac_per_row.items()}
         return payload, summary_rows
 
 
@@ -1882,11 +1908,39 @@ def main():
     # USE_SMOOTHQUANT env the eval already uses). No-op otherwise.
     calib_smoothquant = bool(args.calib_smoothquant or
                              os.environ.get("USE_SMOOTHQUANT", "") == "1")
+    sq_alpha = sq_path = None
     if calib_smoothquant:
-        from model.smoothquant_apply import apply_smoothquant_from_env
-        n_sq = apply_smoothquant_from_env(model)
+        # Self-sufficient: resolve the SAME act_scales file + alpha the eval
+        # applies (ACT_SCALES_DIR + SQ_ALPHA). The old delegation to
+        # apply_smoothquant_from_env silently attached to 0 modules unless the
+        # separate USE_SMOOTHQUANT/SMOOTHQUANT_SCALES env pair was ALSO set —
+        # i.e. --calib-smoothquant alone still calibrated unsmoothed.
+        from model.smoothquant_apply import apply_smoothquant_to_model
+        sq_path = os.environ.get("SMOOTHQUANT_SCALES")
+        if not sq_path:
+            _root = os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))
+            act_dir = os.environ.get(
+                "ACT_SCALES_DIR",
+                os.path.join(_root, "benchmark", "quant", "act_scales"))
+            sq_path = os.path.join(
+                act_dir,
+                "act_scales_" + args.model_path.replace("/", "_") + ".pt")
+        if not os.path.isfile(sq_path):
+            raise SystemExit(
+                f"--calib-smoothquant: act_scales file not found: {sq_path} "
+                "(set ACT_SCALES_DIR or SMOOTHQUANT_SCALES to the same scales "
+                "the eval applies)")
+        sq_alpha = float(os.environ.get(
+            "SQ_ALPHA", os.environ.get("SMOOTHQUANT_ALPHA", "0.5")))
+        _sq_scales = torch.load(sq_path, map_location="cpu", weights_only=True)
+        n_sq = apply_smoothquant_to_model(model, _sq_scales, alpha=sq_alpha)
+        if n_sq == 0:
+            raise SystemExit(
+                f"--calib-smoothquant: 0 SCLinear modules matched {sq_path} — "
+                "act_scales keys do not match this model's module names")
         print(f"[calib] #5 fix: SmoothQuant attached to {n_sq} SCLinear modules "
-              f"for the σ measurement (α={os.environ.get('SMOOTHQUANT_ALPHA','?')}).")
+              f"for the σ measurement (alpha={sq_alpha}, scales={sq_path}).")
     # SC must be wired (so SCLinear instances exist and _sc_op_name is tagged).
     # In the act / FP-grad paths the SC dispatch is DISABLED so forwards run in
     # FP teacher mode. In the STE g_SC path SCLinear runs with sc_ste_grad on:
@@ -2045,6 +2099,17 @@ def main():
     # calibrator.group_weights slot consumed by the global solve:
     #   measured / measured_marg → ΔLoss knock-down probe (extra SC forwards)
     #   grad_group               → per-group mean of g_row (already accumulated)
+    # Metric-fidelity diagnostic — computed BEFORE any W_g / curve override so
+    # every method stores the same, meaningful ρ (measured_curve used to replace
+    # the per-row errors with a per-group-constant curve first, which reduced
+    # its stored ρ to argsort tie-breaking noise).
+    rho = calibrator.metric_fidelity_rho()
+    print("[calib] metric-fidelity ρ(metric, σ-benefit) per op "
+          "(≈1 good; low/neg ⇒ metric misranks → headroom):")
+    for op in sorted(rho, key=lambda o: rho[o]["rho"] if rho[o]["rho"] == rho[o]["rho"] else 9):
+        d = rho[op]
+        print(f"    {op:<11} ρ={d['rho']:+.3f}  n={d['n']:>7}  σ-benefit_mean={d['benefit_mean']:.4f}")
+
     measured_info = None
     if cross_layer_weight in ("measured", "measured_marg"):
         is_marg = cross_layer_weight == "measured_marg"
@@ -2142,17 +2207,8 @@ def main():
                                  for (op, lb), c in curves.items()},
         }
 
-    # Metric-fidelity diagnostic: does the dispatch metric rank rows by their
-    # true need for cycles? Low ρ (esp. av/qk) ⇒ the METRIC is the near-lossless
-    # lever, not level/bucket granularity.
-    rho = calibrator.metric_fidelity_rho()
-    print("[calib] metric-fidelity ρ(metric, σ-benefit) per op "
-          "(≈1 good; low/neg ⇒ metric misranks → headroom):")
-    for op in sorted(rho, key=lambda o: rho[o]["rho"] if rho[o]["rho"] == rho[o]["rho"] else 9):
-        d = rho[op]
-        print(f"    {op:<11} ρ={d['rho']:+.3f}  n={d['n']:>7}  σ-benefit_mean={d['benefit_mean']:.4f}")
-
-    # Export.
+    # Export. (metric_fidelity_rho was computed pre-override, before the W_g
+    # chain above.)
     payload, summary_rows = calibrator.export()
     payload["metric_fidelity_rho"] = {op: rho[op]["rho"] for op in rho}
     payload["model_path"] = args.model_path
@@ -2202,6 +2258,8 @@ def main():
     if calib_smoothquant:
         method = method + "_sq"
         payload["calib_smoothquant"] = True
+        payload["calib_smoothquant_alpha"] = sq_alpha
+        payload["calib_smoothquant_scales"] = sq_path
     if args.objective == "sigma2":
         method = method + "_s2"
         payload["objective"] = "sigma2"

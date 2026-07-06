@@ -21,6 +21,7 @@ Env (PPL mode):
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -205,6 +206,20 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
         mp = getattr(cfg, "sc_mp_config", None)
         if mp is None:
             raise SystemExit(f"[sc] MP table did not load: {mp_table}")
+        # Feed the runtime tracker the table's per-op MACs/row so it can report
+        # the MAC-weighted (iso-compute) realized average alongside the row one.
+        # Observe-only; tables without mac_per_row just leave FLOP tracking off.
+        try:
+            _wr = json.load(open(mp_table))
+            _tbl_path = _wr.get("threshold_table_path") or mp_table
+            _mpr = json.load(open(_tbl_path)).get("mac_per_row") or {}
+            from model.sc_common import mp_tracker_set_mac_per_row
+            mp_tracker_set_mac_per_row(_mpr)
+            if _mpr:
+                print(f"[sc] MP tracker: mac_per_row loaded ({len(_mpr)} ops) — "
+                      "realized_flop_avg_sl will be reported")
+        except Exception as _e:  # never let diagnostics break the eval
+            print(f"[sc] MP tracker: mac_per_row unavailable ({_e})")
         levels = getattr(mp, "stoc_len_levels", "?")
         bname = mp_budget_name(levels)
         print(f"[sc] MP (per-row) config=mp_{bname} (nominal name; twin uniform "
@@ -331,15 +346,21 @@ def main():
     # stoc_len (mp_tracker) so PPL is quoted at the ACTUAL budget, not just the
     # calibration target — different metrics/allocations drift differently.
     try:
-        from model.sc_common import mp_tracker_reset, mp_tracker_avg_stoc_len
+        from model.sc_common import (mp_tracker_reset, mp_tracker_avg_stoc_len,
+                                     mp_tracker_flop_avg_stoc_len)
         mp_tracker_reset()
         _has_mptrack = True
     except Exception:
         _has_mptrack = False
     ppl, n, secs = compute_ppl(model, enc, ctx, stride)
     realized_sl = mp_tracker_avg_stoc_len() if _has_mptrack else 0.0
+    realized_flop_sl = mp_tracker_flop_avg_stoc_len() if _has_mptrack else 0.0
+    # realized_flop_avg_sl = MAC-weighted (iso-compute) — the budget's units;
+    # realized_avg_sl = row-weighted — threshold-transfer diagnostic only.
     print(f"[RESULT] model={model_path} config={tag} metric=ppl "
-          f"value={ppl:.4f} tokens={n} sec={secs:.1f} realized_avg_sl={realized_sl:.2f}")
+          f"value={ppl:.4f} tokens={n} sec={secs:.1f} "
+          f"realized_avg_sl={realized_sl:.2f} "
+          f"realized_flop_avg_sl={realized_flop_sl:.2f}")
     if sc_trace is not None and sc_trace._ENABLED:
         # Per-call SC precision/shape log -> energy/latency simulator input.
         # Join metadata mirrors benchmark/ppl/ppl.py so simulator tooling can

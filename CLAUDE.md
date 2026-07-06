@@ -1,7 +1,7 @@
 # scmp_llm — reproduction guide
 
 > ═══════════════════════════════════════════════════════════════════════════
-> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-05
+> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-06
 >
 > **Read this block first.** BIG RESULT 2026-07-05: the MP budget was **ROW-weighted
 > (a bug)**. Fixing it to **MAC/FLOP-weighted** (`--budget-weight macs`) makes
@@ -10,6 +10,42 @@
 > act_global`, ships row-weighted `act_global` config C, or reports MP *losing* on
 > llama8B is a **SUPERSEDED row-weighted artifact** — see "Status of the algorithm"
 > below. (The pre-Jul-2 kernel-confound caveat on those tables still also applies.)
+>
+> ### 2026-07-06 — PIPELINE v2: SQ-calibration fix (+3 more calibrator fixes)
+> **Model scope is now EXACTLY 4B / llama8B / 14B / 30B** (user decision; 1.7B+32B
+> dropped — do not spend cells on them). Four calibrator fixes landed:
+> 1. **`--calib-smoothquant` was itself broken** (silent no-op unless a separate
+>    `USE_SMOOTHQUANT`/`SMOOTHQUANT_SCALES` env pair was ALSO set): every fw_* table
+>    measured σ on UNSMOOTHED activations while eval deploys SQ α=0.5. Now
+>    self-sufficient (resolves the same `ACT_SCALES_DIR` file + `SQ_ALPHA` as eval,
+>    fails loudly on 0 matches) and **default-ON in overnight_mp.sh (`CALIB_SQ=1`)**.
+>    First smoke (4B int7 act_global_fw_sq, truncated 20k eval): PPL 11.06 vs 12.77
+>    unsmoothed — allocation shifts attention→~125 cyc, linears→~62; ρ under the
+>    deployed geometry drops for linears (down 0.375→−0.05, gate 0.34→−0.05) ⇒ amax
+>    metric even weaker than thought (dispatch-metric work = top lever).
+> 2. **"measured OVERSPENDS" RETRACTED — summarizer artifact.** fw_summary's old
+>    flop_avg_sl came from the never-exercised `operator_defaults` fallback (mean-W_g
+>    mispricing), not the deployed buckets. Deployed allocations: act_global/measured/
+>    fisher ALL exactly 64.00/48.00; eval drift ≤0.75%. **measured's llama8B edge
+>    (8.31 vs 8.42 int7; 9.80 vs 9.97 len96) is genuine iso-FLOP** — loss-aware W_g
+>    helps llama8B; act_global still ties/wins 4B. The REAL bug was **measured_curve
+>    UNDERSPENDING 2.7–7%** (feasible-side λ + coarse discrete cost) — fixed by the
+>    MAC-priced residual greedy fill (auto-enabled for the curve method; payload
+>    `refine_mode=curve_residual_fill`). measured_curve rows quarantined from fw_*.
+> 3. Calibrator now exports **`expected_flop_avg_stoc_len`** (the true iso-compute
+>    check; smoke: 63.9999) and **ρ is computed BEFORE the curve override** (old
+>    measured_curve ρ values were tie-breaking noise — ignore them).
+> 4. Summaries: `benchmark/ppl/fw_summarize.py` (buckets-sourced flop_avg, uniform
+>    twins, x_fp16) — fw_summary.tsv regenerated (12 iso-FLOP rows).
+> **Results namespaces:** `hpca_results/llm/mp/fw_*` = 2026-07-05 unsmoothed-calib run
+> (PPLs valid, superseded by...) → `sq_results.tsv`/`sq_manifest.tsv` + Turbo
+> `mp_calib_sq/` = the v2 (SQ-calibrated) sweep, in flight on 3 GPUs (gl1802 smoke +
+> gl1804 4B + gl1807 llama8B via nbleier0; owned 2-GPU backfill queued behind the
+> lab 10-GPU cap). Row-weighted-era files moved to `mp/_superseded_rowweighted/`;
+> under-budget measured_curve rows in `mp/_quarantine_underbudget/`.
+> Driver hardening: cross-node cell locks (`$TABLES/.lock_<tag>`), `MODELS=` filter,
+> `SMOKE_METHODS=`, sweep sbatch `benchmark/ppl/sbatch_mp_sq.sbatch` (gated on
+> `~/sq_smoke_passed`).
 >
 > ### What we're doing (the thesis)
 > Argue that **stochastic computing (SC) enables finer-grained mixed precision
@@ -79,10 +115,11 @@
 > "robust" llama8B that *lost* under row-weighting → the model-dependent-loss story
 > was a budget artifact. (2) Simple `act_global` (recon-σ) ≈ `measured` /
 > `measured_curve` at true iso-FLOP → the expensive ΔLoss probing was only
-> compensating for the budget bug; **unnecessary under a correct budget. SHIP
-> `act_global --budget-weight macs`.** (3) \*`measured` OVERSPENDS the FLOP budget
-> (llama8B FLOP-avg 74/54 vs 64/48) so its llama8B "edge" is non-iso-FLOP — fix its
-> budget realization before trusting. Every method improved 15-30% from the fix.
+> compensating for the budget bug on 4B; on llama8B `measured` keeps a real
+> −1.3/−1.7% edge (see the 2026-07-06 block). (3) ~~measured OVERSPENDS~~
+> **RETRACTED 2026-07-06** — the 74/54 numbers were a summarizer artifact
+> (operator_defaults, not the deployed buckets); all three methods are exactly
+> on budget. Every method improved 15-30% from the row→MAC budget fix.
 > Harness: `benchmark/ppl/overnight_mp.{sh,sbatch}`; index `fw_manifest.tsv`
 > (grep → wrapper for reuse, `calib_command` for repro). `measured_curve` = allocate
 > by a probed per-level ΔLoss CURVE (not W_g×σ); competitive but not needed.
@@ -181,8 +218,9 @@
 >    model, `scmp_kernels/trace.py`).
 > 4. **Extend clean config-C MP** to ≥3 models × ≥2 budgets (currently 2×1) and
 >    **replicate** act_global-C 2–3× (seed variance unknown).
-> 5. **Calibration runs WITHOUT SmoothQuant while eval applies α=0.5** — undocumented
->    train/deploy mismatch; run one control to validate or fix.
+> 5. ~~Calibration runs WITHOUT SmoothQuant while eval applies α=0.5~~ **FIXED
+>    2026-07-06** (`--calib-smoothquant` made self-sufficient + default-on; see the
+>    PIPELINE v2 block). Legacy unsmoothed tables = Turbo `mp_calib_fw/`.
 >
 > ### Live runs (as of 2026-07-03 ~19:15 ET — verify before trusting)
 > - gl1802 (job 52830052, 9d left): stream A = 14B sc_uniform — SAFE.

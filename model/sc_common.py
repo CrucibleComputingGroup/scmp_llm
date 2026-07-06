@@ -109,13 +109,29 @@ def _mp_tracker() -> dict:
     ``mp_tracker_snapshot()`` to read and reset between sweep runs.
     """
     if not hasattr(_mp_tracker, "_state"):
-        _mp_tracker._state = {"weighted_sl": 0.0, "rows": 0}
+        _mp_tracker._state = {"weighted_sl": 0.0, "rows": 0,
+                              "mac_sl": 0.0, "macs": 0.0}
     return _mp_tracker._state
 
 
+# Per-op MACs/row (from the calibration table's `mac_per_row`, exported since
+# 2026-07-06). When set, the tracker ALSO accumulates a MAC-weighted average —
+# the iso-compute (FLOP-avg) realized budget, matching the units the budget
+# constraint is solved in. Empty dict => FLOP tracking off (older tables).
+_MP_MAC_PER_ROW: dict = {}
+
+
+def mp_tracker_set_mac_per_row(mac_per_row: dict) -> None:
+    global _MP_MAC_PER_ROW
+    _MP_MAC_PER_ROW = dict(mac_per_row or {})
+
+
 def mp_tracker_reset() -> None:
-    _mp_tracker()["weighted_sl"] = 0.0
-    _mp_tracker()["rows"] = 0
+    s = _mp_tracker()
+    s["weighted_sl"] = 0.0
+    s["rows"] = 0
+    s["mac_sl"] = 0.0
+    s["macs"] = 0.0
 
 
 def mp_tracker_avg_stoc_len() -> float:
@@ -123,20 +139,32 @@ def mp_tracker_avg_stoc_len() -> float:
     return s["weighted_sl"] / max(s["rows"], 1)
 
 
-def _record_assignment(assignment) -> None:
+def mp_tracker_flop_avg_stoc_len() -> float:
+    """MAC-weighted realized average stoc_len (0.0 when no mac_per_row set)."""
+    s = _mp_tracker()
+    return (s["mac_sl"] / s["macs"]) if s.get("macs") else 0.0
+
+
+def _record_assignment(assignment, op=None) -> None:
     """Accumulate weighted-sum of per-row stoc_len for reporting.
 
     Each level's stoc_len is the *effective* cycle count seen by the kernel
     (MP levels are already in the halved space when halve_bipolar_stoc_len
     is on — they're just sliced from [0, 2**(sc_prec-1)]).
+    With ``op`` + a mac_per_row map set, also accumulates the MAC-weighted
+    (iso-compute) average. Observe-only — never affects dispatch.
     """
     state = _mp_tracker()
+    mac = _MP_MAC_PER_ROW.get(op) if op is not None else None
     for sl, idxs in assignment.level_row_indices.items():
         n = int(idxs.numel())
         if n == 0:
             continue
         state["weighted_sl"] += float(sl) * n
         state["rows"] += n
+        if mac:
+            state["mac_sl"] += float(sl) * n * mac
+            state["macs"] += n * mac
 
 
 def apply_sc_config_defaults(config) -> None:
@@ -258,7 +286,7 @@ class SCLinear(nn.Linear):
                     mp_config.stoc_len_levels,
                     mp_config.level_fractions,
                 )
-            _record_assignment(assignment)
+            _record_assignment(assignment, getattr(self, "_sc_op_name", None))
             out_flat = torch.empty(
                 (x_flat.shape[0], self.out_features),
                 dtype=torch.float32,
@@ -448,7 +476,7 @@ def _sc_attention_matmul_ab_t(
                 block_idx=block_idx,
                 total_blocks=total_blocks,
             )
-            _record_assignment(assignment)
+            _record_assignment(assignment, operator)
             row_levels = assignment.row_levels.reshape(B * H, N)
             levels = mp_config.stoc_len_levels
             for bh in range(B * H):
@@ -487,7 +515,7 @@ def _sc_attention_matmul_ab_t(
                 mp_config.stoc_len_levels,
                 mp_config.level_fractions,
             )
-            _record_assignment(assignment)
+            _record_assignment(assignment, operator)
             for sl, indices in assignment.level_row_indices.items():
                 if indices.numel() == 0:
                     continue
