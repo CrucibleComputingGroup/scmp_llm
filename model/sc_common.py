@@ -229,6 +229,12 @@ class SCLinear(nn.Linear):
         orig_dtype = x.dtype
         orig_shape = x.shape
         x_flat = x.reshape(-1, orig_shape[-1]).to(torch.float32).contiguous()
+        if x_flat.shape[0] == 0:
+            return torch.empty(
+                (*orig_shape[:-1], self.out_features),
+                dtype=orig_dtype,
+                device=x.device,
+            )
         w_fp32 = self.weight.to(torch.float32).contiguous()
         smooth = getattr(self, "smooth_scales", None)
 
