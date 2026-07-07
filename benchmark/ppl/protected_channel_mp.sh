@@ -6,6 +6,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$HERE"
 
 GPU="${GPU:-0}"
+CUDA_DEVICES="${CUDA_VISIBLE_DEVICES:-$GPU}"
 MODEL="${MODEL:-4B}"
 HF="${HF:-Qwen/Qwen3-4B-Instruct-2507}"
 CTX="${CTX:-2048}"
@@ -73,7 +74,7 @@ run_cell(){  # method protect_frac compensate
     echo "=== CELL $tag gpu=$GPU $(date) ==="
     echo "levels=128,64,32 target=48 protect_flags=[$protect_flags]"
     if [[ ! -s "$table" ]]; then
-      env CUDA_VISIBLE_DEVICES="$GPU" SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" SQ_ALPHA="$SQ_ALPHA" \
+      env CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" SQ_ALPHA="$SQ_ALPHA" \
         timeout -k 2m "$CELL_TIMEOUT" python -u benchmark/ppl/calibrate_mp_thresholds.py \
           --model_path "$HF" --mp_levels 128,64,32 --budget_ratio 0.375 \
           --budget_ref_stoc_len 128 --sc_prec 8 --halve 1 --ctx_len "$CTX" \
@@ -84,7 +85,7 @@ run_cell(){  # method protect_frac compensate
     fi
     if [[ ! -s "$table" ]]; then echo "=== $tag CALIB FAILED ==="; exit 21; fi
     python -c "import json;json.dump({'type':'AdaptiveMPConfig','stoc_len_levels':[128,64,32],'threshold_table_path':'$table'},open('$wrapper','w'))"
-    env CUDA_VISIBLE_DEVICES="$GPU" MODEL_PATH="$HF" QUANT_CONFIG=mp SQ_ALPHA="$SQ_ALPHA" \
+    env CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" MODEL_PATH="$HF" QUANT_CONFIG=mp SQ_ALPHA="$SQ_ALPHA" \
       PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$CTX" SC_OWEN_MODE="$SC_OWEN_MODE" \
       SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" MP_CONFIG_JSON="$wrapper" ACT_SCALES_DIR="$ACT_SCALES_DIR" \
       timeout -k 2m "$CELL_TIMEOUT" python -u benchmark/quant/eval_quant.py
