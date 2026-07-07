@@ -70,6 +70,14 @@
 > Active lanes at launch: 4B on gl1807, llama8B on gl1808, 30B on existing
 > gl1802 allocation step `52953626.6`; 14B queued as `mp_gn_14B` behind
 > `AssocGrpMemLimit` and should start when memory budget frees.
+> Post-launch corrections: standalone `srun` jobs created idle allocations, so
+> 4B/llama8B/14B were relaunched via `sbatch` using
+> `hpca_results/llm/mp/run_gn_protected_lane_20260707_121507.sh`. 14B must use
+> `Qwen/Qwen3-14B` (the `Qwen/Qwen3-14B-Instruct-2507` id is invalid). 30B OOMed
+> during the full-ctx GN backward prepass, so `--protect-channel-stat-ctx` /
+> `--protect-channel-stat-sequences` were added; 30B was relaunched on gl1802
+> step `52953626.7` with stat windows `4 × 512`, while main threshold calibration
+> and PPL eval remain `CTX=2048`, `PPL_MAX_TOKENS=0`.
 >
 > ### What we're doing (the thesis)
 > Argue that **stochastic computing (SC) enables finer-grained mixed precision
