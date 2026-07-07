@@ -47,6 +47,30 @@
 > `SMOKE_METHODS=`, sweep sbatch `benchmark/ppl/sbatch_mp_sq.sbatch` (gated on
 > `~/sq_smoke_passed`).
 >
+> ### 2026-07-07 — Protected-channel GN selector launched
+> First protected-channel full run improved aggressive avg96/len96 but not enough
+> for the paper target: 4B `burst_act_global` 14.8210 →
+> `pc1_act_weight_comp` 13.6191; llama8B 9.3799 → 8.8165; 14B 10.0332 → 9.5976.
+> New algorithm implemented: `--protect-channel-metric act_grad_weight`, an
+> offline diagonal Gauss-Newton selector for protected input channels:
+> `score[j] = E[x_j^2] * Σ_o W[o,j]^2 * E[(dL/dy_o)^2]`. It runs one FP
+> backward prepass per calibration window, then exports only channel indices;
+> eval/runtime overhead is identical to the existing split-channel PC path.
+> New launcher methods in `benchmark/ppl/protected_channel_mp.sh`:
+> `pc1_act_grad_weight_comp` and `pc2_act_grad_weight_comp` (1%/2% protected at
+> 128 cycles, strict compensated FLOP budget). GPU smoke passed on 4B:
+> method `act_global_fw_sq_pc0.01x128_act_grad_weight_comp`,
+> expected_flop_avg_stoc_len=48.1107, 252 protected modules.
+> Full-protocol 8h run launched 2026-07-07 12:15 ET:
+> results `hpca_results/llm/mp/protected_gn_full_20260707_121507_results.tsv`,
+> manifest `protected_gn_full_20260707_121507_manifest.tsv`, tables
+> `/nfs/turbo/coe-nbleier/allenjin/hpca/mp_calib_protected_gn_20260707_121507`,
+> logs
+> `/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_mp_protected_gn_full_20260707_121507/`.
+> Active lanes at launch: 4B on gl1807, llama8B on gl1808, 30B on existing
+> gl1802 allocation step `52953626.6`; 14B queued as `mp_gn_14B` behind
+> `AssocGrpMemLimit` and should start when memory budget frees.
+>
 > ### What we're doing (the thesis)
 > Argue that **stochastic computing (SC) enables finer-grained mixed precision
 > than fixed-point, and that finer MP beats uniform precision at the same

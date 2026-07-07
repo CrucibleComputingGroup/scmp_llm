@@ -53,8 +53,8 @@ with open(manifest, "a") as f:
 PYEOF
 }
 
-run_cell(){  # method protect_frac compensate
-  local method="$1" frac="$2" comp="$3"
+run_cell(){  # method protect_frac compensate metric stoc_len
+  local method="$1" frac="$2" comp="$3" metric="${4:-act_weight}" pstoc="${5:-128}"
   local sm; sm="$(safe "$HF")"
   local tag="${MODEL}__len96_burst__${method}"
   local table="$TABLES/${sm}__len96_burst__${method}.json"
@@ -66,7 +66,7 @@ run_cell(){  # method protect_frac compensate
   fi
   local protect_flags=""
   if [[ "$frac" != "0" && "$frac" != "0.0" ]]; then
-    protect_flags="--protect-channel-frac $frac --protect-channel-stoc-len 128 --protect-channel-metric act_weight"
+    protect_flags="--protect-channel-frac $frac --protect-channel-stoc-len $pstoc --protect-channel-metric $metric"
     [[ "$comp" == "1" ]] && protect_flags="$protect_flags --protect-compensate-budget"
   fi
   echo "[gpu$GPU] >>> $tag frac=$frac comp=$comp $(date +%H:%M)"
@@ -112,10 +112,12 @@ echo "[protected] $(date) model=$MODEL gpu=$GPU results=$RESULTS logdir=$LOGDIR"
 IFS=, read -ra METHODS <<<"${PROTECTED_METHODS:-burst_act_global,pc1_act_weight,pc2_act_weight,pc1_act_weight_comp}"
 for method in "${METHODS[@]}"; do
   case "$method" in
-    burst_act_global)      run_cell burst_act_global 0 0 ;;
-    pc1_act_weight)        run_cell pc1_act_weight 0.01 0 ;;
-    pc2_act_weight)        run_cell pc2_act_weight 0.02 0 ;;
-    pc1_act_weight_comp)   run_cell pc1_act_weight_comp 0.01 1 ;;
+    burst_act_global)             run_cell burst_act_global 0 0 ;;
+    pc1_act_weight)               run_cell pc1_act_weight 0.01 0 act_weight 128 ;;
+    pc2_act_weight)               run_cell pc2_act_weight 0.02 0 act_weight 128 ;;
+    pc1_act_weight_comp)          run_cell pc1_act_weight_comp 0.01 1 act_weight 128 ;;
+    pc1_act_grad_weight_comp)     run_cell pc1_act_grad_weight_comp 0.01 1 act_grad_weight 128 ;;
+    pc2_act_grad_weight_comp)     run_cell pc2_act_grad_weight_comp 0.02 1 act_grad_weight 128 ;;
     *) echo "[protected] unknown method '$method'" >&2; exit 2 ;;
   esac
 done

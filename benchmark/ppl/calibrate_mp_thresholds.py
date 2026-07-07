@@ -1938,10 +1938,14 @@ def _build_parser():
                         "--protect-channel-stoc-len, residual channels still use "
                         "row MP. 0.0 (default) disables and preserves old tables.")
     p.add_argument("--protect-channel-metric", dest="protect_channel_metric",
-                   choices=["act_weight", "weight"], default="act_weight",
+                   choices=["act_weight", "act_grad_weight", "weight"],
+                   default="act_weight",
                    help="Salience metric for protected channels. act_weight "
                         "uses cached SmoothQuant act_scales^2 times weight-column "
-                        "energy; weight uses weight-column energy only.")
+                        "energy; act_grad_weight uses the offline Gauss-Newton "
+                        "proxy E[x_j^2]·Σ_o W[o,j]^2·E[g_o^2] from one "
+                        "calibration backward pass; weight uses weight-column "
+                        "energy only.")
     p.add_argument("--protect-channel-stoc-len", dest="protect_channel_stoc_len",
                    type=int, default=128,
                    help="stoc_len for protected channels. Default 128.")
@@ -1970,6 +1974,163 @@ def _parse_csv_set(value: str) -> set:
     return {x.strip() for x in value.split(",") if x.strip()}
 
 
+def _module_protected_key(mod: SCLinear):
+    op = getattr(mod, "_sc_op_name", None)
+    block_idx = getattr(mod, "_sc_block_idx", None)
+    if op not in LINEAR_OPS or block_idx is None:
+        return None
+    return (op, int(block_idx), getattr(mod, "_sc_unit_idx", None))
+
+
+class ProtectedChannelGNStats:
+    """Offline channel salience stats for protected-channel selection.
+
+    For a linear y = xW^T, the diagonal Gauss-Newton contribution of input
+    channel j is approximated as:
+
+        E[x_j^2] * Σ_o W[o,j]^2 * E[(∂L/∂y_o)^2]
+
+    This is still an offline selector: runtime only receives the top-channel
+    index lists and pays the same split-matmul overhead as the existing PC path.
+    """
+
+    def __init__(self):
+        self.x2_sum: dict = {}
+        self.x_count: dict = defaultdict(int)
+        self.g2_sum: dict = {}
+        self.g_count: dict = defaultdict(int)
+        self.dims: dict = {}
+        self.out_dims: dict = {}
+
+    def add_forward(self, key, x: torch.Tensor, output: torch.Tensor) -> None:
+        if not output.requires_grad:
+            return
+        x_flat = x.detach().reshape(-1, x.shape[-1])
+        if x_flat.shape[0] == 0:
+            return
+        with torch.no_grad():
+            x2 = x_flat.float().pow(2).sum(dim=0).cpu()
+        prev = self.x2_sum.get(key)
+        self.x2_sum[key] = x2 if prev is None else prev + x2
+        self.x_count[key] += int(x_flat.shape[0])
+        self.dims[key] = int(x_flat.shape[-1])
+
+        def _grad_hook(grad_y, key=key):
+            g_flat = grad_y.detach().reshape(-1, grad_y.shape[-1])
+            if g_flat.shape[0] == 0:
+                return None
+            with torch.no_grad():
+                g2 = g_flat.float().pow(2).sum(dim=0).cpu()
+            prev_g = self.g2_sum.get(key)
+            self.g2_sum[key] = g2 if prev_g is None else prev_g + g2
+            self.g_count[key] += int(g_flat.shape[0])
+            self.out_dims[key] = int(g_flat.shape[-1])
+            return None
+
+        output.register_hook(_grad_hook)
+
+    def score_for(self, key, weight: torch.Tensor) -> Optional[torch.Tensor]:
+        if key not in self.x2_sum or key not in self.g2_sum:
+            return None
+        x_count = max(int(self.x_count.get(key, 0)), 1)
+        g_count = max(int(self.g_count.get(key, 0)), 1)
+        x2 = self.x2_sum[key].float() / float(x_count)
+        g2 = self.g2_sum[key].float() / float(g_count)
+        w2 = weight.detach().float().cpu().pow(2)
+        if w2.shape[1] != x2.numel() or w2.shape[0] != g2.numel():
+            return None
+        return x2 * (w2 * g2[:, None]).sum(dim=0)
+
+    def summary_for(self, key) -> dict:
+        x_count = max(int(self.x_count.get(key, 0)), 1)
+        g_count = max(int(self.g_count.get(key, 0)), 1)
+        x2 = self.x2_sum.get(key)
+        g2 = self.g2_sum.get(key)
+        return {
+            "x_rows": int(self.x_count.get(key, 0)),
+            "grad_rows": int(self.g_count.get(key, 0)),
+            "x2_mean": float((x2.float() / float(x_count)).mean().item())
+                       if x2 is not None and x2.numel() else 0.0,
+            "grad2_mean": float((g2.float() / float(g_count)).mean().item())
+                          if g2 is not None and g2.numel() else 0.0,
+        }
+
+
+def _register_protected_channel_gn_hooks(model: nn.Module,
+                                         stats: ProtectedChannelGNStats):
+    hooks = []
+    for mod in model.modules():
+        if not isinstance(mod, SCLinear):
+            continue
+        key = _module_protected_key(mod)
+        if key is None:
+            continue
+
+        def _hook(module, inputs, output, key=key):
+            stats.add_forward(key, inputs[0], output)
+
+        hooks.append(mod.register_forward_hook(_hook))
+    return hooks
+
+
+def _prepare_model_for_backward(model: nn.Module, args, reason: str) -> None:
+    """Enable output-gradient hooks without allocating parameter gradients."""
+    if not getattr(model, "_scmp_backward_prepared", False):
+        for p in model.parameters():
+            p.requires_grad_(False)
+        model.enable_input_require_grads()
+        setattr(model, "_scmp_backward_prepared", True)
+    mp_low = args.model_path.lower()
+    is_big = (
+        "a3b" in mp_low or "moe" in mp_low
+        or "-14b" in mp_low or "-30b" in mp_low or "-32b" in mp_low
+        or os.environ.get("CALIB_GRAD_CKPT", "0") == "1"
+    )
+    if is_big and not getattr(model, "_scmp_grad_ckpt_enabled", False):
+        try:
+            model.gradient_checkpointing_enable()
+            if hasattr(model, "config"):
+                model.config.use_cache = False
+            setattr(model, "_scmp_grad_ckpt_enabled", True)
+            print(f"[calib] gradient_checkpointing_enable() for large model "
+                  f"({reason}; use_cache=False).")
+        except Exception as e:
+            print(f"[calib] WARN: gradient_checkpointing_enable failed: {e}")
+
+
+def _collect_protected_channel_gn_stats(
+    model: nn.Module,
+    enc: torch.Tensor,
+    args,
+    device,
+) -> ProtectedChannelGNStats:
+    stats = ProtectedChannelGNStats()
+    hooks = _register_protected_channel_gn_hooks(model, stats)
+    if not hooks:
+        raise SystemExit("[calib] act_grad_weight matched 0 SCLinear modules.")
+    print("[calib] protected-channel act_grad_weight: collecting "
+          "E[x^2] and E[(dL/dy)^2] from one FP backward pass per window.")
+    try:
+        for i, window in enumerate(_iter_calib_windows(
+            enc, args.ctx_len, args.num_calib_sequences,
+        )):
+            print(f"[calib] protected-channel GN window "
+                  f"{i + 1}/{args.num_calib_sequences}")
+            ids = window.unsqueeze(0).to(device)
+            model.zero_grad(set_to_none=True)
+            out = model(input_ids=ids, labels=ids)
+            out.loss.backward()
+    finally:
+        for h in hooks:
+            h.remove()
+        model.zero_grad(set_to_none=True)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    print(f"[calib] protected-channel act_grad_weight: collected stats for "
+          f"{len(stats.g2_sum)} modules.")
+    return stats
+
+
 def _configure_protected_channels(
     calibrator: ThresholdCalibrator,
     model: nn.Module,
@@ -1979,6 +2140,7 @@ def _configure_protected_channels(
     metric: str,
     stoc_len: int,
     compensate_budget: bool,
+    gn_stats: Optional[ProtectedChannelGNStats] = None,
 ) -> int:
     """Select offline salient input channels for protected-channel MP."""
     frac = float(frac)
@@ -1990,6 +2152,10 @@ def _configure_protected_channels(
         raise SystemExit(
             "[calib] --protect-channel-metric act_weight requires act scales; "
             "use --calib-smoothquant or choose --protect-channel-metric weight.")
+    if metric == "act_grad_weight" and gn_stats is None:
+        raise SystemExit(
+            "[calib] --protect-channel-metric act_grad_weight requires "
+            "offline GN stats; this is an internal wiring error.")
     calibrator.protect_channel_frac = frac
     calibrator.protect_channel_metric = metric
     calibrator.protect_channel_stoc_len = int(stoc_len)
@@ -1998,10 +2164,10 @@ def _configure_protected_channels(
     for name, mod in model.named_modules():
         if not isinstance(mod, SCLinear):
             continue
-        op = getattr(mod, "_sc_op_name", None)
-        block_idx = getattr(mod, "_sc_block_idx", None)
-        if op not in LINEAR_OPS or block_idx is None:
+        key = _module_protected_key(mod)
+        if key is None:
             continue
+        op, block_idx, _unit_idx = key
         w = mod.weight.detach().float()
         D = int(w.shape[1])
         if D <= 0:
@@ -2013,20 +2179,28 @@ def _configure_protected_channels(
                 missing += 1
                 continue
             score = a.detach().float().cpu().pow(2) * w2
+            stat_summary = {}
+        elif metric == "act_grad_weight":
+            score = gn_stats.score_for(key, mod.weight) if gn_stats else None
+            if score is None:
+                missing += 1
+                continue
+            stat_summary = gn_stats.summary_for(key)
         elif metric == "weight":
             score = w2
+            stat_summary = {}
         else:  # pragma: no cover - argparse choices guard this.
             raise SystemExit(f"[calib] unknown protected-channel metric {metric}")
         k = max(1, int(math.ceil(frac * D)))
         idx = torch.topk(score, k=min(k, D), largest=True).indices
         idx_list = sorted(int(i) for i in idx.tolist())
-        key = (op, int(block_idx), getattr(mod, "_sc_unit_idx", None))
         calibrator.protected_channel_indices[key] = idx_list
         calibrator.protected_channel_dims[key] = D
         calibrator.protected_channel_scores[key] = {
             "score_min": float(score[idx].min().item()) if idx.numel() else 0.0,
             "score_max": float(score[idx].max().item()) if idx.numel() else 0.0,
             "score_mean": float(score[idx].mean().item()) if idx.numel() else 0.0,
+            **stat_summary,
         }
         n_mod += 1
         n_ch += len(idx_list)
@@ -2080,6 +2254,10 @@ def main():
 
     grad_weight = bool(args.loss_weight_by_grad)
     grad_on_sc = bool(args.grad_on_sc)
+    protect_needs_grad = (
+        float(args.protect_channel_frac) > 0.0
+        and args.protect_channel_metric == "act_grad_weight"
+    )
     if grad_on_sc and not grad_weight:
         # g_SC reuses the backward-hook g_row machinery; it is meaningless
         # without it, so turn it on implicitly.
@@ -2166,6 +2344,10 @@ def main():
           + (f" measure_baseline_sl={measure_baseline_sl} "
              f"measure_probe_sl={measure_probe_sl}"
              if cross_layer_weight == "measured" else ""))
+    if protect_needs_grad:
+        print("[calib] --protect-channel-metric act_grad_weight: will run a "
+              "pre-calibration backward pass for offline channel salience; "
+              "the main row-threshold objective is unchanged.")
 
     # Load model and tokenizer.
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
@@ -2230,32 +2412,14 @@ def main():
         model.config.use_sc_linear = False
         model.config.sc_ste_grad = False
 
-    if grad_weight:
-        # Autograd setup: gradients must flow to every matmul OUTPUT so the
-        # backward hooks fire, but we must NOT accumulate a (~60GB) param-grad
-        # buffer. Freeze all params, then make the embedding output require
-        # grad so the graph still propagates through the network.
-        for p in model.parameters():
-            p.requires_grad_(False)
-        model.enable_input_require_grads()
-        # 30B-MoE and the large dense models (esp. 32B) OOM without activation
-        # checkpointing on the backward pass. Harmless (correctness-wise a no-op)
-        # for smaller models. Force it via CALIB_GRAD_CKPT=1.
-        mp_low = args.model_path.lower()
-        is_big = (
-            "a3b" in mp_low or "moe" in mp_low
-            or "-14b" in mp_low or "-30b" in mp_low or "-32b" in mp_low
-            or os.environ.get("CALIB_GRAD_CKPT", "0") == "1"
+    if grad_weight or protect_needs_grad:
+        # Autograd setup: gradients must flow to matmul outputs so backward
+        # hooks fire, but we must NOT allocate parameter-gradient buffers.
+        _prepare_model_for_backward(
+            model, args,
+            "protected-channel GN stats" if protect_needs_grad and not grad_weight
+            else "calibration gradients",
         )
-        if is_big:
-            try:
-                model.gradient_checkpointing_enable()
-                if hasattr(model, "config"):
-                    model.config.use_cache = False
-                print("[calib] gradient_checkpointing_enable() for large model "
-                      "(use_cache=False).")
-            except Exception as e:
-                print(f"[calib] WARN: gradient_checkpointing_enable failed: {e}")
 
     total_blocks = getattr(model.config, "_sc_total_blocks", None)
     if total_blocks is None:
@@ -2274,6 +2438,12 @@ def main():
         print(f"[calib] WARN: dataset only has {total_tokens} tokens, want {needed}.")
     print(f"[calib] using up to {min(total_tokens, needed)} tokens "
           f"({args.num_calib_sequences} × {args.ctx_len}).")
+
+    protected_gn_stats = None
+    if protect_needs_grad:
+        device = next(model.parameters()).device
+        protected_gn_stats = _collect_protected_channel_gn_stats(
+            model, enc, args, device)
 
     # Calibrator + hooks + monkey-patched attention.
     calibrator = ThresholdCalibrator(
@@ -2320,6 +2490,7 @@ def main():
         metric=args.protect_channel_metric,
         stoc_len=args.protect_channel_stoc_len,
         compensate_budget=args.protect_compensate_budget,
+        gn_stats=protected_gn_stats,
     )
     merger = PendingMerger(calibrator)
 
@@ -2542,7 +2713,15 @@ def main():
         method = method + "_s2"
         payload["objective"] = "sigma2"
     if calibrator.protected_channel_indices:
-        method = method + f"_pc{args.protect_channel_frac:g}x{args.protect_channel_stoc_len}"
+        metric_suffix = (
+            "" if args.protect_channel_metric == "act_weight"
+            else f"_{args.protect_channel_metric}"
+        )
+        method = (
+            method
+            + f"_pc{args.protect_channel_frac:g}x{args.protect_channel_stoc_len}"
+            + metric_suffix
+        )
         if args.protect_compensate_budget:
             method = method + "_comp"
     payload["method"] = method
