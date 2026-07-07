@@ -1949,6 +1949,18 @@ def _build_parser():
     p.add_argument("--protect-channel-stoc-len", dest="protect_channel_stoc_len",
                    type=int, default=128,
                    help="stoc_len for protected channels. Default 128.")
+    p.add_argument("--protect-channel-stat-ctx",
+                   dest="protect_channel_stat_ctx", type=int, default=0,
+                   help="act_grad_weight only: ctx_len for the offline "
+                        "E[x^2], E[(dL/dy)^2] prepass. 0 (default) uses "
+                        "--ctx_len. Lower this for very large models whose "
+                        "full-ctx backward OOMs; threshold calibration and eval "
+                        "still use --ctx_len.")
+    p.add_argument("--protect-channel-stat-sequences",
+                   dest="protect_channel_stat_sequences", type=int, default=0,
+                   help="act_grad_weight only: number of windows for the offline "
+                        "GN-stat prepass. 0 (default) uses "
+                        "--num_calib_sequences.")
     p.add_argument("--protect-compensate-budget",
                    dest="protect_compensate_budget", action="store_true",
                    help="Strict iso-compute mode: lower the residual MP target so "
@@ -2108,14 +2120,18 @@ def _collect_protected_channel_gn_stats(
     hooks = _register_protected_channel_gn_hooks(model, stats)
     if not hooks:
         raise SystemExit("[calib] act_grad_weight matched 0 SCLinear modules.")
+    stat_ctx = int(args.protect_channel_stat_ctx) or int(args.ctx_len)
+    stat_sequences = int(args.protect_channel_stat_sequences) or int(
+        args.num_calib_sequences)
     print("[calib] protected-channel act_grad_weight: collecting "
-          "E[x^2] and E[(dL/dy)^2] from one FP backward pass per window.")
+          "E[x^2] and E[(dL/dy)^2] from one FP backward pass per window "
+          f"({stat_sequences} × {stat_ctx}).")
     try:
         for i, window in enumerate(_iter_calib_windows(
-            enc, args.ctx_len, args.num_calib_sequences,
+            enc, stat_ctx, stat_sequences,
         )):
             print(f"[calib] protected-channel GN window "
-                  f"{i + 1}/{args.num_calib_sequences}")
+                  f"{i + 1}/{stat_sequences}")
             ids = window.unsqueeze(0).to(device)
             model.zero_grad(set_to_none=True)
             out = model(input_ids=ids, labels=ids)
@@ -2735,6 +2751,13 @@ def main():
     payload["budget_weight"] = args.budget_weight
     if args.budget_weight == "macs":
         payload["mac_per_row"] = calibrator.mac_per_row
+    if (args.protect_channel_metric == "act_grad_weight"
+            and payload.get("protected_channels")):
+        payload["protected_channels"]["stat_ctx_len"] = (
+            int(args.protect_channel_stat_ctx) or int(args.ctx_len))
+        payload["protected_channels"]["stat_num_sequences"] = (
+            int(args.protect_channel_stat_sequences)
+            or int(args.num_calib_sequences))
 
     out_json = Path(args.output_json)
     out_json.parent.mkdir(parents=True, exist_ok=True)

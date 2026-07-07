@@ -67,6 +67,10 @@ run_cell(){  # method protect_frac compensate metric stoc_len
   local protect_flags=""
   if [[ "$frac" != "0" && "$frac" != "0.0" ]]; then
     protect_flags="--protect-channel-frac $frac --protect-channel-stoc-len $pstoc --protect-channel-metric $metric"
+    if [[ "$metric" == "act_grad_weight" ]]; then
+      [[ -n "${PROTECT_CHANNEL_STAT_CTX:-}" ]] && protect_flags="$protect_flags --protect-channel-stat-ctx $PROTECT_CHANNEL_STAT_CTX"
+      [[ -n "${PROTECT_CHANNEL_STAT_SEQUENCES:-}" ]] && protect_flags="$protect_flags --protect-channel-stat-sequences $PROTECT_CHANNEL_STAT_SEQUENCES"
+    fi
     [[ "$comp" == "1" ]] && protect_flags="$protect_flags --protect-compensate-budget"
   fi
   echo "[gpu$GPU] >>> $tag frac=$frac comp=$comp $(date +%H:%M)"
@@ -83,12 +87,15 @@ run_cell(){  # method protect_frac compensate metric stoc_len
     else
       echo "[calib] reuse $table"
     fi
-    if [[ ! -s "$table" ]]; then echo "=== $tag CALIB FAILED ==="; exit 21; fi
-    python -c "import json;json.dump({'type':'AdaptiveMPConfig','stoc_len_levels':[128,64,32],'threshold_table_path':'$table'},open('$wrapper','w'))"
-    env CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" MODEL_PATH="$HF" QUANT_CONFIG=mp SQ_ALPHA="$SQ_ALPHA" \
-      PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$CTX" SC_OWEN_MODE="$SC_OWEN_MODE" \
-      SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" MP_CONFIG_JSON="$wrapper" ACT_SCALES_DIR="$ACT_SCALES_DIR" \
-      timeout -k 2m "$CELL_TIMEOUT" python -u benchmark/quant/eval_quant.py
+    if [[ ! -s "$table" ]]; then
+      echo "=== $tag CALIB FAILED ==="
+    else
+      python -c "import json;json.dump({'type':'AdaptiveMPConfig','stoc_len_levels':[128,64,32],'threshold_table_path':'$table'},open('$wrapper','w'))"
+      env CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" MODEL_PATH="$HF" QUANT_CONFIG=mp SQ_ALPHA="$SQ_ALPHA" \
+        PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$CTX" SC_OWEN_MODE="$SC_OWEN_MODE" \
+        SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" MP_CONFIG_JSON="$wrapper" ACT_SCALES_DIR="$ACT_SCALES_DIR" \
+        timeout -k 2m "$CELL_TIMEOUT" python -u benchmark/quant/eval_quant.py
+    fi
   } >> "$log" 2>&1
   local ppl avg flop exp
   ppl=$(grep "\[RESULT\]" "$log" | grep -oE "value=[0-9.eE+-]+|value=nan|value=inf" | sed 's/value=//' | tail -1)
