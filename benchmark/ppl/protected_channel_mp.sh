@@ -108,9 +108,15 @@ run_cell(){  # method protect_frac compensate
 }
 
 echo "[protected] $(date) model=$MODEL gpu=$GPU results=$RESULTS logdir=$LOGDIR"
-run_cell burst_act_global 0 0
-run_cell pc1_act_weight 0.01 0
-run_cell pc2_act_weight 0.02 0
-run_cell pc1_act_weight_comp 0.01 1
+IFS=, read -ra METHODS <<<"${PROTECTED_METHODS:-burst_act_global,pc1_act_weight,pc2_act_weight,pc1_act_weight_comp}"
+for method in "${METHODS[@]}"; do
+  case "$method" in
+    burst_act_global)      run_cell burst_act_global 0 0 ;;
+    pc1_act_weight)        run_cell pc1_act_weight 0.01 0 ;;
+    pc2_act_weight)        run_cell pc2_act_weight 0.02 0 ;;
+    pc1_act_weight_comp)   run_cell pc1_act_weight_comp 0.01 1 ;;
+    *) echo "[protected] unknown method '$method'" >&2; exit 2 ;;
+  esac
+done
 echo "[protected] DONE $(date)"
 column -t -s$'\t' "$RESULTS" 2>/dev/null || cat "$RESULTS"

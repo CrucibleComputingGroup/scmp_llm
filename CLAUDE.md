@@ -128,6 +128,9 @@
 > Everything — INT baselines, SC uniform, AND per-row MP — now runs through the
 > **HPCA protocol**: `benchmark/quant/eval_quant.py` (full wikitext-2 ~298k tok,
 > ctx 2048, SmoothQuant α=0.5), driven by `./hpca`. fp16 14B = 8.64.
+> For paper/citable PPL rows, keep `PPL_MAX_TOKENS=0` (or unset). Any
+> `PPL_MAX_TOKENS>0` run is a smoke/screening run only and must be labeled
+> non-citable; do not compare truncated rows against INT/uniform CSVs.
 > **MP in the HPCA protocol:** set `QUANT_CONFIG=mp` + `MP_CONFIG_JSON=<wrapper.json>`
 > (a calibrate_mp_thresholds.py table) — eval_quant loads it into `cfg.sc_mp_config`
 > and dispatches per-row MP through the SAME path as the uniform `sc_*` cells, so
