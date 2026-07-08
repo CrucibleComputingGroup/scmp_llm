@@ -78,6 +78,11 @@
 > `--protect-channel-stat-sequences` were added; 30B was relaunched on gl1802
 > step `52953626.7` with stat windows `4 × 512`, while main threshold calibration
 > and PPL eval remain `CTX=2048`, `PPL_MAX_TOKENS=0`.
+> 2026-07-08 correction: the missing llama8B GN row is a launcher bug only. The
+> run used `meta-llama/Llama-3.1-8B`, but the canonical HPCA model and available
+> SmoothQuant cache are `meta-llama/Llama-3.1-8B-Instruct`
+> (`act_scales_meta-llama_Llama-3.1-8B-Instruct.pt`). Patch/rerun llama8B with
+> `-Instruct` before judging whether GN helps or hurts that model.
 >
 > ### What we're doing (the thesis)
 > Argue that **stochastic computing (SC) enables finer-grained mixed precision
