@@ -35,7 +35,7 @@ if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 from benchmark.quant.ptq import (  # noqa: E402
     QuantConfig, load_plain_model, load_quant_model, apply_ptq,
-    calibrate_act_scales,
+    calibrate_act_scales, patch_int_attention_once,
 )
 
 try:  # precision trace for the energy/latency simulator (SC_MP_TRACE=<path>)
@@ -100,7 +100,11 @@ def parse_config(tag: str):
     w = int(body[1:body.index("A")])
     a = int(body[body.index("A") + 1:])
     sym = scheme.lower().startswith("sym")
-    return QuantConfig(w_bits=w, a_bits=a, sym=sym)
+    return QuantConfig(
+        w_bits=w, a_bits=a, sym=sym,
+        chunk_size=int(os.environ.get("INT_CHUNK_SIZE", "128")),
+        quantize_attention=True,
+    )
 
 
 def _safe(model_path: str) -> str:
@@ -195,6 +199,8 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
     cfg.sc_prec = 8
     cfg.sc_stoc_len = cycles       # halved space: the value IS the cycle count
     cfg.sc_halve_bipolar_stoc_len = True
+    from loader import apply_hybrid_config_from_env
+    apply_hybrid_config_from_env(model)
     if mp_table:
         # Per-row mixed precision: load the calibrated table into sc_mp_config;
         # sc_common's MP dispatch handles per-row stoc_len (uniform path bypassed).
@@ -211,7 +217,15 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
         # Observe-only; tables without mac_per_row just leave FLOP tracking off.
         try:
             _wr = json.load(open(mp_table))
-            _tbl_path = _wr.get("threshold_table_path") or mp_table
+            # threshold_table_path may be RELATIVE to the wrapper JSON — resolve
+            # it against the wrapper's dir exactly as loader.apply_mp_config_from_env
+            # does, or the open() below fails and FLOP tracking is silently lost
+            # (realized_flop_avg_sl=0.00 recorded as a "successful" result).
+            _tbl_rel = _wr.get("threshold_table_path")
+            if _tbl_rel and not os.path.isabs(_tbl_rel):
+                _tbl_path = os.path.join(os.path.dirname(os.path.abspath(mp_table)), _tbl_rel)
+            else:
+                _tbl_path = _tbl_rel or mp_table
             _mpr = json.load(open(_tbl_path)).get("mac_per_row") or {}
             from model.sc_common import mp_tracker_set_mac_per_row
             mp_tracker_set_mac_per_row(_mpr)
@@ -235,6 +249,8 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
               f"(sc_prec=8, halve=on, owen={os.environ['SC_OWEN_MODE']}, "
               f"masks={os.environ['SC_SCRAMBLE_MASKS']}), "
               f"smoothquant on {n} SCLinear layers (alpha={alpha})")
+    if getattr(cfg, "sc_hybrid_schedule", None) is not None:
+        print(f"[hybrid] active schedule={getattr(cfg, 'sc_hybrid_path', '')}")
     return model, tokenizer
 
 
@@ -242,9 +258,9 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
                 alpha: float = 0.5):
     """Return an eval-ready model for a config tag. Used by PPL + LongBench + RULER.
 
-    fp16 -> plain HF. Wx Ax -> plain HF + SmoothQuant + fake-quant. act_scales are
-    calibrated (or cached) on a SEPARATE plain-HF load so the hooks see real
-    nn.Linear inputs, then quant is applied to a fresh load.
+    fp16 -> plain HF. Wx Ax -> plain HF + SmoothQuant + full-matmul fake-quant:
+    chunked Linear quant plus INT-patched QK/AV eager attention. act_scales are
+    calibrated or cached on the same plain-HF load before Linear replacement.
     sc_* -> SC uniform baseline (see build_sc_model).
     """
     mp_table = os.environ.get("MP_CONFIG_JSON", "").strip()
@@ -273,6 +289,18 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
     # to run on the same model we then quantize. apply_ptq replaces each Linear in
     # place, freeing the fp16 original as it goes → peak ≈ 1x weights.
     from benchmark.quant.ptq import apply_ptq
+    if qcfg.quantize_attention:
+        if os.environ.get("BASELINE_ATTN", "eager") != "eager":
+            raise SystemExit(
+                "INT baselines require BASELINE_ATTN=eager so QK/AV are "
+                "fake-quantized; refusing to build a linear-only INT model.")
+        n_patched = patch_int_attention_once()
+        if n_patched == 0:
+            raise SystemExit(
+                "INT baseline requested, but no supported HF eager "
+                "attention modules were patched.")
+        print(f"[ptq] INT attention patch active "
+              f"(modules_patched={n_patched}, chunk={qcfg.chunk_size})")
     model = load_plain_model(model_path, device_map=device_map)
     model.eval()
     # act_scales depend only on (model, calib data), NOT bit-width → calibrate
@@ -284,9 +312,14 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
     else:
         scales = get_act_scales(model_path, tokenizer, model)
     n = apply_ptq(model, qcfg, act_scales=scales, alpha=alpha)
+    model.config.use_int_attention = bool(qcfg.quantize_attention)
+    model.config.int_attention_bits = int(qcfg.a_bits)
+    model.config.int_attention_sym = bool(qcfg.sym)
+    model.config.int_chunk_size = int(qcfg.chunk_size)
     torch.cuda.empty_cache()
     print(f"[ptq] {qcfg.tag()}: quantized {n} Linear layers in place "
-          f"(smoothquant=on alpha={alpha})")
+          f"(smoothquant=on alpha={alpha}, chunk={qcfg.chunk_size}, "
+          f"qk_av={'on' if qcfg.quantize_attention else 'off'})")
     return model, tokenizer
 
 

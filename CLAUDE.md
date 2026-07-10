@@ -47,6 +47,38 @@
 > `SMOKE_METHODS=`, sweep sbatch `benchmark/ppl/sbatch_mp_sq.sbatch` (gated on
 > `~/sq_smoke_passed`).
 >
+> ### 2026-07-09 — MP calibration cache quarantined; current best direction
+> Old MP calibration data is suspected bad enough to be unsafe for automatic
+> reuse. The reusable Turbo cache dirs were moved out of the script-default paths:
+>
+> ```text
+> /nfs/turbo/coe-nbleier/allenjin/hpca/_quarantine_bad_mp_calib_20260709_203642/
+> ```
+>
+> Contents:
+> `mp_calib_fw`, `mp_calib_overnight`, `mp_calib_protected`,
+> `mp_calib_protected_gn_20260707_121507`, `mp_calib_sq`. Future MP launches
+> should use fresh `TABLES`, `RESULTS`, and `MANIFEST` paths so no stale wrapper
+> or skip row is reused.
+>
+> Current best algorithmic direction is **hybrid INT + protected-channel
+> `act_global` MP**, not `measured_curve` as a default. Evidence: protected
+> channel helped the aggressive `len96_burst` MP point at roughly the same
+> compensated FLOP budget (4B 14.8210→13.6191, llama8B 9.3799→8.8165, 14B
+> 10.0332→9.5976). `measured_curve` has mixed results and prior under-budget /
+> artifact caveats; do not call it SOTA without a fresh fixed-budget run.
+>
+> Correct MP+hybrid calibration order:
+> 1. Apply the per-operator-per-layer hybrid mask first (top 10% sensitive
+>    entries go INT).
+> 2. Calibrate MP only on the remaining SC graph.
+> 3. Use `act_global` with MAC/FLOP-weighted budget (`--budget-weight macs`) and
+>    protected channels at 128 cycles with compensation
+>    (`--protect-channel-frac ... --protect-channel-stoc-len 128
+>    --protect-compensate-budget`).
+> 4. SC budget is the budget for the remaining SC computation only; INT layers
+>    are outside that SC budget.
+>
 > ### 2026-07-07 — Protected-channel GN selector launched
 > First protected-channel full run improved aggressive avg96/len96 but not enough
 > for the paper target: 4B `burst_act_global` 14.8210 →
@@ -336,13 +368,45 @@ fallback. Don't rename it back.
 Tested on Great Lakes node `gl1802` (NVIDIA RTX PRO 6000 Blackwell, 98 GB).
 Conda env name in our setup: `annstention`.
 
-Great Lakes launch rule for GPU experiments: prefer Slurm `nohup srun ... bash -lc
-'source ~/.bashrc; conda activate annstention; cd /home/allenjin/Projects/scmp_llm;
-...' > log 2>&1 &` from the login node. Do not default to SSH/tmux on a compute
-node unless a job allocation is already known and the user explicitly wants that
-style. From Codex's managed shell, background `nohup ... &` children may be
-reaped before they open stdout; use `sbatch` with the same resource request for
-persistent launches. The working reservation/partition pattern is:
+### Great Lakes GPU / Slurm rules — persistent reference
+
+Use Slurm, not local `python`, for GPU work. The login/Codex shell has no GPU and
+often no `annstention` Python packages. Always activate conda inside the Slurm
+payload.
+
+When running Slurm CLI commands from Codex tools, request unsandboxed/escalated
+execution. On 2026-07-08, the same `gl-login6` shell could run `squeue` normally,
+but sandboxed Codex commands could not contact `glctld` (`Slurmctld(primary) at
+glctld is DOWN`, or `squeue` hung until timeout). The same commands worked
+immediately with escalation:
+
+```bash
+squeue -u allenjin
+scontrol ping
+```
+
+For persistent experiments launched from Codex, prefer **`sbatch`**. Background
+`nohup srun ... &` children from Codex can be reaped before they open stdout. Use
+one GPU per job for independent cells; this lets Slurm start as many as the
+account cap allows. The known-good resource shape is:
+
+```bash
+sbatch --job-name=<name> \
+  --account=nbleier_owned1 --reservation=rtx6000_arph_nodes \
+  --partition=gpu-rtx6000 --gres=gpu:1 --cpus-per-task=12 --mem=180G \
+  --time=24:00:00 \
+  --output=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/<name>_%j.out \
+  --wrap='source ~/.bashrc; conda activate annstention; cd /home/allenjin/Projects/scmp_llm; <command>'
+```
+
+For interactive diagnostics inside an already-running allocation, use `srun
+--jobid=<jobid> --gres=gpu:0 bash -lc '...'` only for CPU-side checks such as
+`ps`, `tail`, or reading logs. Do **not** expect it to see a GPU unless requesting
+a GPU step or running inside the original batch payload. For GPU Python checks,
+submit a small `sbatch` smoke instead.
+
+The older interactive pattern still works from a normal login shell, but is not
+the default from Codex:
 
 ```bash
 nohup srun --account=nbleier_owned1 --reservation=rtx6000_arph_nodes \

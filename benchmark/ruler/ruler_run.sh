@@ -29,7 +29,7 @@ export HF_HUB_CACHE="${HF_HUB_CACHE:-/nfs/turbo/coe-nbleier/zhkangqi/hf_cache_hu
 
 ROOT_DIR="./ruler_eval_result"
 NUM_SAMPLES="${NUM_SAMPLES:-200}"
-SC_ATTN_GRANULARITY="${SC_ATTN_GRANULARITY:-per_head}"
+SC_ATTN_GRANULARITY="${SC_ATTN_GRANULARITY:-per_row}"   # per_head kernel removed 2026-07-03; benchmark/config.py permits only per_row
 
 MODEL_NAME=${1}
 BENCHMARK=${2}

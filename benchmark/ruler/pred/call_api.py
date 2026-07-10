@@ -64,10 +64,15 @@ class HuggingFaceModel:
         self.max_new_len = max_new_len
         self.mode = mode
 
-        if mode == "quant":
-            # Integer PTQ baseline: plain HF + SmoothQuant + fake-quant (no SC).
+        if mode in ("quant", "fp16"):
+            # FP16 + integer-PTQ baselines: plain HF (SmoothQuant + fake-quant for
+            # quant; pure fp16 for fp16) — the SAME builder as the PPL baseline, so
+            # RULER and PPL share one model-construction path. Crucially this AVOIDS
+            # the SC-adapted model's EAGER attention (which materializes B*H*N*N and
+            # OOMs at ctx 4096 with batching); plain HF uses efficient SDPA.
             from benchmark.quant.eval_quant import build_model
-            llm, tokenizer = build_model(model_name, quant_config, device_map=device)
+            tag = quant_config if mode == "quant" else "fp16"
+            llm, tokenizer = build_model(model_name, tag, device_map=device)
             llm.eval()
             self.llm = llm
             self.tokenizer = tokenizer
@@ -95,13 +100,30 @@ class HuggingFaceModel:
         self.tokenizer = tokenizer
 
     def __call__(self, prompt: str, **kwargs: object) -> dict[str, Any]:
-        torch.cuda.set_device(self.device)
+        if self.device != "auto":
+            torch.cuda.set_device(self.device)
         generated_text = get_pred(
             self.llm, self.tokenizer,
             input_text=prompt,
             max_new_tokens=self.max_new_len,
         )
         return {"text": [generated_text]}
+
+    def batch_generate(self, prompts: list[str]) -> list[str]:
+        """Left-padded batched greedy decode. Greedy (do_sample=False) is
+        deterministic per-sequence, so batching does not change which tokens a
+        given prompt produces (modulo negligible padding numerics) — it only
+        amortizes the per-step launch/bandwidth cost across the batch."""
+        if self.device != "auto":
+            torch.cuda.set_device(self.device)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.padding_side = "left"
+        enc = self.tokenizer(prompts, return_tensors="pt", padding=True).to(self.llm.device)
+        with torch.no_grad():
+            gen = self.llm.generate(
+                **enc, max_new_tokens=self.max_new_len, do_sample=False)
+        out_ids = gen[:, enc.input_ids.shape[1]:]
+        return self.tokenizer.batch_decode(out_ids, skip_special_tokens=True)
 
 
 def get_pred(
@@ -199,7 +221,8 @@ def main(args: argparse.Namespace) -> None:
     else:
         data = load_data(task_file)
 
-    torch.cuda.set_device(args.device)
+    if args.device != "auto":
+        torch.cuda.set_device(args.device)
     dtype = torch.float16 if args.dtype == "fp16" else torch.bfloat16
     llm = HuggingFaceModel(
         model_name=args.model_name,
@@ -213,11 +236,37 @@ def main(args: argparse.Namespace) -> None:
         quant_config=args.quant_config,
     )
 
+    # Batched fast path (RULER_BATCH>1): left-padded greedy decode over a chunk
+    # of prompts per forward — ~Nx the batch-1 throughput. Default 1 preserves
+    # the original per-sample path (and the SC modes, untouched).
+    batch = int(os.environ.get("RULER_BATCH", "1"))
+    if batch > 1:
+        with open(pred_file, "a", encoding="utf-8", buffering=1) as fout:
+            for i in tqdm(range(0, len(data), batch)):
+                chunk = data[i:i + batch]
+                preds = llm.batch_generate([dp["input"] for dp in chunk])
+                for dp, pred in zip(chunk, preds, strict=True):
+                    fout.write(json.dumps({
+                        "index": dp["index"],
+                        "pred": pred,
+                        "input": dp["input"],
+                        "outputs": dp["outputs"],
+                        "others": dp.get("others", {}),
+                        "truncation": dp.get("truncation", -1),
+                        "length": dp.get("length", -1),
+                    }) + "\n")
+                # free SC intermediates (cum_indicator tables / eager-attn scores)
+                # between batches — 14B SC OOM'd (88GB) without this as memory grew.
+                torch.cuda.empty_cache()
+        print(f"Used time: {round((time.time() - start_time) / 60, 1)} minutes")
+        return
+
     threads: list[threading.Thread] = []
     outputs_parallel: dict[int, dict[str, object]] = {}
     idx = -1
     with open(pred_file, "a", encoding="utf-8", buffering=1) as fout:
-        torch.cuda.set_device(args.device)
+        if args.device != "auto":
+            torch.cuda.set_device(args.device)
         for idx, data_point in tqdm(enumerate(data), total=len(data)):
             thread = threading.Thread(
                 target=get_output,

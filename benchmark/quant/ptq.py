@@ -2,8 +2,10 @@
 baselines — completely independent of the SC path.
 
 W_xA_x, symmetric or asymmetric, at N bits:
-  * weight     — per-OUTPUT-channel round-to-nearest (RTN), quantized once.
-  * activation — per-TOKEN dynamic RTN, computed each forward.
+  * Linear weight     — per-output-channel, per-128-input-chunk RTN.
+  * Linear activation — per-token, per-128-input-chunk dynamic RTN.
+  * Attention QK/AV   — both operands fake-quantized per row, per 128 values,
+                        before the fp16 matmul.
   * SmoothQuant smoothing (per-input-channel scale s) applied first:
         w' = w * s   (broadcast over out dim) ;  x' = x / s
     using scmp_kernels.quant.smoothquant.compute_smooth_scales.
@@ -43,6 +45,8 @@ class QuantConfig:
     sym: bool                       # True: symmetric (zp=0); False: asymmetric
     per_channel_w: bool = True      # per-output-channel weight scale
     per_token_a: bool = True        # per-token dynamic activation scale
+    chunk_size: int = 128           # SC-compatible input-dimension grouping
+    quantize_attention: bool = True # quantize QK and AV operands too
 
     def tag(self) -> str:
         return f"W{self.w_bits}A{self.a_bits}_{'symm' if self.sym else 'asymm'}"
@@ -76,9 +80,33 @@ def _fake_quant(x: torch.Tensor, bits: int, sym: bool, dim: int) -> torch.Tensor
     return deq.to(x.dtype)
 
 
+def _fake_quant_lastdim_chunks(
+    x: torch.Tensor,
+    bits: int,
+    sym: bool,
+    chunk_size: int,
+) -> torch.Tensor:
+    """RTN fake-quantize independently over chunks of the last dimension.
+
+    This matches the SC linear fast path's ``chunk_d=128`` scale scope: each
+    token/output row gets a separate quantization scale for each 128-wide slice
+    of the reduction dimension. The final short slice is quantized as-is.
+    """
+    if bits >= 16:
+        return x
+    if chunk_size <= 0 or x.shape[-1] <= chunk_size:
+        return _fake_quant(x, bits, sym, dim=-1)
+    chunks = [
+        _fake_quant(x[..., start:start + chunk_size], bits, sym, dim=-1)
+        for start in range(0, x.shape[-1], chunk_size)
+    ]
+    return torch.cat(chunks, dim=-1)
+
+
 class QuantLinear(nn.Module):
     """Drop-in for nn.Linear: SmoothQuant smoothing + weight RTN (pre-quantized)
-    + per-token activation RTN at forward. fp16 matmul on the dequantized values.
+    + per-token activation RTN at forward. Both use 128-wide input chunks by
+    default, matching SCLinear ``chunk_d``. fp16 matmul runs on dequantized values.
     """
 
     def __init__(self, linear: nn.Linear, qcfg: QuantConfig,
@@ -87,6 +115,7 @@ class QuantLinear(nn.Module):
         self.a_bits = qcfg.a_bits
         self.sym = qcfg.sym
         self.per_token_a = qcfg.per_token_a
+        self.chunk_size = int(qcfg.chunk_size)
         w = linear.weight.data.clone()                     # (out, in)
         dev, dt = w.device, w.dtype
         if smooth_scale is not None:
@@ -95,12 +124,14 @@ class QuantLinear(nn.Module):
             w = (w.float() * s.view(1, -1)).to(dt)         # w' = w * s
         else:
             self.smooth_scale = None
-        # Weight quantized ONCE (per-output-channel → reduce over in-dim=1).
+        # Weight quantized ONCE. Default is per-output-channel AND per-128
+        # input chunk, so each (output row, input chunk) has its own scale.
         wq_dim = 1 if qcfg.per_channel_w else None
         if wq_dim is None:
             wq = _fake_quant(w.reshape(1, -1), qcfg.w_bits, qcfg.sym, dim=-1).reshape_as(w)
         else:
-            wq = _fake_quant(w, qcfg.w_bits, qcfg.sym, dim=1)
+            wq = _fake_quant_lastdim_chunks(
+                w, qcfg.w_bits, qcfg.sym, self.chunk_size)
         self.register_buffer("weight", wq, persistent=False)
         self.register_buffer(
             "bias", linear.bias.data.clone() if linear.bias is not None else None,
@@ -110,16 +141,116 @@ class QuantLinear(nn.Module):
         if self.smooth_scale is not None:
             x = (x.float() / self.smooth_scale.view(1, -1)).to(x.dtype)  # x' = x/s
         if self.a_bits < 16:
-            # Per-token dynamic: reduce over the feature dim (-1); each token row
-            # gets its own scale. (per_token_a=False → per-tensor.)
+            # Per-token dynamic: each token row gets one scale per 128-wide
+            # feature chunk. (per_token_a=False → legacy per-tensor fallback.)
             a_dim = -1 if self.per_token_a else None
             if a_dim is None:
                 orig = x.shape
                 x = _fake_quant(x.reshape(1, -1), self.a_bits, self.sym, dim=-1).reshape(orig)
             else:
-                x = _fake_quant(x, self.a_bits, self.sym, dim=-1)
+                x = _fake_quant_lastdim_chunks(
+                    x, self.a_bits, self.sym, self.chunk_size)
         out = torch.nn.functional.linear(x, self.weight, self.bias)
         return out
+
+
+def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """GQA expansion: (B, H_kv, N, D) -> (B, H_kv*n_rep, N, D)."""
+    batch, n_kv, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, n_kv, n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, n_kv * n_rep, slen, head_dim)
+
+
+def int_eager_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    """HF eager-attention replacement for full INT fake-quant coverage.
+
+    The projection linears are already QuantLinear. This patch covers the two
+    non-Linear matmuls so W*A* configs no longer mean "linear-only INT".
+    """
+    key_states = _repeat_kv(key, module.num_key_value_groups)
+    value_states = _repeat_kv(value, module.num_key_value_groups)
+
+    config = getattr(module, "config", None)
+    enabled = bool(getattr(config, "use_int_attention", False))
+    bits = int(getattr(config, "int_attention_bits", 16))
+    sym = bool(getattr(config, "int_attention_sym", True))
+    chunk = int(getattr(config, "int_chunk_size", 128))
+
+    if enabled and bits < 16:
+        query_q = _fake_quant_lastdim_chunks(query, bits, sym, chunk)
+        key_q = _fake_quant_lastdim_chunks(key_states, bits, sym, chunk)
+        attn_weights = torch.matmul(
+            query_q, key_q.transpose(2, 3)) * scaling
+    else:
+        attn_weights = torch.matmul(
+            query, key_states.transpose(2, 3)) * scaling
+
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_weights = attn_weights + causal_mask
+
+    attn_weights = nn.functional.softmax(
+        attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+    attn_weights = nn.functional.dropout(
+        attn_weights, p=dropout, training=module.training)
+
+    if enabled and bits < 16:
+        # Express AV as a @ b.T so both operands are quantized over the shared
+        # reduction dimension (sequence length), matching the SC attention path.
+        attn_q = _fake_quant_lastdim_chunks(attn_weights, bits, sym, chunk)
+        value_t_q = _fake_quant_lastdim_chunks(
+            value_states.transpose(-2, -1), bits, sym, chunk)
+        attn_output = torch.matmul(attn_q, value_t_q.transpose(-2, -1))
+    else:
+        attn_output = torch.matmul(attn_weights, value_states)
+
+    attn_output = attn_output.transpose(1, 2).contiguous()
+    return attn_output, attn_weights
+
+
+_ATTN_PATCHED = False
+_ATTN_PATCH_COUNT = 0
+
+
+def patch_int_attention_once() -> int:
+    """Patch HF eager attention for Llama/Qwen3/Qwen3-MoE when available."""
+    global _ATTN_PATCHED, _ATTN_PATCH_COUNT
+    if _ATTN_PATCHED:
+        return _ATTN_PATCH_COUNT
+    patched = 0
+    try:
+        from transformers.models.llama import modeling_llama
+        modeling_llama.eager_attention_forward = int_eager_attention_forward
+        patched += 1
+    except Exception:
+        pass
+    try:
+        from transformers.models.qwen3 import modeling_qwen3
+        modeling_qwen3.eager_attention_forward = int_eager_attention_forward
+        patched += 1
+    except Exception:
+        pass
+    try:
+        from transformers.models.qwen3_moe import modeling_qwen3_moe
+        modeling_qwen3_moe.eager_attention_forward = int_eager_attention_forward
+        patched += 1
+    except Exception:
+        pass
+    _ATTN_PATCHED = True
+    _ATTN_PATCH_COUNT = patched
+    return _ATTN_PATCH_COUNT
 
 
 def _iter_target_linears(model: nn.Module):
@@ -214,11 +345,17 @@ def _resolve_device_map(device_map):
 
 
 def load_plain_model(model_path: str, dtype=torch.float16, device_map="auto"):
-    """Plain HF CausalLM (no SC), eager attention. Auto llama/qwen via id."""
+    """Plain HF CausalLM (no SC). Auto llama/qwen via id.
+
+    Attention impl is env-selectable via BASELINE_ATTN. Quantized INT configs
+    must use eager attention so :func:`int_eager_attention_forward` can cover
+    QK/AV; callers enforce that before loading quantized models.
+    """
+    import os
     from transformers import AutoModelForCausalLM
     return AutoModelForCausalLM.from_pretrained(
         model_path, torch_dtype=dtype, device_map=_resolve_device_map(device_map),
-        attn_implementation="eager")
+        attn_implementation=os.environ.get("BASELINE_ATTN", "eager"))
 
 
 def load_quant_model(model_path: str, qcfg: QuantConfig,
@@ -226,9 +363,27 @@ def load_quant_model(model_path: str, qcfg: QuantConfig,
                      alpha: float = 0.5, device_map="auto"):
     """Load plain HF model and apply SmoothQuant + fake-quant per qcfg.
     FP16 baseline = QuantConfig(16, 16, ...) → apply_ptq is a near-no-op."""
+    if qcfg.quantize_attention:
+        if os.environ.get("BASELINE_ATTN", "eager") != "eager":
+            raise SystemExit(
+                "INT baselines require BASELINE_ATTN=eager so QK/AV are "
+                "fake-quantized; refusing to build a linear-only INT model.")
+        n_patched = patch_int_attention_once()
+        if n_patched == 0:
+            raise SystemExit(
+                "INT baseline requested, but no supported HF eager "
+                "attention modules were patched.")
+        print(f"[ptq] INT attention patch active "
+              f"(modules_patched={n_patched}, chunk={qcfg.chunk_size})")
     model = load_plain_model(model_path, device_map=device_map)
     model.eval()
     n = apply_ptq(model, qcfg, act_scales=act_scales, alpha=alpha)
+    model.config.use_int_attention = bool(qcfg.quantize_attention)
+    model.config.int_attention_bits = int(qcfg.a_bits)
+    model.config.int_attention_sym = bool(qcfg.sym)
+    model.config.int_chunk_size = int(qcfg.chunk_size)
     print(f"[ptq] {qcfg.tag()}: quantized {n} Linear layers "
-          f"(smoothquant={'on' if act_scales else 'off'} alpha={alpha})")
+          f"(smoothquant={'on' if act_scales else 'off'} alpha={alpha}, "
+          f"chunk={qcfg.chunk_size}, "
+          f"qk_av={'on' if qcfg.quantize_attention else 'off'})")
     return model

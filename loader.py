@@ -91,6 +91,117 @@ def apply_sc_env_overrides(model) -> None:
         model.config.sc_halve_bipolar_stoc_len = (
             os.environ["SC_HALVE_BIPOLAR_STOC_LEN"] == "1")
     apply_mp_config_from_env(model)
+    apply_hybrid_config_from_env(model)
+
+
+def _normalize_backend(value) -> str:
+    """Normalize schedule entries to ``sc``, ``fp``, or ``int<N>``."""
+    if isinstance(value, bool):
+        return "sc" if value else "fp"
+    if isinstance(value, int):
+        if value == 0:
+            return "fp"
+        if value == 1:
+            return "sc"
+        if value > 1:
+            return f"int{value}"
+    s = str(value).strip().lower()
+    aliases = {
+        "0": "fp", "false": "fp", "off": "fp", "skip": "fp", "none": "fp",
+        "1": "sc", "true": "sc", "on": "sc",
+        "2": "int",
+    }
+    s = aliases.get(s, s)
+    if s == "int":
+        return "int"
+    if s.startswith("int") and s[3:].isdigit():
+        return s
+    if s in ("sc", "fp"):
+        return s
+    raise ValueError(
+        f"unknown hybrid backend {value!r}; expected sc, fp, int<N>, "
+        "or ViT-style 0/1/2 entries")
+
+
+def apply_hybrid_config_from_env(model) -> None:
+    """Load a ViT-style per-(operator, block) backend schedule.
+
+    The env var may be ``SC_HYBRID_CONFIG_JSON`` or ``HYBRID_CONFIG_JSON``.
+    Expected schema:
+
+        {
+          "format": "scmp_llm_hybrid_v1",
+          "default": "sc",
+          "int_bits": 7,
+          "int_sym": true,
+          "chunk_size": 128,
+          "schedule": {
+            "down_proj": ["sc", "sc", "int7"],
+            "qk": ["sc", "int7", "sc"]
+          }
+        }
+
+    The schedule shape intentionally mirrors scmp_vit: one row per op, one
+    entry per block. Entries normalize to ``sc``, ``fp``, or ``int<N>``.
+    """
+    path = (
+        os.environ.get("SC_HYBRID_CONFIG_JSON", "").strip()
+        or os.environ.get("HYBRID_CONFIG_JSON", "").strip()
+    )
+    if not path:
+        model.config.sc_hybrid_schedule = None
+        return
+
+    import json
+    with open(path) as f:
+        spec = json.load(f)
+
+    default = _normalize_backend(spec.get("default", "sc"))
+    int_bits = int(spec.get(
+        "int_bits",
+        os.environ.get(
+            "SC_HYBRID_INT_BITS",
+            os.environ.get("HYBRID_INT_BITS", "7"),
+        ),
+    ))
+    int_sym = bool(spec.get("int_sym", True))
+    chunk_size = int(spec.get("chunk_size", os.environ.get("INT_CHUNK_SIZE", "128")))
+    raw_schedule = spec.get("schedule", spec)
+    if not isinstance(raw_schedule, dict):
+        raise SystemExit(f"{path}: hybrid schedule must be a dict")
+
+    schedule = {}
+    for op, row in raw_schedule.items():
+        if op in {"format", "default", "int_bits", "int_sym", "chunk_size"}:
+            continue
+        if isinstance(row, dict):
+            items = row.items()
+        elif isinstance(row, list):
+            items = enumerate(row)
+        else:
+            raise SystemExit(
+                f"{path}: schedule[{op!r}] must be a list or block-index dict")
+        for block, value in items:
+            backend = _normalize_backend(value)
+            if backend == default:
+                continue
+            schedule[(str(op), int(block))] = backend
+
+    model.config.sc_hybrid_schedule = schedule
+    model.config.sc_hybrid_default = default
+    model.config.sc_hybrid_int_bits = int_bits
+    model.config.sc_hybrid_int_sym = int_sym
+    model.config.sc_hybrid_chunk_size = chunk_size
+    model.config.sc_hybrid_force_int_bits = (
+        os.environ.get("SC_HYBRID_FORCE_INT_BITS", "0") == "1"
+    )
+    model.config.sc_hybrid_path = os.path.abspath(path)
+
+    counts = {}
+    for backend in schedule.values():
+        counts[backend] = counts.get(backend, 0) + 1
+    print(f"[hybrid] loaded {path}: default={default} overrides={counts} "
+          f"int_bits={int_bits} sym={int_sym} chunk={chunk_size}")
 
 
 def apply_mp_config_from_env(model) -> None:

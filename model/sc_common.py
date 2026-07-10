@@ -60,6 +60,13 @@ except ImportError:
     adaptive_classify_rows = None
     _HAS_MP = False
 
+try:
+    from benchmark.quant.ptq import _fake_quant_lastdim_chunks as _int_fake_quant_chunks
+    _HAS_INT_FAKE_QUANT = True
+except ImportError:
+    _int_fake_quant_chunks = None
+    _HAS_INT_FAKE_QUANT = False
+
 
 SC_CONFIG_DEFAULTS = {
     "use_sc_attn": True,
@@ -99,6 +106,16 @@ SC_CONFIG_DEFAULTS = {
     # STE — falling back to sc_stoc_len for unmapped modules. None (default)
     # leaves every path byte-identical to normal inference.
     "sc_group_stoclen": None,
+    # Optional hybrid backend schedule:
+    #   sc_hybrid_schedule[(op_name, block_idx)] = "sc" | "fp" | "int<N>"
+    # Loaded by loader.apply_hybrid_config_from_env from a scmp_vit-style JSON.
+    # None preserves the existing all-SC / MP behavior.
+    "sc_hybrid_schedule": None,
+    "sc_hybrid_default": "sc",
+    "sc_hybrid_int_bits": 7,
+    "sc_hybrid_int_sym": True,
+    "sc_hybrid_chunk_size": 128,
+    "sc_hybrid_force_int_bits": False,
 }
 
 
@@ -196,6 +213,70 @@ def _complement_channel_indices(width: int, selected: torch.Tensor, device) -> t
     return mask.nonzero(as_tuple=True)[0]
 
 
+def _hybrid_backend(config, op: Optional[str], block_idx: Optional[int]) -> str:
+    schedule = getattr(config, "sc_hybrid_schedule", None)
+    if schedule is None or op is None or block_idx is None:
+        return "sc"
+    return schedule.get(
+        (op, int(block_idx)),
+        getattr(config, "sc_hybrid_default", "sc"),
+    )
+
+
+def _hybrid_int_bits(config, backend: str) -> int:
+    if (not bool(getattr(config, "sc_hybrid_force_int_bits", False))
+            and backend.startswith("int") and backend[3:].isdigit()):
+        return int(backend[3:])
+    return int(getattr(config, "sc_hybrid_int_bits", 7))
+
+
+def _int_linear(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: Optional[torch.Tensor],
+    *,
+    bits: int,
+    sym: bool,
+    chunk_size: int,
+    smooth_scales: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    if not _HAS_INT_FAKE_QUANT:
+        raise RuntimeError(
+            "hybrid INT backend requested, but benchmark.quant.ptq "
+            "_fake_quant_lastdim_chunks could not be imported")
+    orig_dtype = x.dtype
+    w = weight
+    if smooth_scales is not None:
+        s = smooth_scales.to(device=x.device, dtype=torch.float32)
+        view_shape = [1] * x.ndim
+        view_shape[-1] = s.numel()
+        x = (x.float() / s.view(*view_shape)).to(orig_dtype)
+        w = (weight.float() * s.view(1, -1)).to(orig_dtype)
+    if bits < 16:
+        x = _int_fake_quant_chunks(x, bits, sym, chunk_size)
+        w = _int_fake_quant_chunks(w, bits, sym, chunk_size)
+    return nn.functional.linear(x, w, bias)
+
+
+def _int_attention_matmul_ab_t(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    *,
+    bits: int,
+    sym: bool,
+    chunk_size: int,
+) -> torch.Tensor:
+    """INT fake-quant equivalent of ``a @ b.T`` for QK and AV."""
+    if not _HAS_INT_FAKE_QUANT:
+        raise RuntimeError(
+            "hybrid INT attention requested, but benchmark.quant.ptq "
+            "_fake_quant_lastdim_chunks could not be imported")
+    if bits < 16:
+        a = _int_fake_quant_chunks(a, bits, sym, chunk_size)
+        b = _int_fake_quant_chunks(b, bits, sym, chunk_size)
+    return torch.matmul(a, b.transpose(2, 3))
+
+
 # ---------------------------------------------------------------------------
 # SCLinear — nn.Linear subclass that routes the matmul through sc_matmul
 # ---------------------------------------------------------------------------
@@ -248,13 +329,28 @@ class SCLinear(nn.Linear):
                 getattr(self, "_sc_unit_idx", None),
             )
 
+        op_name = getattr(self, "_sc_op_name", None)
+        block_idx = getattr(self, "_sc_block_idx", None)
+        backend = _hybrid_backend(config, op_name, block_idx)
+        if backend == "fp":
+            return nn.functional.linear(x, self.weight, self.bias)
+        if backend.startswith("int"):
+            bits = _hybrid_int_bits(config, backend)
+            return _int_linear(
+                x, self.weight, self.bias,
+                bits=bits,
+                sym=bool(getattr(config, "sc_hybrid_int_sym", True)),
+                chunk_size=int(getattr(config, "sc_hybrid_chunk_size", sc_chunk_d)),
+                smooth_scales=smooth,
+            )
+
         group_map = getattr(config, "sc_group_stoclen", None)
         if group_map is not None:
             # Calibration-only per-(operator, block) UNIFORM stoc_len override,
             # used by the measured-ΔLoss knock-down probe: force this module to a
             # specified uniform stoc_len (halved space), no MP dispatch, no STE.
             # Modules not in the map fall back to the global sc_stoc_len.
-            key = (getattr(self, "_sc_op_name", None), getattr(self, "_sc_block_idx", None))
+            key = (op_name, block_idx)
             sl = int(group_map.get(key, sc_stoc_len))
             if sl <= 0:
                 out = torch.zeros(
@@ -299,8 +395,6 @@ class SCLinear(nn.Linear):
             # Per-row mixed-precision dispatch. Classify each token row by
             # its abs-max along D, then call sc_matmul once per stoc_len
             # level on that level's row subset and scatter back.
-            op_name = getattr(self, "_sc_op_name", None)
-            block_idx = getattr(self, "_sc_block_idx", None)
             unit_idx = getattr(self, "_sc_unit_idx", None)
             protected_idx = torch.empty(0, dtype=torch.long, device=x_flat.device)
             rest_idx = None
@@ -678,8 +772,21 @@ def sc_eager_attention_forward(
     # MPConfig doesn't use these.
     block_idx = getattr(module, "layer_idx", None)
     total_blocks = getattr(config, "_sc_total_blocks", None)
+    qk_backend = _hybrid_backend(config, "qk", block_idx)
+    av_backend = _hybrid_backend(config, "av", block_idx)
+    int_sym = bool(getattr(config, "sc_hybrid_int_sym", True))
+    int_chunk = int(getattr(config, "sc_hybrid_chunk_size", 128))
 
-    if use_sc and group_map is not None:
+    if qk_backend == "fp":
+        attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+    elif qk_backend.startswith("int"):
+        attn_weights = _int_attention_matmul_ab_t(
+            query, key_states,
+            bits=_hybrid_int_bits(config, qk_backend),
+            sym=int_sym,
+            chunk_size=int_chunk,
+        ) * scaling
+    elif use_sc and group_map is not None:
         # Calibration-only per-(op, block) UNIFORM stoc_len override (measured
         # ΔLoss knock-down probe). Explicit stoc_len in halved space; no MP.
         sl_qk = int(group_map.get(("qk", block_idx), sc_stoc_len))
@@ -722,7 +829,16 @@ def sc_eager_attention_forward(
     attn_weights = nn.functional.dropout(
         attn_weights, p=dropout, training=module.training)
 
-    if use_sc and group_map is not None:
+    if av_backend == "fp":
+        attn_output = torch.matmul(attn_weights, value_states)
+    elif av_backend.startswith("int"):
+        attn_output = _int_attention_matmul_ab_t(
+            attn_weights, value_states.transpose(-2, -1),
+            bits=_hybrid_int_bits(config, av_backend),
+            sym=int_sym,
+            chunk_size=int_chunk,
+        )
+    elif use_sc and group_map is not None:
         sl_av = int(group_map.get(("av", block_idx), sc_stoc_len))
         attn_output = _sc_attention_matmul_ab_t(
             attn_weights, value_states.transpose(-2, -1),

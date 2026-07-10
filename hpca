@@ -2,10 +2,10 @@
 # hpca — single entry point for the HPCA LLM experiments.
 #
 # PHASE 1: NON-SC quantization baselines.
-#   models  : Qwen3-1.7B, Qwen3-14B, Qwen3-30B-A3B (MoE), Llama-3.1-8B
+#   models  : Qwen3-4B, Qwen3-14B, Qwen3-30B-A3B (MoE), Llama-3.1-8B
 #   configs : fp16 + {W8A8,W7A7,W6A6,W5A5,W4A4} x {symm,asymm}   (11 per model)
-#   quant   : SmoothQuant + per-channel-weight / per-token-activation RTN
-#             fake-quant (symm/asymm on BOTH W and A). See benchmark/quant/ptq.py.
+#   quant   : SmoothQuant + chunked W/A RTN fake-quant for Linear layers, plus
+#             QK/AV attention operand fake-quant. See benchmark/quant/ptq.py.
 #   metrics : ppl (wikitext-2) + longbench + ruler
 #
 # PHASE 2: SC UNIFORM baselines (sc_int8, sc_avg192, sc_int7, sc_avg96, sc_int6).
@@ -30,11 +30,14 @@
 #   bash hpca --configs fp16,W8A8_symm,W4A4_asymm
 #   bash hpca --gpu 0 --models 14B  &  bash hpca --gpu 1 --models 30B   # fan out
 #   bash hpca --configs sc_int8,sc_int7,sc_int6 --metrics ppl   # SC uniform cells
+#   bash hpca --sensitivity --models 4B --configs sc_avg192     # ΔLoss sensitivity JSON
+#   bash hpca --configs sc_avg192 --sc-backend hybrid --hybrid-config path.json
+#   bash hpca --configs sc_avg192 --sc-backend hybrid            # auto top-10% INT from sensitivity JSON
 #   bash hpca --dry-run                          # print jobs, run nothing
 # -----------------------------------------------------------------------------
 set -uo pipefail
 
-MODELS_CSV="1.7B,14B,30B,llama8B"
+MODELS_CSV="4B,14B,30B,llama8B"
 CONFIGS_CSV="fp16,W8A8_symm,W8A8_asymm,W7A7_symm,W7A7_asymm,W6A6_symm,W6A6_asymm,W5A5_symm,W5A5_asymm,W4A4_symm,W4A4_asymm,sc_int8,sc_avg192,sc_int7,sc_avg96,sc_int6"
 # SC scramble operating point (Phase 2 cells; ignored by INT cells).
 # HARD-ASSIGNED, not inherited: a stale shell export (SC_SCRAMBLE_MASKS=256
@@ -57,6 +60,19 @@ PPL_CTX=2048
 SQ_ALPHA=0.5
 GPU_OVERRIDE=""
 DRY=0
+SC_BACKEND="sc"          # sc | hybrid
+HYBRID_CONFIG_JSON=""
+HYBRID_INT_BITS=""       # empty => inferred from SC budget tag
+HYBRID_INT_FRAC="0.10"   # auto hybrid schedule: fraction of (op,block) entries switched to INT
+HYBRID_SENS_DIR=""       # empty => $TURBO_BASE/sensitivity/_hpca_${TAG}
+HYBRID_SENS_CONFIG=""    # empty => same as evaluated config; e.g. sc_avg192 to reuse one ranking
+SENSITIVITY=0
+SENS_METHOD="measured_curve"
+SENS_CALIB_SEQS=4
+SENS_CTX=512
+SENS_WINDOWS=2
+SENS_LAYER_BUCKETS="4"   # integer, or "layers"/"auto" for per-operator per-layer sensitivity
+SENS_OUTDIR=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -72,11 +88,33 @@ while [[ $# -gt 0 ]]; do
     --gpu)      GPU_OVERRIDE="$2"; shift 2 ;;
     --owen-mode) SC_OWEN_MODE="$2"; shift 2 ;;
     --masks)    SC_SCRAMBLE_MASKS="$2"; shift 2 ;;
+    --sc-backend) SC_BACKEND="$2"; shift 2 ;;
+    --hybrid-config) HYBRID_CONFIG_JSON="$2"; shift 2 ;;
+    --hybrid-int-bits) HYBRID_INT_BITS="$2"; shift 2 ;;
+    --hybrid-int-frac) HYBRID_INT_FRAC="$2"; shift 2 ;;
+    --hybrid-sensitivity-dir) HYBRID_SENS_DIR="$2"; shift 2 ;;
+    --hybrid-sensitivity-config) HYBRID_SENS_CONFIG="$2"; shift 2 ;;
+    --sensitivity) SENSITIVITY=1; METRICS_CSV="sensitivity"; shift ;;
+    --sens-method) SENS_METHOD="$2"; shift 2 ;;
+    --sens-calib-seqs) SENS_CALIB_SEQS="$2"; shift 2 ;;
+    --sens-ctx) SENS_CTX="$2"; shift 2 ;;
+    --sens-windows) SENS_WINDOWS="$2"; shift 2 ;;
+    --sens-layer-buckets) SENS_LAYER_BUCKETS="$2"; shift 2 ;;
+    --sens-outdir) SENS_OUTDIR="$2"; shift 2 ;;
     --dry-run)  DRY=1; shift ;;
     -h|--help)  grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown flag: $1"; exit 1 ;;
   esac
 done
+
+case "$SC_BACKEND" in
+  sc|hybrid) ;;
+  *) echo "unknown --sc-backend: $SC_BACKEND (expected sc|hybrid)"; exit 1 ;;
+esac
+case "$SENS_METHOD" in
+  measured|measured_marg|measured_curve) ;;
+  *) echo "unknown --sens-method: $SENS_METHOD"; exit 1 ;;
+esac
 
 # model shortname -> HF id
 declare -A MODEL_ID=(
@@ -107,8 +145,10 @@ export HF_DATASETS_CACHE="$HF_HOME/datasets"
 export HF_HUB_CACHE="$HF_HOME/hub"
 # Reduce allocator fragmentation on the big MoE (helps the 60GB model + quant).
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
-mkdir -p "$SCRATCH_BASE/tmp" 2>/dev/null || true
-export TMPDIR="$SCRATCH_BASE/tmp"
+if [[ $DRY -eq 0 ]]; then
+  mkdir -p "$SCRATCH_BASE/tmp" 2>/dev/null || true
+  export TMPDIR="$SCRATCH_BASE/tmp"
+fi
 
 IFS=, read -ra MODELS  <<<"$MODELS_CSV"
 IFS=, read -ra CONFIGS <<<"$CONFIGS_CSV"
@@ -116,6 +156,11 @@ IFS=, read -ra METRICS <<<"$METRICS_CSV"
 
 echo "[hpca] outdir=$OUTDIR"
 echo "[hpca] models=$MODELS_CSV configs=$CONFIGS_CSV metrics=$METRICS_CSV"
+if [[ -n "$HYBRID_CONFIG_JSON" ]]; then
+  echo "[hpca] sc_backend=$SC_BACKEND hybrid_config=$HYBRID_CONFIG_JSON"
+else
+  echo "[hpca] sc_backend=$SC_BACKEND hybrid_int_frac=$HYBRID_INT_FRAC"
+fi
 
 record() {  # <model> <config> <metric> <value>
   printf "%s\t%s\t%s\t%s\n" "$1" "$2" "$3" "$4" >> "$RESULTS"
@@ -132,6 +177,175 @@ fail_cell() {  # <model> <config> <metric> <why>
   N_FAILED=$((N_FAILED + 1))
 }
 
+is_sc_like_cfg() {
+  local cfg="$1"
+  [[ "$cfg" == sc_* || "$cfg" == mp || "$cfg" == mp_* ]]
+}
+
+hybrid_int_bits_for_cfg() {  # <config>
+  local cfg="$1"
+  if [[ -n "$HYBRID_INT_BITS" ]]; then echo "$HYBRID_INT_BITS"; return; fi
+  case "$cfg" in
+    sc_int8|sc_avg192|mp_avg192) echo 8 ;;
+    sc_int7|sc_avg96|mp_int7|mp_avg96|mp|mp_*) echo 7 ;;
+    sc_int6) echo 6 ;;
+    *) echo 7 ;;
+  esac
+}
+
+model_num_layers() {  # <short>
+  case "$1" in
+    4B) echo 36 ;;
+    llama8B) echo 32 ;;
+    14B) echo 40 ;;
+    30B) echo 48 ;;
+    1.7B) echo 28 ;;
+    *) return 1 ;;
+  esac
+}
+
+auto_hybrid_config() {  # <short> <config> -> path
+  local short="$1" cfg="$2"
+  local safe_cfg="${cfg//[^A-Za-z0-9_.-]/_}"
+  local sens_cfg="${HYBRID_SENS_CONFIG:-$cfg}"
+  local safe_sens_cfg="${sens_cfg//[^A-Za-z0-9_.-]/_}"
+  local sens_dir="${HYBRID_SENS_DIR:-$TURBO_BASE/sensitivity/_hpca_${TAG}}"
+  local sens_json="$sens_dir/${short}_${safe_sens_cfg}_${SENS_METHOD}.json"
+  local outdir="$TURBO_BASE/hybrid_configs/_hpca_${TAG}"
+  local frac_tag="${HYBRID_INT_FRAC//./p}"
+  local out="$outdir/${short}_${safe_cfg}_rank-${safe_sens_cfg}_${SENS_METHOD}_top${frac_tag}.json"
+  local layers
+  layers="$(model_num_layers "$short")" || return 1
+  if [[ ! -s "$sens_json" ]]; then
+    echo "[hpca] missing sensitivity JSON for auto hybrid: $sens_json" >&2
+    return 1
+  fi
+  if [[ $DRY -eq 1 ]]; then
+    echo "$out"
+    return
+  fi
+  if [[ $DRY -eq 0 ]]; then mkdir -p "$outdir"; fi
+  python - "$sens_json" "$out" "$layers" "$HYBRID_INT_FRAC" "$(hybrid_int_bits_for_cfg "$cfg")" <<'PY'
+import json
+import math
+import sys
+
+sens_path, out_path, layers_s, frac_s, bits_s = sys.argv[1:6]
+num_layers = int(layers_s)
+frac = float(frac_s)
+bits = int(bits_s)
+if not (0.0 <= frac <= 1.0):
+    raise SystemExit(f"hybrid fraction must be in [0,1], got {frac}")
+
+with open(sens_path) as f:
+    sens = json.load(f)
+
+layer_buckets = int(sens.get("layer_buckets", 1))
+backend = f"int{bits}"
+schedule = {}
+candidates = []
+for key, rec in sens.get("buckets", {}).items():
+    op, _t, lpart = key.split(":")
+    l_bucket = int(lpart[1:])
+    errs = [float(x) for x in rec.get("level_mean_error", [])]
+    if len(errs) < 2:
+        continue
+    worst = max(errs[1:])
+    blocks = [
+        b for b in range(num_layers)
+        if min(layer_buckets - 1, (b * layer_buckets) // max(num_layers, 1)) == l_bucket
+    ]
+    for block in blocks:
+        candidates.append((worst, op, block, key))
+
+target = int(math.ceil(len(candidates) * frac))
+chosen = sorted(candidates, key=lambda x: x[0], reverse=True)[:target]
+for _score, op, block, _key in chosen:
+    row = schedule.setdefault(op, ["sc"] * num_layers)
+    row[block] = backend
+
+payload = {
+    "format": "scmp_llm_hybrid_v1",
+    "default": "sc",
+    "int_bits": bits,
+    "int_sym": True,
+    "chunk_size": 128,
+    "source_sensitivity": sens_path,
+    "selection": {
+        "method": "top_fraction_by_bucket_worst_delta_loss",
+        "fraction": frac,
+        "selected_entries": len(chosen),
+        "total_entries": len(candidates),
+        "selected_fraction": (len(chosen) / len(candidates)) if candidates else 0.0,
+    },
+    "schedule": schedule,
+}
+with open(out_path, "w") as f:
+    json.dump(payload, f, indent=2, sort_keys=True)
+print(out_path)
+PY
+}
+
+sensitivity_budget_for_cfg() {  # <config> -> "levels ratio ref"
+  local cfg="$1"
+  case "$cfg" in
+    sc_int8)   echo "128,96,64 1.0 128" ;;
+    sc_avg192) echo "128,96,64 0.75 128" ;;
+    sc_int7)   echo "128,64,32 0.5 128" ;;
+    sc_avg96)  echo "64,48,32 0.75 64" ;;
+    sc_int6)   echo "64,48,32 0.5 64" ;;
+    *)
+      echo "[hpca] sensitivity only understands sc_* budget configs, got $cfg" >&2
+      return 1
+      ;;
+  esac
+}
+
+run_sensitivity() {  # <short> <hf> <config>
+  local short="$1" hf="$2" cfg="$3"
+  local spec levels ratio ref layer_buckets
+  spec="$(sensitivity_budget_for_cfg "$cfg")" || { fail_cell "$short" "$cfg" sensitivity "bad_cfg"; return; }
+  read -r levels ratio ref <<<"$spec"
+  case "$SENS_LAYER_BUCKETS" in
+    auto|layer|layers|per-layer|per_layer) layer_buckets="$(model_num_layers "$short")" ;;
+    *) layer_buckets="$SENS_LAYER_BUCKETS" ;;
+  esac
+  local outbase="${SENS_OUTDIR:-$TURBO_BASE/sensitivity/_hpca_${TAG}}"
+  local safe_cfg="${cfg//[^A-Za-z0-9_.-]/_}"
+  local out="$outbase/${short}_${safe_cfg}_${SENS_METHOD}.json"
+  local log="$OUTDIR/${short}_${safe_cfg}_${SENS_METHOD}_sensitivity.log"
+  echo "[hpca] >>> Sensitivity $short / $cfg ($SENS_METHOD levels=$levels ratio=$ratio ref=$ref layer_buckets=$layer_buckets) -> $out"
+  if [[ $DRY -eq 1 ]]; then
+    echo "  DRY: MODEL_PATH=$hf python benchmark/ppl/calibrate_mp_thresholds.py --layer_buckets $layer_buckets --cross-layer-weight $SENS_METHOD --mp_levels $levels --budget_ratio $ratio --budget_ref_stoc_len $ref --output_json $out"
+    return
+  fi
+  mkdir -p "$outbase"
+  env MODEL_PATH="$hf" SQ_ALPHA="$SQ_ALPHA" ACT_SCALES_DIR="$ACT_SCALES_DIR" \
+      SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" \
+      python -u "$HERE/benchmark/ppl/calibrate_mp_thresholds.py" \
+        --model_path "$hf" \
+        --sc_prec 8 --halve 1 \
+        --mp_levels "$levels" \
+        --budget_ratio "$ratio" \
+        --budget_ref_stoc_len "$ref" \
+        --layer_buckets "$layer_buckets" \
+        --budget-scope global \
+        --cross-layer-weight "$SENS_METHOD" \
+        --num_calib_sequences "$SENS_CALIB_SEQS" \
+        --ctx_len "$PPL_CTX" \
+        --calib-smoothquant \
+        --measure-windows "$SENS_WINDOWS" \
+        --measure-ctx "$SENS_CTX" \
+        --output_json "$out" \
+        2>&1 | tee "$log"
+  local rc="${PIPESTATUS[0]}"
+  if [[ $rc -eq 0 && -s "$out" ]]; then
+    record "$short" "$cfg" sensitivity "$out"
+  else
+    fail_cell "$short" "$cfg" sensitivity "rc=$rc, no output"
+  fi
+}
+
 run_ppl() {  # <short> <hf> <config>
   local short="$1" hf="$2" cfg="$3"
   local log="$OUTDIR/${short}_${cfg}_ppl.log"
@@ -146,11 +360,31 @@ run_ppl() {  # <short> <hf> <config>
     [[ $DRY -eq 0 ]] && mkdir -p "$(dirname "$trace")"
   fi
   echo "[hpca] >>> PPL  $short / $cfg -> $log"
-  [[ $DRY -eq 1 ]] && { echo "  DRY: MODEL_PATH=$hf QUANT_CONFIG=$cfg SC_MP_TRACE=$trace python benchmark/quant/eval_quant.py"; return; }
+  local hybrid_env=()
+  if [[ "$SC_BACKEND" == "hybrid" ]] && is_sc_like_cfg "$cfg"; then
+    local hybrid_config="$HYBRID_CONFIG_JSON"
+    if [[ -z "$hybrid_config" ]]; then
+      hybrid_config="$(auto_hybrid_config "$short" "$cfg")" || {
+        fail_cell "$short" "$cfg" ppl "auto hybrid config failed"
+        return
+      }
+    fi
+    if [[ -z "$hybrid_config" ]]; then
+      fail_cell "$short" "$cfg" ppl "--sc-backend hybrid requires --hybrid-config or sensitivity JSON"
+      return
+    fi
+    hybrid_env=(
+      SC_HYBRID_CONFIG_JSON="$hybrid_config"
+      SC_HYBRID_INT_BITS="$(hybrid_int_bits_for_cfg "$cfg")"
+      SC_HYBRID_FORCE_INT_BITS=1
+    )
+  fi
+  [[ $DRY -eq 1 ]] && { echo "  DRY: MODEL_PATH=$hf QUANT_CONFIG=$cfg SC_MP_TRACE=$trace ${hybrid_env[*]} python benchmark/quant/eval_quant.py"; return; }
   env MODEL_PATH="$hf" QUANT_CONFIG="$cfg" SQ_ALPHA="$SQ_ALPHA" \
       PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$PPL_CTX" \
       SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" \
       SC_MP_TRACE="$trace" SC_MP_TRACE_MODE="${SC_MP_TRACE_MODE:-summary}" \
+      "${hybrid_env[@]}" \
       python -u "$HERE/benchmark/quant/eval_quant.py" 2>&1 | tee "$log"
   local rc="${PIPESTATUS[0]}"
   # capture finite PPL AND nan/inf (a collapsed config is a real result)
@@ -162,18 +396,28 @@ run_ppl() {  # <short> <hf> <config>
   fi
 }
 
+# LongBench uses a REGISTERED key from config/model2path.json (+ model2maxlen.json),
+# NOT the HF id, and its argparsers accept dtype fp16|bf16 (NOT float16).
+# Registered today: qwen3-4b, llama-3.1-8b. To enable 14B/30B, add them to BOTH
+# json files, then map short->key here. Unmapped models are skipped.
+declare -A LONGBENCH_NAME=(
+  [4B]="qwen3-4b"
+  [llama8B]="llama-3.1-8b"
+)
 run_longbench() {  # <short> <hf> <config>
   local short="$1" hf="$2" cfg="$3"
   [[ "$cfg" == sc_* ]] && { echo "[hpca] [skip] LongBench $short/$cfg — SC cells are ppl-only"; return; }
+  local lbname="${LONGBENCH_NAME[$short]:-}"
+  [[ -z "$lbname" ]] && { echo "[hpca] [skip] LongBench $short/$cfg — '$short' not registered in benchmark/LongBench/config/model2path.json"; return; }
   local mode="fp16"; [[ "$cfg" != "fp16" ]] && mode="quant"
-  echo "[hpca] >>> LongBench  $short / $cfg (mode=$mode)"
-  [[ $DRY -eq 1 ]] && { echo "  DRY: QUANT_CONFIG=$cfg bash benchmark/LongBench/longbench_run.sh $hf $mode float16 cuda:0"; return; }
+  echo "[hpca] >>> LongBench  $short ($lbname) / $cfg (mode=$mode)"
+  [[ $DRY -eq 1 ]] && { echo "  DRY: QUANT_CONFIG=$cfg bash benchmark/LongBench/longbench_run.sh $lbname $mode fp16 cuda:0"; return; }
   ( cd "$HERE/benchmark/LongBench" && QUANT_CONFIG="$cfg" \
-      bash longbench_run.sh "$hf" "$mode" float16 cuda:0 ) 2>&1 \
+      bash longbench_run.sh "$lbname" "$mode" fp16 cuda:0 ) 2>&1 \
       | tee "$OUTDIR/${short}_${cfg}_longbench.log"
-  # score lives in results/pred/<hf>/<tag>/result.json — average it
+  # score lives in results/pred/<key>/<tag>/result.json — average it
   local tag="fp16"; [[ "$cfg" != "fp16" ]] && tag="quant_${cfg}"
-  local rj="$HERE/benchmark/LongBench/results/pred/${hf}/${tag}/result.json"
+  local rj="$HERE/benchmark/LongBench/results/pred/${lbname}/${tag}/result.json"
   local v; v=$(python -c "import json,sys;d=json.load(open('$rj'));print(round(sum(d.values())/len(d),4))" 2>/dev/null)
   if [[ -n "$v" ]]; then
     record "$short" "$cfg" longbench "$v"
@@ -183,15 +427,14 @@ run_longbench() {  # <short> <hf> <config>
 }
 
 # RULER uses a REGISTERED model name (ruler_config_models.sh), NOT the HF id.
-# Registered today: llama-3.1-8b, qwen3-30b-a3b. TODO: register qwen3-1.7b and
-# qwen3-14b (copy an existing block, point MODEL_PATH at the HF id) before RULER
-# can run for those. ruler_run.sh positional args:
+# All five below are registered in ruler_config_models.sh. ruler_run.sh args:
 #   MODEL_NAME(1) BENCHMARK(2) MAX_SEQ(3) TASK(4) MODE(5) DTYPE(6) DEVICE(7)
 declare -A RULER_NAME=(
-  [1.7B]="qwen3-1.7b"       # NOT yet registered
-  [14B]="qwen3-14b"         # NOT yet registered
-  [30B]="qwen3-30b-a3b"     # registered
-  [llama8B]="llama-3.1-8b"  # registered
+  [1.7B]="qwen3-1.7b"
+  [4B]="qwen3-4b"
+  [14B]="qwen3-14b"
+  [30B]="qwen3-30b-a3b"
+  [llama8B]="llama-3.1-8b"
 )
 RULER_MAXSEQ="${RULER_MAXSEQ:-4096}"
 RULER_TASK="${RULER_TASK:-niah_single_1}"   # single task; loop externally for full RULER
@@ -199,20 +442,45 @@ run_ruler() {  # <short> <hf> <config>
   local short="$1" hf="$2" cfg="$3"
   [[ "$cfg" == sc_* ]] && { echo "[hpca] [skip] RULER $short/$cfg — SC cells are ppl-only"; return; }
   local rname="${RULER_NAME[$short]:-}"
+  [[ -z "$rname" ]] && { echo "[hpca] [skip] RULER $short/$cfg — no ruler_config_models.sh name mapped for '$short'"; return; }
   local mode="fp16"; [[ "$cfg" != "fp16" ]] && mode="quant"
   echo "[hpca] >>> RULER  $short ($rname) / $cfg (mode=$mode, task=$RULER_TASK)"
   if ! grep -q "\b${rname})" "$HERE/benchmark/ruler/ruler_config_models.sh" 2>/dev/null; then
     echo "  [skip] '$rname' not registered in ruler_config_models.sh — register it first."; return
   fi
-  [[ $DRY -eq 1 ]] && { echo "  DRY: QUANT_CONFIG=$cfg bash ruler_run.sh $rname synthetic $RULER_MAXSEQ $RULER_TASK $mode float16 cuda:0"; return; }
-  ( cd "$HERE/benchmark/ruler" && QUANT_CONFIG="$cfg" \
-      bash ruler_run.sh "$rname" synthetic "$RULER_MAXSEQ" "$RULER_TASK" "$mode" float16 cuda:0 ) 2>&1 \
+  # DTYPE=fp16 (the argparsers accept fp16|bf16, NOT float16).
+  # SC_ATTN_GRANULARITY=per_row: ruler_run.sh forwards it to call_api.py for
+  # every mode, and benchmark/config.py now only permits per_row — its default
+  # (per_head) would be rejected in argparse before the model even loads.
+  [[ $DRY -eq 1 ]] && { echo "  DRY: QUANT_CONFIG=$cfg SC_ATTN_GRANULARITY=per_row bash ruler_run.sh $rname synthetic $RULER_MAXSEQ $RULER_TASK $mode fp16 cuda:0"; return; }
+  ( cd "$HERE/benchmark/ruler" && QUANT_CONFIG="$cfg" SC_ATTN_GRANULARITY=per_row \
+      bash ruler_run.sh "$rname" synthetic "$RULER_MAXSEQ" "$RULER_TASK" "$mode" fp16 cuda:0 ) 2>&1 \
       | tee "$OUTDIR/${short}_${cfg}_ruler.log"
-  local v; v=$(grep -hoE "[0-9.]+" "$HERE/benchmark/ruler/ruler_eval_result/${rname}"/*/*/quant_${cfg}/*summary* 2>/dev/null | tail -1)
+  # Summary: ruler_eval_result/<name>/synthetic/<maxseq>/<tag>/pred/
+  # summary-<task>.csv (tag=fp16 or quant_<cfg>). Rows are Tasks/Score/Nulls —
+  # read the Score row explicitly. (The old glob missed the /pred/ level and the
+  # fp16 tag, and `tail -1` grabbed the Nulls value instead of the score.)
+  local rtag="fp16"; [[ "$cfg" != "fp16" ]] && rtag="quant_${cfg}"
+  local sumdir="$HERE/benchmark/ruler/ruler_eval_result/${rname}/synthetic/${RULER_MAXSEQ}/${rtag}/pred"
+  local scsv="$sumdir/summary-${RULER_TASK}.csv"; [[ -f "$scsv" ]] || scsv="$sumdir/summary.csv"
+  local v; v=$(python3 - "$scsv" <<'PYEOF'
+import csv, sys
+try:
+    rows = list(csv.reader(open(sys.argv[1])))
+except Exception:
+    sys.exit(0)
+for r in rows:
+    if r and r[0].strip().lower() == "score":
+        vals = [float(x) for x in r[1:] if x.strip().lower() not in ("", "nan")]
+        if vals:
+            print(round(sum(vals) / len(vals), 4))
+        break
+PYEOF
+)
   if [[ -n "$v" ]]; then
     record "$short" "$cfg" ruler "$v"
   else
-    fail_cell "$short" "$cfg" ruler "no summary under ruler_eval_result/${rname}"
+    fail_cell "$short" "$cfg" ruler "no Score row in $scsv"
   fi
 }
 
@@ -223,6 +491,7 @@ for SHORT in "${MODELS[@]}"; do
     for M in "${METRICS[@]}"; do
       case "$M" in
         ppl)       run_ppl       "$SHORT" "$HF" "$CFG" ;;
+        sensitivity) run_sensitivity "$SHORT" "$HF" "$CFG" ;;
         longbench) run_longbench "$SHORT" "$HF" "$CFG" ;;
         ruler)     run_ruler     "$SHORT" "$HF" "$CFG" ;;
         *) echo "[skip] unknown metric '$M'" ;;

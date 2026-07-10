@@ -19,7 +19,7 @@ Usage (after `_setup_env.done` is touched and an HF token is configured):
     --sc_prec 8 --halve 1 \\
     --mp_levels 128,96,64 \\
     --budget_ratio 0.71 --budget_ref_stoc_len 128 \\
-    --num_calib_sequences 4 --ctx_len 1024 \\
+    --num_calib_sequences 16 --ctx_len 1024 \\
     --output_json benchmark/ppl/mp_calib/<safe>__int8_avg91.json
 
 Operators recorded: q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj,
@@ -375,9 +375,13 @@ def _sc_attn_matmul_at_level(
     M = b.shape[-2]
     a3 = a.reshape(B * H, N, K).to(torch.float32).contiguous()
     b3 = b.reshape(B * H, M, K).to(torch.float32).contiguous()
+    # Must match the DEPLOYED attention kernel: runtime routes qk/av through
+    # per_row (model/sc_common.py `_sc_attention_matmul_ab_t`; per_head was
+    # removed 2026-07-03 as catastrophic for small models). Calibrating on
+    # per_head would fit qk/av thresholds to a kernel that is never run.
     out3 = _sc_matmul(
         a3, b3,
-        granularity="per_head", mode="bipolar",
+        granularity="per_row", mode="bipolar",
         sc_prec=sc_prec, stoc_len=int(stoc_len),
         halve_bipolar_stoc_len=halve,
     )
@@ -1298,12 +1302,35 @@ def _make_sclinear_hook(
                 teacher = teacher_full.reshape(-1, teacher_full.shape[-1])
             else:
                 teacher = output.reshape(-1, output.shape[-1])
-            row_metric = _normalize_metric(x_flat.float().abs().amax(dim=-1))
             # #5: match the deployed smoothed-activation error distribution.
             calib_smooth = (getattr(module, "smooth_scales", None)
                             if calibrator.calib_smoothquant else None)
             protected = calibrator.protected_indices_for_module(
                 op, block_idx, getattr(module, "_sc_unit_idx", None))
+            # Rank rows on the SAME channels runtime uses. When salient
+            # (protected) channels are split off to their own stream, runtime
+            # EXCLUDES them from the per-row abs-max metric (model/sc_common.py:
+            # `metric_source = x_flat.index_select(1, rest_idx)`). Fitting the
+            # metric on all channels here while runtime ranks on the complement
+            # shifts row ordering / threshold occupancy and drifts the budget.
+            prot_idx = torch.tensor(
+                sorted({int(i) for i in (protected or [])
+                        if 0 <= int(i) < x_flat.shape[1]}),
+                dtype=torch.long, device=x_flat.device)
+            if prot_idx.numel() == 0:
+                metric_rows = x_flat.float().abs().amax(dim=-1)
+            else:
+                mask = torch.ones(x_flat.shape[1], dtype=torch.bool,
+                                  device=x_flat.device)
+                mask[prot_idx] = False
+                rest_idx = mask.nonzero(as_tuple=True)[0]
+                metric_rows = (
+                    x_flat.index_select(1, rest_idx).float().abs().amax(dim=-1)
+                    if rest_idx.numel() > 0
+                    else torch.zeros(x_flat.shape[0], dtype=torch.float32,
+                                     device=x_flat.device)
+                )
+            row_metric = _normalize_metric(metric_rows)
             level_errors = []
             for sl in levels:
                 if protected:
@@ -1775,7 +1802,7 @@ def _build_parser():
                    help="Inner-dim chunk for SCLinear calls (matches sc_linear_chunk_d).")
     p.add_argument("--operators", default=DEFAULT_OPERATORS,
                    help="Comma-separated operators to calibrate.")
-    p.add_argument("--num_calib_sequences", type=int, default=4,
+    p.add_argument("--num_calib_sequences", type=int, default=16,
                    help="Number of ctx-length wikitext2 windows to run.")
     p.add_argument("--ctx_len", type=int, default=1024)
     p.add_argument("--calib_dataset", default="wikitext")

@@ -90,12 +90,23 @@ run_cell(){  # <gpu> <model> <budget> <method>
   local wrapper="$TABLES/${sm}__${budget}__${method}_wrapper.json"
   local ckpt=""; case "$model" in 14B|30B|32B) ckpt="CALIB_GRAD_CKPT=1";; esac
   # FLOP/energy-weighted budget (iso-compute): per-op MACs/row from the model's
-  # sc_int7 trace. Falls back to row-weighting if no trace exists.
+  # sc_int7 trace. A MAC-weighted cell REQUIRES the trace — see the fail below.
   local trace="${TRACE_DIR:-/home/allenjin/Projects/hpca_results/llm/uniform/traces}/${model}_sc_int7_trace.json"
   local budgetflags=""
   if [[ "${BUDGET_WEIGHT:-rows}" == "macs" ]]; then
-    if [[ -s "$trace" ]]; then budgetflags="--budget-weight macs --mac-weights-trace $trace"
-    else echo "[gpu$gpu] WARN: no trace $trace — row-weighted fallback for $tag"; fi
+    if [[ -s "$trace" ]]; then
+      budgetflags="--budget-weight macs --mac-weights-trace $trace"
+    else
+      # Do NOT silently fall back to row-weighting: that is the superseded
+      # budget bug (CLAUDE.md), and it would be calibrated under the SAME
+      # table/result key as the iso-FLOP run — marked OK and then reused
+      # forever by the `[[ ! -s "$table" ]]` guard below. Fail the cell loudly
+      # instead of running a different (non-citable) protocol under this key.
+      echo "[gpu$gpu] [FAIL] $tag: BUDGET_WEIGHT=macs but no MAC trace ($trace)"
+      append "$model" "$budget" "$method" "-" "-" "NO_TRACE"
+      rmdir "$lockdir" 2>/dev/null
+      return
+    fi
   fi
   echo "[gpu$gpu] >>> $tag  levels=$levels ratio=$ratio $(date +%H:%M)"
   {
@@ -110,12 +121,19 @@ run_cell(){  # <gpu> <model> <budget> <method>
           --budget_ref_stoc_len 128 --sc_prec 8 --halve 1 --ctx_len "$CTX" \
           $mflags $budgetflags $sqflag --output_json "$table" || echo "CALIB_RC=$?"
     else echo "[calib] reuse $table"; fi
-    if [[ ! -s "$table" ]]; then echo "=== $tag CALIB FAILED ==="; exit 21; fi
-    python -c "import json;json.dump({'type':'AdaptiveMPConfig','stoc_len_levels':[int(x) for x in '$levels'.split(',')],'threshold_table_path':'$table'},open('$wrapper','w'))"
-    env CUDA_VISIBLE_DEVICES="$gpu" MODEL_PATH="$hf" QUANT_CONFIG=mp SQ_ALPHA="$SQ_ALPHA" \
-        PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$CTX" SC_OWEN_MODE="$SC_OWEN_MODE" \
-        SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" MP_CONFIG_JSON="$wrapper" ACT_SCALES_DIR="$ACT_SCALES_DIR" \
-        timeout "$CELL_TIMEOUT" python -u benchmark/quant/eval_quant.py
+    if [[ ! -s "$table" ]]; then
+      # No table => calibration failed. Do NOT `exit` here: this brace group
+      # runs in the current (worker) shell, so `exit` kills the whole worker,
+      # leaks $lockdir, and abandons every remaining cell it owned. Just skip
+      # the eval — the post-block logic records CALIB_FAILED and frees the lock.
+      echo "=== $tag CALIB FAILED ==="
+    else
+      python -c "import json;json.dump({'type':'AdaptiveMPConfig','stoc_len_levels':[int(x) for x in '$levels'.split(',')],'threshold_table_path':'$table'},open('$wrapper','w'))"
+      env CUDA_VISIBLE_DEVICES="$gpu" MODEL_PATH="$hf" QUANT_CONFIG=mp SQ_ALPHA="$SQ_ALPHA" \
+          PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$CTX" SC_OWEN_MODE="$SC_OWEN_MODE" \
+          SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" MP_CONFIG_JSON="$wrapper" ACT_SCALES_DIR="$ACT_SCALES_DIR" \
+          timeout "$CELL_TIMEOUT" python -u benchmark/quant/eval_quant.py
+    fi
   } >> "$log" 2>&1
   local ppl avg
   ppl=$(grep "\[RESULT\]" "$log" | grep -oE "value=[0-9.eE+-]+|value=nan|value=inf" | sed 's/value=//' | tail -1)
@@ -157,7 +175,10 @@ worker(){ local g="$1"; while true; do local c; c=$(pop); [[ -z "$c" ]] && break
 
 echo "[overnight] $(date) NGPU=$NGPU cells=$(wc -l <"$QUEUE") results=$RESULTS"
 echo "[overnight] logdir=$LOGDIR tables=$TABLES"
-for g in $(seq 0 $((NGPU-1))); do worker "$g" & done
-wait
+pids=()
+for g in $(seq 0 $((NGPU-1))); do worker "$g" & pids+=("$!"); done
+wfail=0
+for p in "${pids[@]}"; do wait "$p" || wfail=1; done
+[[ $wfail -ne 0 ]] && echo "[overnight] WARNING: a worker exited non-zero — queue may be incomplete; re-run to pick up cells left unprocessed."
 echo "[overnight] ALL DONE $(date)"
 column -t -s$'\t' "$RESULTS"
