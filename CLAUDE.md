@@ -63,10 +63,23 @@
 >
 > Current best algorithmic direction is **hybrid INT + protected-channel
 > `act_global` MP**, not `measured_curve` as a default. Evidence: protected
-> channel helped the aggressive `len96_burst` MP point at roughly the same
+> channel helped the aggressive low-average MP point at roughly the same
 > compensated FLOP budget (4B 14.8210→13.6191, llama8B 9.3799→8.8165, 14B
 > 10.0332→9.5976). `measured_curve` has mixed results and prior under-budget /
 > artifact caveats; do not call it SOTA without a fresh fixed-budget run.
+>
+> Use the first-class `hpca` MP config names:
+> `mp_avg96_burst128`, `mp_avg64_burst128`, `mp_avg48_burst128`. The average
+> number is the target MAC-weighted SC stream length after the hybrid INT mask
+> is applied; `burst128` means the MP levels still include 128 and protected
+> channels are pinned to 128 by default. Current launch shape:
+>
+> ```bash
+> bash hpca --models 4B --configs mp_avg96_burst128 --metrics ppl \
+>   --sc-backend hybrid --hybrid-int-frac 0.10 \
+>   --hybrid-sensitivity-dir /nfs/turbo/coe-nbleier/allenjin/hpca/sensitivity/_hpca_sens_layer_int8_20260709_012921 \
+>   --hybrid-sensitivity-config sc_int8 --tag <tag>
+> ```
 >
 > Correct MP+hybrid calibration order:
 > 1. Apply the per-operator-per-layer hybrid mask first (top 10% sensitive
@@ -78,6 +91,43 @@
 >    --protect-compensate-budget`).
 > 4. SC budget is the budget for the remaining SC computation only; INT layers
 >    are outside that SC budget.
+>
+> ### 2026-07-10 — act_global_v2 launched (new MP algorithm, full 4-model sweep)
+> New method `act_global_v2` = act_global + two flag-gated allocator changes
+> (defaults off ⇒ byte-identical act_global):
+> 1. **`--argmin-pricing macs`** — KKT-consistent per-row cycle price. The old
+>    argmin priced cycles by `rep_g = mac_per_row × true/stored`; the subsample
+>    ratio (attention ~128× vs dense linears ~4×, experts 1×) cancels between a
+>    stored row's benefit and cost in the true KKT solution, so pricing by
+>    `mac_per_row` ONLY fixes a mispricing that affects every model (dense: 4B
+>    avg48 gave v_proj@115cyc σ0.13 while down_proj@40 σ0.27; MoE: floored
+>    qk/av below uniform → the 30B MP<uniform catastrophe). Budget stays
+>    R_g-weighted (iso-compute unchanged; `expected_flop_avg_stoc_len` still
+>    the check). Guards: requires budget-weight macs + global scope, no refine.
+> 2. **`--metric-select auto`** — per-operator SIGNED dispatch-metric selection.
+>    Calibration captures candidates (amax / l2 / crest=amax÷l2) per row, picks
+>    per op the candidate with best |Spearman ρ| vs true σ-benefit (negative ρ
+>    ⇒ deploy inverted; margin 0.05 vs amax; partial-capture ⇒ keep amax),
+>    builds thresholds on the winner, exports `dispatch_metrics` in the table;
+>    runtime (`_mp_dispatch_metric` in sc_common.py + AdaptiveMPConfig) computes
+>    the chosen metric — all O(D), runtime-free. Old tables ⇒ amax (back-compat).
+>    Motivation: ρ(amax) ≈ 0/negative on down/o/up_proj on ALL models.
+>    Unit-tested: formula/ranking parity calib↔runtime, sign parity
+>    (−metric ≡ 1−m), JSON round-trip, selection end-to-end (5/5 pass).
+> **Launched 2026-07-10 ~20:14 ET** (queued behind RULER jobs, 10-GPU cap full):
+> smoke job 53296574 (4B avg64, 65k-token gate: flop-avg 64±2 + PPL<14 + logs
+> per-op allocation vs v1 refs qk111/av111/v128/down63) → touches
+> `~/mp_v2_smoke_passed`; lanes 53296575-78 (4B/llama8B/14B/30B ×
+> {avg96,avg64,avg48}, full PPL, `--dependency=afterok` + marker check,
+> kill-on-invalid-dep). Tags: smoke `mp_v2_smoke_20260710_201348` (non-citable),
+> full `mp_v2_hyb_pc_20260710_201348`. Scripts `benchmark/ppl/mp_v2_{smoke,lane}.sh`;
+> results `/nfs/turbo/coe-nbleier/allenjin/hpca/results/results_mp_v2_hyb_pc_20260710_201348.tsv`;
+> tables `mp_calib_mp_v2_hyb_pc_20260710_201348` (fresh dirs per quarantine rule).
+> **Baseline to beat (v1, same hybrid+pc pipeline, `results_mp_hyb_pc_20260709_205822.tsv`):**
+> 4B 10.34/10.83/11.62, llama8B 7.71/8.18/8.89, 14B 8.70/9.00/9.28,
+> 30B 8.09/10.20/12.23 (avg96/avg64/avg48). 30B is the expected big win
+> (allocation inversion fix); dense direction supported by the SQ-calib smoke
+> (attention-heavy shift 12.77→11.06) but magnitude genuinely open.
 >
 > ### 2026-07-07 — Protected-channel GN selector launched
 > First protected-channel full run improved aggressive avg96/len96 but not enough
