@@ -27,9 +27,10 @@ cd "${HERE}"
 
 export HF_HUB_CACHE="${HF_HUB_CACHE:-/nfs/turbo/coe-nbleier/zhkangqi/hf_cache_hub}"
 
-ROOT_DIR="./ruler_eval_result"
+ROOT_DIR="${RULER_ROOT_DIR:-./ruler_eval_result}"
 NUM_SAMPLES="${NUM_SAMPLES:-200}"
 SC_ATTN_GRANULARITY="${SC_ATTN_GRANULARITY:-per_row}"   # per_head kernel removed 2026-07-03; benchmark/config.py permits only per_row
+RULER_TAG_SUFFIX="${RULER_TAG_SUFFIX:-}"
 
 MODEL_NAME=${1}
 BENCHMARK=${2}
@@ -49,6 +50,7 @@ case "${MODE}" in
     sc)        TAG="sc_prec${SC_PREC}_stoc${SC_STOC_LEN}_gran-${SC_ATTN_GRANULARITY}" ;;
     *) echo "unknown mode: ${MODE}"; exit 1 ;;
 esac
+TAG="${TAG}${RULER_TAG_SUFFIX}"
 
 # Model and Tokenizer (HF id + chat template + framework)
 source ruler_config_models.sh

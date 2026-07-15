@@ -34,7 +34,7 @@ from transformers import AutoTokenizer
 from utils import load_data
 
 from benchmark.config import parse_sc_args
-from loader import load_sc_model
+from loader import apply_sc_env_overrides, load_sc_model
 
 
 def seed_everything(seed: int) -> None:
@@ -94,6 +94,7 @@ class HuggingFaceModel:
             llm.config.sc_prec = sc_prec
             llm.config.sc_stoc_len = sc_stoc_len
         llm.config.sc_granularity = sc_attn_granularity
+        apply_sc_env_overrides(llm)
         llm.eval()
 
         self.llm = llm
