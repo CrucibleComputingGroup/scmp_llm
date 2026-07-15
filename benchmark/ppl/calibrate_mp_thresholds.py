@@ -96,6 +96,20 @@ def _normalize_metric(metric: torch.Tensor) -> torch.Tensor:
 # (4B int7 act_global 16.9→19.2, grad_group 46→83).
 
 
+def _metric_candidates(x_rows: torch.Tensor) -> dict:
+    """act_global_v2 candidate dispatch metrics for one call, per-call
+    NORMALIZED like the primary amax metric. ``x_rows`` is the SAME row-source
+    tensor the amax metric was computed from (protected channels already
+    excluded), flattened to (rows, D). Formulas must mirror
+    ``scmp_kernels.mp.compute_row_metric`` exactly (runtime parity):
+    l2 = ‖row‖₂, crest = ‖row‖_inf / ‖row‖₂ (eps 1e-12)."""
+    xf = x_rows.float().reshape(-1, x_rows.shape[-1])
+    l2 = xf.norm(dim=-1)
+    amax = xf.abs().amax(dim=-1)
+    crest = amax / (l2 + 1e-12)
+    return {"l2": _normalize_metric(l2), "crest": _normalize_metric(crest)}
+
+
 def _relative_l2_rows(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     pred_f = pred.float().reshape(pred.shape[0], -1)
     target_f = target.float().reshape(target.shape[0], -1)
@@ -184,6 +198,7 @@ def _global_lambda(
     budget_ratio: float,
     ref: float,
     row_counts: list,
+    prices: Optional[list] = None,
 ) -> float:
     """Find ONE shared Lagrange multiplier λ across many groups for a GLOBAL,
     ROW-WEIGHTED budget — the cross-layer allocation core.
@@ -214,6 +229,13 @@ def _global_lambda(
     # and the optimum is ≤ uniform.
     reps = [float(R) / max(int(e.shape[0]), 1)
             for e, R in zip(weighted_errors, row_counts)]
+    # act_global_v2 (--argmin-pricing macs): callers may override the per-row
+    # cycle PRICE in the argmin (mac_per_row[op] — the KKT-consistent price of
+    # "min Σ_true W·σ s.t. Σ_true macs·cycles ≤ B"; rep_g's extra true/stored
+    # factor cancels between a stored row's benefit and cost). The BUDGET side
+    # below is unchanged either way (still R_g-weighted, iso-compute).
+    if prices is None:
+        prices = reps
     global_budget = budget_ratio * ref * total_rows
     min_cost = float(total_rows * costs[-1])
     max_cost = float(total_rows * costs[0])
@@ -224,8 +246,8 @@ def _global_lambda(
 
     def total_cost(lmbd: float) -> float:
         t = 0.0
-        for e, R, rep in zip(weighted_errors, row_counts, reps):
-            assign = (e + lmbd * rep * costs[None, :]).argmin(axis=1)
+        for e, R, price in zip(weighted_errors, row_counts, prices):
+            assign = (e + lmbd * price * costs[None, :]).argmin(axis=1)
             t += float(R) * float(costs[assign].mean())   # R_g · avg_cost_g
         return t
 
@@ -439,6 +461,26 @@ class ThresholdCalibrator:
         self.calib_smoothquant = False
         self.levels = levels
         self.operators = set(operators)
+        # ---- act_global_v2 knobs (defaults = byte-identical act_global) ----
+        # argmin_pricing: what multiplies the cycle cost in the PER-ROW argmin.
+        #   "rep"  — rep_g = R_g/n_g (original). Includes the subsample ratio
+        #            true/stored, which does NOT belong in the KKT solution of
+        #            "min Σ_true W·σ  s.t.  Σ_true macs·cycles ≤ B": that ratio
+        #            multiplies a stored row's benefit AND cost equally, so it
+        #            cancels in the per-row argmin. Leaving it in over-prices
+        #            heavily-subsampled groups' cycles (attention stored rows
+        #            stand for ~128× more true rows than dense-linear ones).
+        #   "macs" — mac_per_row[op] only: the KKT-consistent price. Budget
+        #            accounting is UNCHANGED (still R_g-weighted, iso-compute).
+        self.argmin_pricing = "rep"
+        # metric_select: "amax" (original dispatch metric, byte-identical) or
+        # "auto" — capture candidate metrics (amax/l2/crest) per row and pick,
+        # per operator, the SIGNED candidate with the best Spearman ρ against
+        # the true σ-benefit. Thresholds are then built on the winner and the
+        # choice exported for the runtime (payload "dispatch_metrics").
+        self.metric_select = "amax"
+        self.metric_select_margin = 0.05
+        self.dispatch_metric_selection: dict = {}
         # Cross-layer budget: "per_bucket" (each (op,layer-bucket) pinned to the
         # same avg budget — original) or "global" (one shared λ over all groups,
         # budget flows across layers/operators). group_weights maps
@@ -478,7 +520,8 @@ class ThresholdCalibrator:
         self._fisher_sum: dict = defaultdict(float)
         self._fisher_cnt: dict = defaultdict(int)
         self.costs = np.asarray(levels, dtype=np.float64)
-        self.records: dict = defaultdict(lambda: {"metrics": [], "errors": []})
+        self.records: dict = defaultdict(
+            lambda: {"metrics": [], "errors": [], "alts": defaultdict(list)})
         # True (un-subsampled) per-forward row count accumulated per group. The
         # global solve weights each group's budget by this so the realized
         # row-weighted avg_sl hits the target — attention (qk/av) carries far
@@ -565,6 +608,7 @@ class ThresholdCalibrator:
         errors_by_level: list,
         grad_rows: Optional[torch.Tensor] = None,
         energy_rows: Optional[torch.Tensor] = None,
+        metric_alts: Optional[dict] = None,
     ):
         """Record one matmul call's per-row metric + per-level SC error.
 
@@ -637,15 +681,31 @@ class ThresholdCalibrator:
                 # literal g≡1 special case and avoids over-concentrating budget
                 # on a few high-gradient rows). Downstream solver is unchanged.
                 errors = (g[:, None] ** self.grad_g_pow) * (errors ** self.grad_s_pow)
+        # act_global_v2 candidate metrics (per-call NORMALIZED, aligned with
+        # metric_norm row-for-row). Subsampled with the SAME keep indices so
+        # candidates stay aligned with errors for the ρ selection.
+        alts = {}
+        if metric_alts:
+            for name, alt in metric_alts.items():
+                a = alt.detach().float().reshape(-1).cpu().numpy()
+                if a.shape[0] != metrics.shape[0]:
+                    raise RuntimeError(
+                        f"metric_alts[{name}] rows ({a.shape[0]}) misaligned "
+                        f"with metric rows ({metrics.shape[0]}) for "
+                        f"operator={operator} block_idx={block_idx}.")
+                alts[name] = a
         true_size = int(metrics.size)   # before subsampling — the runtime weight
         if self.max_units_per_call > 0 and metrics.size > self.max_units_per_call:
             keep = self._rng.choice(metrics.size, self.max_units_per_call, replace=False)
             metrics = metrics[keep]
             errors = errors[keep]
+            alts = {name: a[keep] for name, a in alts.items()}
         l_bucket = _bucket_index(block_idx, self.total_blocks, self.layer_buckets)
         key = (operator, 0, l_bucket)
         self.records[key]["metrics"].append(metrics)
         self.records[key]["errors"].append(errors)
+        for name, a in alts.items():
+            self.records[key]["alts"][name].append(a)
         self.true_counts[key] += true_size
 
     def _weight_for_key(self, key) -> float:
@@ -727,6 +787,82 @@ class ThresholdCalibrator:
                        "benefit_mean": float(b.mean())}
         return out
 
+    def select_dispatch_metrics(self) -> dict:
+        """act_global_v2 (--metric-select auto): per-operator SIGNED dispatch-
+        metric selection. For each operator, pool all buckets and compute
+        Spearman ρ(candidate, σ-benefit) for amax + every captured alt; pick
+        the candidate with the largest |ρ| (negative ρ ⇒ deploy with sign −1,
+        which inverts the ranking). Switch away from raw amax only when the
+        winner clears the incumbent by ``metric_select_margin`` (noise guard).
+
+        On a switch, the stored per-bucket metric arrays are REWRITTEN to the
+        selected candidate (sign −1 ⇒ 1−m, exactly what the runtime's negated-
+        metric min–max normalization produces), so thresholds, summaries, and
+        the post-selection ρ diagnostic all reflect the deployed metric. The
+        choice is exported via payload["dispatch_metrics"] for the runtime.
+        Assignments/budget are untouched — the metric only maps counts to
+        thresholds."""
+        if self.metric_select != "auto":
+            return {}
+        per_op: dict = defaultdict(lambda: defaultdict(lambda: {"m": [], "b": []}))
+        for key, rec in self.records.items():
+            if not rec["metrics"]:
+                continue
+            e = np.concatenate(rec["errors"], axis=0)
+            b = e[:, -1] - e[:, 0]                 # σ(min L) − σ(max L) ≥ 0
+            cands = {"amax": np.concatenate(rec["metrics"], axis=0)}
+            for name, lst in rec["alts"].items():
+                if lst:
+                    cands[name] = np.concatenate(lst, axis=0)
+            for name, m in cands.items():
+                if m.shape[0] != b.shape[0]:
+                    # Partial capture (e.g. a call whose channels were all
+                    # protected recorded no alts). Drop this key's contribution
+                    # for this candidate — never kill an hours-long calibration
+                    # over a diagnostic candidate; amax always stays available.
+                    print(f"[calib] WARN metric-select: candidate '{name}' "
+                          f"misaligned for group {key} "
+                          f"({m.shape[0]} vs {b.shape[0]} rows) — skipped.")
+                    continue
+                per_op[key[0]][name]["m"].append(m)
+                per_op[key[0]][name]["b"].append(b)
+        chosen: dict = {}
+        for op, cands in per_op.items():
+            rhos = {name: _spearman(np.concatenate(d["m"]),
+                                    np.concatenate(d["b"]))
+                    for name, d in cands.items()}
+            base = float(rhos.get("amax", 0.0))
+            best_name = max(rhos, key=lambda n: abs(rhos[n]))
+            best_rho = float(rhos[best_name])
+            sign = 1.0 if best_rho >= 0.0 else -1.0
+            if best_name == "amax" and sign > 0.0:
+                continue                            # incumbent stands
+            if abs(best_rho) < max(base, 0.0) + self.metric_select_margin:
+                continue                            # not clearly better
+            # A switched candidate must cover EVERY stored row of the op:
+            # thresholds are quantiles of the metric array aligned with the
+            # error-based counts, so a partial-capture candidate would shift
+            # threshold occupancy. If coverage is incomplete, keep amax.
+            if best_name != "amax":
+                covered = all(
+                    sum(int(a.size) for a in rec["alts"][best_name])
+                    == sum(int(m.size) for m in rec["metrics"])
+                    for key, rec in self.records.items() if key[0] == op)
+                if not covered:
+                    print(f"[calib] WARN metric-select: '{best_name}' wins on "
+                          f"{op} but has partial capture — keeping amax.")
+                    continue
+            for key, rec in self.records.items():
+                if key[0] != op:
+                    continue
+                src = (rec["metrics"] if best_name == "amax"
+                       else rec["alts"][best_name])
+                rec["metrics"] = [(1.0 - m) if sign < 0.0 else m for m in src]
+            chosen[op] = {"metric": best_name, "sign": sign,
+                          "rho_signed": abs(best_rho), "rho_amax": base}
+        self.dispatch_metric_selection = chosen
+        return chosen
+
     def _fit_group(self, metrics: np.ndarray, errors: np.ndarray,
                    lam: Optional[float] = None, weight: float = 1.0,
                    rep: float = 1.0,
@@ -777,6 +913,12 @@ class ThresholdCalibrator:
             "operator_defaults": {},
             "buckets": {},
         }
+        # act_global_v2 provenance + the runtime dispatch-metric switch table
+        # (AdaptiveMPConfig.load_threshold_table consumes "dispatch_metrics";
+        # absent/empty ⇒ runtime uses the original amax everywhere).
+        payload["argmin_pricing"] = self.argmin_pricing
+        if self.dispatch_metric_selection:
+            payload["dispatch_metrics"] = self.dispatch_metric_selection
         # Global cross-layer: find ONE shared λ over all per-bucket groups so the
         # budget can flow across layers/operators. Per-bucket scope leaves λ=None
         # (each group independently pinned to budget_ratio·ref — original).
@@ -828,7 +970,7 @@ class ThresholdCalibrator:
             payload["protected_channels"] = protected
         global_lam = None
         if self.budget_scope == "global":
-            werrs, row_counts = [], []
+            werrs, row_counts, prices = [], [], []
             for key, rec in self.records.items():
                 e = np.concatenate(rec["errors"], axis=0)
                 if self.objective == "sigma2":
@@ -838,9 +980,10 @@ class ThresholdCalibrator:
                 # MACs (FLOP/energy) per self.budget_weight. Fall back to the
                 # stored count if (unexpectedly) missing.
                 row_counts.append(self._weight_count(key, e.shape[0]))
+                prices.append(self._price_for_key(key))
             global_lam = _global_lambda(
                 werrs, self.costs, self.budget_ratio,
-                float(self.budget_ref_stoc_len), row_counts)
+                float(self.budget_ref_stoc_len), row_counts, prices=prices)
             payload["global_lambda"] = float(global_lam)
             if self.refine_mode == "sigma" or getattr(self, "_curve_applied", False):
                 # measured_curve: the per-group-constant ΔLoss curve makes the
@@ -879,10 +1022,17 @@ class ThresholdCalibrator:
             errors = np.concatenate(self.records[key]["errors"], axis=0)  # [n,L]
             w = self._weight_for_key(key)
             rep = self._rep_for_key(key)
+            # act_global_v2/v3: the argmin + greedy RANKING use the KKT price
+            # (mac_per_row under --argmin-pricing macs; == rep in legacy mode,
+            # keeping the original behavior byte-identical). BUDGET accounting
+            # (realized/target/affordability) always uses the true rep_g so the
+            # fill stays exactly iso-compute.
+            price = self._price_for_key(key)
             R = self._weight_count(key, errors.shape[0])
-            obj = (w * errors) + global_lam * rep * costs[None, :]
+            obj = (w * errors) + global_lam * price * costs[None, :]
             assign = obj.argmin(axis=1).astype(np.int64)   # == _fit_group's argmin
-            data[key] = {"errors": errors, "w": w, "rep": rep, "assign": assign}
+            data[key] = {"errors": errors, "w": w, "rep": rep, "price": price,
+                         "assign": assign}
             total_R += R
             realized += rep * float(costs[assign].sum())    # = R_g · mean_row cost
         target = self.budget_ratio * self.budget_ref_stoc_len * total_R
@@ -901,9 +1051,9 @@ class ThresholdCalibrator:
                 j = int(d["assign"][i])
                 if j > 0:
                     dsig = d["w"] * (float(d["errors"][i, j]) - float(d["errors"][i, j - 1]))
-                    dcost = d["rep"] * (float(costs[j - 1]) - float(costs[j]))
-                    if dcost > 0 and dsig > 0:
-                        heapq.heappush(heap, (-(dsig / dcost), key, i))
+                    drank = d["price"] * (float(costs[j - 1]) - float(costs[j]))
+                    if drank > 0 and dsig > 0:
+                        heapq.heappush(heap, (-(dsig / drank), key, i))
         spent = upgrades = 0
         spent_cost = 0.0
         while heap and residual > 1e-9:
@@ -923,9 +1073,9 @@ class ThresholdCalibrator:
             upgrades += 1
             if j - 1 > 0:
                 dsig2 = d["w"] * (float(d["errors"][i, j - 1]) - float(d["errors"][i, j - 2]))
-                dcost2 = d["rep"] * (float(costs[j - 2]) - float(costs[j - 1]))
-                if dcost2 > 0 and dsig2 > 0:
-                    heapq.heappush(heap, (-(dsig2 / dcost2), key, i))
+                drank2 = d["price"] * (float(costs[j - 2]) - float(costs[j - 1]))
+                if drank2 > 0 and dsig2 > 0:
+                    heapq.heappush(heap, (-(dsig2 / drank2), key, i))
         refined = {k: data[k]["assign"] for k in keys}
         new_realized = 0.0
         for key in keys:
@@ -970,6 +1120,20 @@ class ThresholdCalibrator:
             R += self._weight_count(key, ng)
         return (R / max(n, 1)) if n else 1.0
 
+    def _price_for_key(self, key) -> float:
+        """Per-row cycle PRICE for the argmin (act_global_v2). "macs" prices a
+        stored row's cycle by mac_per_row[op] — the KKT-consistent price (the
+        subsample ratio in rep_g cancels between benefit and cost). "rep" is
+        the original rep_g pricing."""
+        if self.argmin_pricing == "macs":
+            return float(self.mac_per_row.get(key[0], 1.0))
+        return self._rep_for_key(key)
+
+    def _price_for_op(self, operator) -> float:
+        if self.argmin_pricing == "macs":
+            return float(self.mac_per_row.get(operator, 1.0))
+        return self._rep_for_op(operator)
+
     def _export_body(self, payload, summary_rows, global_lam):
         # Operator-level fallback (concat all layer buckets per op).
         for operator in sorted(self.operators):
@@ -984,7 +1148,7 @@ class ThresholdCalibrator:
                     np.concatenate(op_metrics, axis=0),
                     np.concatenate(op_errors, axis=0),
                     lam=global_lam, weight=self._op_weight(operator),
-                    rep=self._rep_for_op(operator),
+                    rep=self._price_for_op(operator),
                 )
                 payload["operator_defaults"][operator] = fitted
                 summary_rows.append({
@@ -1005,7 +1169,7 @@ class ThresholdCalibrator:
             operator, t_bucket, l_bucket = key
             fitted = self._fit_group(metrics, errors, lam=global_lam,
                                      weight=self._weight_for_key(key),
-                                     rep=self._rep_for_key(key),
+                                     rep=self._price_for_key(key),
                                      override_assignment=self._refined_assignments.get(key))
             pfrac = self._protected_frac_for_key(key)
             if pfrac > 0.0:
@@ -1129,7 +1293,7 @@ class PendingMerger:
         return gy.reshape(-1, gy.shape[-1]).norm(dim=-1)
 
     def record(self, operator, block_idx, metric_norm, errors_by_level, output,
-               grad_reduce=None):
+               grad_reduce=None, metric_alts=None):
         """Called from a forward hook. Returns nothing.
 
         OFF: forward immediately to the calibrator (g_row ≡ 1).
@@ -1139,9 +1303,12 @@ class PendingMerger:
         calibrator row. Defaults to ``_row_grad`` (token-row L2), which matches
         the SCLinear per-row units; the attention path overrides it (per-head
         for qk, per-(B*H*N)-row for av) so g_row stays aligned with the metric.
+        ``metric_alts`` (act_global_v2): dict of per-call-normalized candidate
+        metric tensors aligned row-for-row with ``metric_norm``.
         """
         if not self.enabled:
-            self.calibrator.add(operator, block_idx, metric_norm, errors_by_level)
+            self.calibrator.add(operator, block_idx, metric_norm,
+                                errors_by_level, metric_alts=metric_alts)
             return
         if grad_reduce is None:
             grad_reduce = self._row_grad
@@ -1165,6 +1332,8 @@ class PendingMerger:
             "errors": [e.detach() for e in errors_by_level],
             "grad": None,
             "energy": energy,
+            "alts": ({name: a.detach() for name, a in metric_alts.items()}
+                     if metric_alts else None),
             "n_rows": int(metric_norm.reshape(-1).shape[0]),
         }
         if output.requires_grad:
@@ -1220,6 +1389,7 @@ class PendingMerger:
                     "metric": rec["metric"],
                     "errors": rec["errors"],
                     "energy": rec.get("energy"),
+                    "alts": rec.get("alts"),
                     "g_sum": g,
                     "draws": 1,
                 }
@@ -1248,6 +1418,7 @@ class PendingMerger:
             self.calibrator.add(
                 acc["operator"], acc["block_idx"], acc["metric"],
                 acc["errors"], grad_rows=g_avg, energy_rows=acc.get("energy"),
+                metric_alts=acc.get("alts"),
             )
         self._accum.clear()
 
@@ -1318,19 +1489,26 @@ def _make_sclinear_hook(
                         if 0 <= int(i) < x_flat.shape[1]}),
                 dtype=torch.long, device=x_flat.device)
             if prot_idx.numel() == 0:
-                metric_rows = x_flat.float().abs().amax(dim=-1)
+                metric_src = x_flat
             else:
                 mask = torch.ones(x_flat.shape[1], dtype=torch.bool,
                                   device=x_flat.device)
                 mask[prot_idx] = False
                 rest_idx = mask.nonzero(as_tuple=True)[0]
-                metric_rows = (
-                    x_flat.index_select(1, rest_idx).float().abs().amax(dim=-1)
-                    if rest_idx.numel() > 0
-                    else torch.zeros(x_flat.shape[0], dtype=torch.float32,
-                                     device=x_flat.device)
-                )
+                metric_src = (x_flat.index_select(1, rest_idx)
+                              if rest_idx.numel() > 0 else None)
+            metric_rows = (
+                metric_src.float().abs().amax(dim=-1)
+                if metric_src is not None
+                else torch.zeros(x_flat.shape[0], dtype=torch.float32,
+                                 device=x_flat.device)
+            )
             row_metric = _normalize_metric(metric_rows)
+            # act_global_v2: candidate metrics from the SAME channel-complement
+            # source, so the ρ selection ranks exactly what runtime would see.
+            metric_alts = (_metric_candidates(metric_src)
+                           if (calibrator.metric_select == "auto"
+                               and metric_src is not None) else None)
             level_errors = []
             for sl in levels:
                 if protected:
@@ -1348,7 +1526,8 @@ def _make_sclinear_hook(
                         smooth_scales=calib_smooth,
                     )
                 level_errors.append(_relative_l2_rows(sc_out, teacher))
-        merger.record(op, block_idx, row_metric, level_errors, output)
+        merger.record(op, block_idx, row_metric, level_errors, output,
+                      metric_alts=metric_alts)
     return hook
 
 
@@ -1497,6 +1676,9 @@ def _patch_attention_for_calibration(
                 q_metric = _normalize_metric(
                     query.float().abs().amax(dim=-1).reshape(Bq * Hq * Nq)
                 )
+                # act_global_v2 candidates on the same B*H*N query rows.
+                qk_alts = (_metric_candidates(query.reshape(Bq * Hq * Nq, Kq))
+                           if calibrator.metric_select == "auto" else None)
                 level_errors = []
                 for sl in levels:
                     if sl == 0:
@@ -1519,7 +1701,8 @@ def _patch_attention_for_calibration(
                 return g.reshape(-1, g.shape[-1]).norm(dim=-1)
 
             merger.record("qk", block_idx, q_metric, level_errors,
-                          qk_node, grad_reduce=_qk_row_grad)
+                          qk_node, grad_reduce=_qk_row_grad,
+                          metric_alts=qk_alts)
 
         # ---- av: per-(B*H*N)-row metric + per-level SC error (side measurement).
         if calibrator.use_operator("av") and block_idx is not None:
@@ -1532,6 +1715,10 @@ def _patch_attention_for_calibration(
                 av_metric_full = _normalize_metric(
                     attn_weights.float().abs().amax(dim=-1).reshape(B * H * N)
                 )
+                # act_global_v2 candidates on the same B*H*N attn rows.
+                av_alts = (_metric_candidates(
+                    attn_weights.reshape(B * H * N, K))
+                    if calibrator.metric_select == "auto" else None)
                 # Per-level error over the full (B*H, N, D_head) flattened.
                 level_errors = []
                 v_t = value_states.transpose(-2, -1)  # (B, H, D_head, K_seq)
@@ -1556,7 +1743,8 @@ def _patch_attention_for_calibration(
                 return g.reshape(-1, g.shape[-1]).norm(dim=-1)
 
             merger.record("av", block_idx, av_metric_full, level_errors,
-                          av_node, grad_reduce=_av_row_grad)
+                          av_node, grad_reduce=_av_row_grad,
+                          metric_alts=av_alts)
 
         attn_output = av_node.transpose(1, 2).contiguous()
         return attn_output, attn_weights
@@ -1958,14 +2146,50 @@ def _build_parser():
     p.add_argument("--mac-weights-trace", dest="mac_weights_trace", default=None,
                    help="scmp trace JSON (summary) whose per-op rows+macs give "
                         "macs_per_row[op] for --budget-weight macs.")
+    p.add_argument("--argmin-pricing", dest="argmin_pricing",
+                   choices=["rep", "macs"], default="rep",
+                   help="act_global_v2: per-row cycle PRICE in the assignment "
+                        "argmin. 'rep' (default, original): rep_g = R_g/n_g — "
+                        "includes the subsample ratio true/stored, which "
+                        "over-prices heavily-subsampled groups (attention "
+                        "~128x vs linears ~4x). 'macs': mac_per_row[op] only "
+                        "— the KKT-consistent price (the subsample ratio "
+                        "cancels between a stored row's benefit and cost). "
+                        "Budget accounting is unchanged (R_g-weighted). "
+                        "Requires --budget-weight macs + --budget-scope "
+                        "global; incompatible with --refine sigma.")
+    p.add_argument("--metric-select", dest="metric_select",
+                   choices=["amax", "auto"], default="amax",
+                   help="act_global_v2: per-operator dispatch-metric "
+                        "selection. 'amax' (default): the original "
+                        "|x|.amax(-1) everywhere. 'auto': capture candidate "
+                        "metrics (amax/l2/crest) per row, pick per operator "
+                        "the SIGNED candidate with the best Spearman rho "
+                        "against the true sigma-benefit, build thresholds on "
+                        "it, and export the choice (payload "
+                        "'dispatch_metrics') for the runtime.")
+    p.add_argument("--metric-select-margin", dest="metric_select_margin",
+                   type=float, default=0.05,
+                   help="Minimum |rho| improvement over raw amax before "
+                        "--metric-select auto switches an operator's metric.")
     p.add_argument("--protect-channel-frac", dest="protect_channel_frac",
                    type=float, default=0.0,
                    help="Offline salient input-channel protection for SCLinear: "
                         "top fraction of channels per linear module run at "
                         "--protect-channel-stoc-len, residual channels still use "
                         "row MP. 0.0 (default) disables and preserves old tables.")
+    p.add_argument("--protect-channel-frac-overrides",
+                   dest="protect_channel_frac_overrides", default="",
+                   help="Per-operator overrides for --protect-channel-frac, as "
+                        "'op:frac' pairs (e.g. 'down_proj:0.05,up_proj:0.03'). "
+                        "Ops not listed use --protect-channel-frac. Lets the "
+                        "outlier-heavy MLP trio isolate more scale-setting "
+                        "channels (SpQR-style) while the rest stay lean. Budget "
+                        "compensation reads the realized per-op fraction, so "
+                        "iso-compute accounting is automatic.")
     p.add_argument("--protect-channel-metric", dest="protect_channel_metric",
-                   choices=["act_weight", "act_grad_weight", "weight"],
+                   choices=["act_weight", "act_grad_weight", "weight",
+                            "act_collapse"],
                    default="act_weight",
                    help="Salience metric for protected channels. act_weight "
                         "uses cached SmoothQuant act_scales^2 times weight-column "
@@ -2184,16 +2408,19 @@ def _configure_protected_channels(
     stoc_len: int,
     compensate_budget: bool,
     gn_stats: Optional[ProtectedChannelGNStats] = None,
+    frac_overrides: Optional[dict] = None,
 ) -> int:
     """Select offline salient input channels for protected-channel MP."""
     frac = float(frac)
-    if frac <= 0.0:
+    frac_overrides = {k: float(v) for k, v in (frac_overrides or {}).items()}
+    max_frac = max([frac, *frac_overrides.values()]) if frac_overrides else frac
+    if max_frac <= 0.0:
         return 0
-    if frac >= 1.0:
-        raise SystemExit("[calib] --protect-channel-frac must be < 1.0")
-    if metric == "act_weight" and not act_scales:
+    if max_frac >= 1.0:
+        raise SystemExit("[calib] --protect-channel-frac (incl. overrides) must be < 1.0")
+    if metric in ("act_weight", "act_collapse") and not act_scales:
         raise SystemExit(
-            "[calib] --protect-channel-metric act_weight requires act scales; "
+            f"[calib] --protect-channel-metric {metric} requires act scales; "
             "use --calib-smoothquant or choose --protect-channel-metric weight.")
     if metric == "act_grad_weight" and gn_stats is None:
         raise SystemExit(
@@ -2223,6 +2450,23 @@ def _configure_protected_channels(
                 continue
             score = a.detach().float().cpu().pow(2) * w2
             stat_summary = {}
+        elif metric == "act_collapse":
+            # Scale-COLLAPSE selection (SpQR/LLM.int8-style): protect the
+            # channels that SET the shared per-row quantization scale — the
+            # largest per-channel activation amax — regardless of their weight
+            # energy. Splitting them off shrinks the quantization step for
+            # every OTHER channel in the row (the down_proj post-SiLU / k_proj
+            # residual that survives SmoothQuant). act_scales is the cached
+            # per-channel amax; any positive power preserves the ranking, so
+            # the raw scale is the score. act_weight's ·‖W_col‖² factor is
+            # deliberately DROPPED — it underweights exactly the modest-weight
+            # outlier channels that break the grid.
+            a = act_scales.get(name) if act_scales else None
+            if a is None:
+                missing += 1
+                continue
+            score = a.detach().float().cpu()
+            stat_summary = {}
         elif metric == "act_grad_weight":
             score = gn_stats.score_for(key, mod.weight) if gn_stats else None
             if score is None:
@@ -2234,7 +2478,10 @@ def _configure_protected_channels(
             stat_summary = {}
         else:  # pragma: no cover - argparse choices guard this.
             raise SystemExit(f"[calib] unknown protected-channel metric {metric}")
-        k = max(1, int(math.ceil(frac * D)))
+        op_frac = frac_overrides.get(op, frac)
+        if op_frac <= 0.0:
+            continue          # this operator opts out of protection entirely
+        k = max(1, int(math.ceil(op_frac * D)))
         idx = torch.topk(score, k=min(k, D), largest=True).indices
         idx_list = sorted(int(i) for i in idx.tolist())
         calibrator.protected_channel_indices[key] = idx_list
@@ -2253,9 +2500,11 @@ def _configure_protected_channels(
     if missing:
         print(f"[calib] protected-channel: skipped {missing} modules missing "
               "act_scales.")
+    ov = (" overrides=" + ",".join(f"{k}:{v:g}" for k, v in frac_overrides.items())
+          if frac_overrides else "")
     print(f"[calib] protected-channel: selected {n_ch} channels across {n_mod} "
           f"linear modules (frac={frac}, metric={metric}, stoc_len={stoc_len}, "
-          f"compensate={bool(compensate_budget)}).")
+          f"compensate={bool(compensate_budget)}{ov}).")
     return n_mod
 
 
@@ -2527,6 +2776,35 @@ def main():
         print("[calib] budget-weight=MACS (iso-compute). macs/row: "
               + ", ".join(f"{op}={calibrator.mac_per_row[op]:.2e}"
                           for op in sorted(calibrator.mac_per_row)))
+    # ---- act_global_v2 knobs ----
+    if args.argmin_pricing == "macs":
+        if args.budget_weight != "macs":
+            raise SystemExit("[calib] --argmin-pricing macs requires "
+                             "--budget-weight macs (mac_per_row source).")
+        if budget_scope != "global":
+            raise SystemExit("[calib] --argmin-pricing macs requires "
+                             "--budget-scope global.")
+        print("[calib] argmin-pricing=MACS (KKT-consistent per-row price; "
+              "budget stays R_g-weighted; residual fill ranks by the same "
+              "price, budget-accounts by rep_g).")
+    calibrator.argmin_pricing = args.argmin_pricing
+    calibrator.metric_select = args.metric_select
+    calibrator.metric_select_margin = float(args.metric_select_margin)
+    if args.metric_select == "auto":
+        print("[calib] metric-select=AUTO (per-operator signed rho selection "
+              "over amax/l2/crest).")
+    pc_frac_overrides = {}
+    for pair in str(args.protect_channel_frac_overrides or "").split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        op, _, val = pair.partition(":")
+        if not val:
+            raise SystemExit(
+                f"[calib] --protect-channel-frac-overrides expects 'op:frac' pairs, got {pair!r}")
+        pc_frac_overrides[op.strip()] = float(val)
+    if pc_frac_overrides:
+        print(f"[calib] protected-channel per-op frac overrides: {pc_frac_overrides}")
     _configure_protected_channels(
         calibrator, model, sq_act_scales,
         frac=args.protect_channel_frac,
@@ -2534,6 +2812,7 @@ def main():
         stoc_len=args.protect_channel_stoc_len,
         compensate_budget=args.protect_compensate_budget,
         gn_stats=protected_gn_stats,
+        frac_overrides=pc_frac_overrides,
     )
     merger = PendingMerger(calibrator)
 
@@ -2601,6 +2880,21 @@ def main():
     for op in sorted(rho, key=lambda o: rho[o]["rho"] if rho[o]["rho"] == rho[o]["rho"] else 9):
         d = rho[op]
         print(f"    {op:<11} ρ={d['rho']:+.3f}  n={d['n']:>7}  σ-benefit_mean={d['benefit_mean']:.4f}")
+
+    # act_global_v2: signed per-operator dispatch-metric selection (rewrites
+    # the stored metric arrays for switched ops; thresholds + the exported
+    # dispatch_metrics then reflect the deployed metric). No-op unless
+    # --metric-select auto.
+    switched = calibrator.select_dispatch_metrics()
+    if switched:
+        print("[calib] metric-select switches (deployed by the runtime):")
+        for op, d in sorted(switched.items()):
+            print(f"    {op:<11} -> {d['metric']}"
+                  f"{' (inverted)' if d['sign'] < 0 else ''}"
+                  f"  ρ={d['rho_signed']:+.3f} (amax was {d['rho_amax']:+.3f})")
+    elif calibrator.metric_select == "auto":
+        print("[calib] metric-select auto: no operator cleared the margin — "
+              "amax everywhere (table carries no dispatch_metrics).")
 
     measured_info = None
     if cross_layer_weight in ("measured", "measured_marg"):

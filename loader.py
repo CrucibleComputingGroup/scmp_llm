@@ -263,9 +263,13 @@ def apply_mp_config_from_env(model) -> None:
         model.config.sc_mp_config = mp
         n_default = len(mp.operator_default_thresholds)
         n_bucket = len(mp.bucket_thresholds)
+        dm = getattr(mp, "dispatch_metrics", {}) or {}
+        dm_note = ("" if not dm else " dispatch_metrics=" + ",".join(
+            f"{op}:{name}{'-inv' if sign < 0 else ''}"
+            for op, (name, sign) in sorted(dm.items())))
         print(f"[mp] loaded AdaptiveMPConfig from {path}: "
               f"levels={mp.stoc_len_levels} "
-              f"operator_defaults={n_default} buckets={n_bucket}")
+              f"operator_defaults={n_default} buckets={n_bucket}{dm_note}")
         return
     raise SystemExit(
         f"MP_CONFIG_JSON: unknown type={kind!r}. "

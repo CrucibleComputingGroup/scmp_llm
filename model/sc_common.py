@@ -51,6 +51,7 @@ try:
         AdaptiveMPConfig,
         classify_rows_by_metric,
         adaptive_classify_rows,
+        compute_row_metric,
     )
     _HAS_MP = True
 except ImportError:
@@ -58,7 +59,26 @@ except ImportError:
     AdaptiveMPConfig = None
     classify_rows_by_metric = None
     adaptive_classify_rows = None
+    compute_row_metric = None
     _HAS_MP = False
+
+
+def _mp_dispatch_metric(source: torch.Tensor, mp_config, operator) -> torch.Tensor:
+    """Per-row dispatch metric for MP classify (act_global_v2 aware).
+
+    AdaptiveMPConfig tables may carry a ρ-selected (metric, sign) per operator
+    (``dispatch_metrics``); default — and every legacy table / MPConfig — is
+    ("amax", +1), byte-identical to the original ``|x|.amax(-1)``. Sign −1
+    inverts the ranking; ``adaptive_classify_rows``'s min–max normalization
+    turns the negated metric into exactly 1 − normalized(raw), matching the
+    calibration-side transform."""
+    name, sign = "amax", 1.0
+    if (AdaptiveMPConfig is not None and isinstance(mp_config, AdaptiveMPConfig)
+            and compute_row_metric is not None):
+        name, sign = mp_config.get_dispatch_metric(operator)
+    metric = (source.abs().amax(dim=-1) if name == "amax"
+              else compute_row_metric(source, name))
+    return metric if sign >= 0 else -metric
 
 try:
     from benchmark.quant.ptq import _fake_quant_lastdim_chunks as _int_fake_quant_chunks
@@ -411,7 +431,7 @@ class SCLinear(nn.Linear):
                                      device=x_flat.device)
             else:
                 metric_source = x_flat if rest_idx is None else x_flat.index_select(1, rest_idx)
-                metric = metric_source.abs().amax(dim=-1)
+                metric = _mp_dispatch_metric(metric_source, mp_config, op_name)
             if AdaptiveMPConfig is not None and isinstance(mp_config, AdaptiveMPConfig):
                 assignment = adaptive_classify_rows(
                     metric,
@@ -647,7 +667,7 @@ def _sc_attention_matmul_ab_t(
             # directions were measured — per-slice calibration degrades
             # PPL badly (4B int7 act_global 16.9→19.2, grad_group 46→83),
             # so GLOBAL scope on both sides is the resolution.
-            metric_all = a3.abs().amax(dim=-1)          # (B*H, N)
+            metric_all = _mp_dispatch_metric(a3, mp_config, operator)  # (B*H, N)
             assignment = adaptive_classify_rows(
                 metric_all.reshape(-1), mp_config,
                 operator=operator,

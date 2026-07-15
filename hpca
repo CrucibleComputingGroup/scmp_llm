@@ -30,6 +30,8 @@
 #   bash hpca --configs fp16,W8A8_symm,W4A4_asymm
 #   bash hpca --gpu 0 --models 14B  &  bash hpca --gpu 1 --models 30B   # fan out
 #   bash hpca --configs sc_int8,sc_int7,sc_int6 --metrics ppl   # SC uniform cells
+#   bash hpca --configs mp_avg96_burst128,mp_avg64_burst128,mp_avg48_burst128 --metrics ppl \
+#     --sc-backend hybrid --hybrid-sensitivity-config sc_int8
 #   bash hpca --sensitivity --models 4B --configs sc_avg192     # ΔLoss sensitivity JSON
 #   bash hpca --configs sc_avg192 --sc-backend hybrid --hybrid-config path.json
 #   bash hpca --configs sc_avg192 --sc-backend hybrid            # auto top-10% INT from sensitivity JSON
@@ -73,6 +75,18 @@ SENS_CTX=512
 SENS_WINDOWS=2
 SENS_LAYER_BUCKETS="4"   # integer, or "layers"/"auto" for per-operator per-layer sensitivity
 SENS_OUTDIR=""
+MP_METHOD="act_global"        # currently supported in hpca: act_global
+MP_TABLES_DIR=""              # empty => $TURBO_BASE/mp_calib_${TAG}
+MP_PROTECT_FRAC="0.01"        # protected input channels inside remaining SC linears
+MP_PROTECT_FRAC_OVERRIDES=""  # per-op frac overrides, e.g. "down_proj:0.05,up_proj:0.03"
+SQ_ALPHA_OVERRIDES=""         # per-op SmoothQuant alpha, e.g. "down_proj:0.75,up_proj:0.65"
+                              # (MP cells only; resolved inside apply_smoothquant_to_model
+                              # so calib and eval geometry match by construction)
+MP_SEED=0                     # calibrator --seed (torch + row-subsample RNG); vary for
+                              # replication error bars. Eval is deterministic given the table.
+MP_PROTECT_STOC_LEN="128"
+MP_PROTECT_METRIC="act_weight"
+MP_PROTECT_COMPENSATE=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -101,6 +115,15 @@ while [[ $# -gt 0 ]]; do
     --sens-windows) SENS_WINDOWS="$2"; shift 2 ;;
     --sens-layer-buckets) SENS_LAYER_BUCKETS="$2"; shift 2 ;;
     --sens-outdir) SENS_OUTDIR="$2"; shift 2 ;;
+    --mp-method) MP_METHOD="$2"; shift 2 ;;
+    --mp-tables-dir) MP_TABLES_DIR="$2"; shift 2 ;;
+    --mp-protect-frac) MP_PROTECT_FRAC="$2"; shift 2 ;;
+    --mp-protect-frac-overrides) MP_PROTECT_FRAC_OVERRIDES="$2"; shift 2 ;;
+    --sq-alpha-overrides) SQ_ALPHA_OVERRIDES="$2"; shift 2 ;;
+    --mp-seed) MP_SEED="$2"; shift 2 ;;
+    --mp-protect-stoc-len) MP_PROTECT_STOC_LEN="$2"; shift 2 ;;
+    --mp-protect-metric) MP_PROTECT_METRIC="$2"; shift 2 ;;
+    --mp-no-protect-compensate) MP_PROTECT_COMPENSATE=0; shift ;;
     --dry-run)  DRY=1; shift ;;
     -h|--help)  grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown flag: $1"; exit 1 ;;
@@ -114,6 +137,31 @@ esac
 case "$SENS_METHOD" in
   measured|measured_marg|measured_curve) ;;
   *) echo "unknown --sens-method: $SENS_METHOD"; exit 1 ;;
+esac
+case "$MP_METHOD" in
+  act_global) ;;
+  # act_global_v2 = act_global + KKT-consistent argmin pricing (mac_per_row,
+  # not rep_g) + per-operator signed rho-selected dispatch metric.
+  act_global_v2) ;;
+  # act_global_v3 = v2 + MAC-consistent residual greedy fill (--refine sigma).
+  # Pair with --mp-protect-metric act_collapse + the fine-ladder configs
+  # (mp_avg48f/mp_avg64f/mp_avg32) for the full v3 recipe.
+  act_global_v3) ;;
+  # act_global_v3m = v3 + measured dLoss cross-layer weight W_g (documented
+  # llama8B-specific edge: loss-aware W_g beat plain sigma only on llama8B).
+  act_global_v3m) ;;
+  # act_global_v3s = v3 + squared-error objective (--objective sigma2). Per-ROW
+  # cliff-AWARE surrogate: the superlinear penalty ~ propagated loss makes the
+  # allocator reluctant to push rows deep sub-cliff (fixes v4's cliff-blindness)
+  # WITHOUT abandoning the per-row story. Runtime-free (calibration-only).
+  act_global_v3s) ;;
+  # act_global_v3c = v3 + measured per-level dLoss CURVE (--cross-layer-weight
+  # measured_curve): the TRUE loss-aware objective, allocated per (op,layer-
+  # bucket) group (curve is constant across a group's rows -> per-group uniform,
+  # so this trades the per-row story for measured cliff-awareness). Runtime-free
+  # (extra OFFLINE knock-down forwards only; curve auto-enables its budget fill).
+  act_global_v3c) ;;
+  *) echo "unknown --mp-method: $MP_METHOD (currently supported: act_global, act_global_v2, act_global_v3, act_global_v3m, act_global_v3s, act_global_v3c)"; exit 1 ;;
 esac
 
 # model shortname -> HF id
@@ -186,8 +234,8 @@ hybrid_int_bits_for_cfg() {  # <config>
   local cfg="$1"
   if [[ -n "$HYBRID_INT_BITS" ]]; then echo "$HYBRID_INT_BITS"; return; fi
   case "$cfg" in
-    sc_int8|sc_avg192|mp_avg192) echo 8 ;;
-    sc_int7|sc_avg96|mp_int7|mp_avg96|mp|mp_*) echo 7 ;;
+    sc_int8|sc_avg192|mp_avg192|mp_len192|mp_avg96_burst128) echo 8 ;;
+    sc_int7|sc_avg96|mp_int7|mp_avg96|mp_len96|mp_len96_burst|mp_avg64_burst128|mp_avg48_burst128|mp_avg64f_burst128|mp_avg48f_burst128|mp_avg32_burst128|mp_avg64x_burst128|mp_avg48x_burst128|mp) echo 7 ;;
     sc_int6) echo 6 ;;
     *) echo 7 ;;
   esac
@@ -301,6 +349,57 @@ sensitivity_budget_for_cfg() {  # <config> -> "levels ratio ref"
   esac
 }
 
+mp_budget_for_cfg() {  # <config> -> "levels ratio ref"
+  local cfg="$1"
+  case "$cfg" in
+    mp_avg96_burst128|mp_len192|mp_avg192) echo "128,96,64 0.75 128" ;;
+    mp_avg64_burst128|mp_int7|mp)          echo "128,64,32 0.5 128" ;;
+    mp_avg48_burst128|mp_len96_burst)      echo "128,64,32 0.375 128" ;;
+    # v3 fine ladders (pow2-vs-fine ablation partners of avg64/avg48):
+    mp_avg64f_burst128)                    echo "128,96,64,48,32 0.5 128" ;;
+    mp_avg48f_burst128)                    echo "128,96,64,48,32 0.375 128" ;;
+    # final-recipe avg96 (fine ladder at the mild budget, for the ONE-algorithm
+    # paper sweep — the old mp_avg96_burst128 is the v2-era pow2 ladder):
+    mp_avg96f_burst128)                    echo "128,96,64,48,32 0.75 128" ;;
+    # avg32 point: 128 kept (burst ceiling), ladder extended below 32.
+    mp_avg32_burst128)                     echo "128,64,48,32,16 0.25 128" ;;
+    # v4 floor-breaking ladders — REFUTED (sub-32 rung toxic under the sigma
+    # objective; do not rerun): kept only so old tags stay reproducible.
+    mp_avg64x_burst128)                    echo "128,96,64,48,32,16 0.5 128" ;;
+    mp_avg48x_burst128)                    echo "128,96,64,48,32,16 0.375 128" ;;
+    # v8-E granularity ladders (candidate E, verdict: not refuted 2026-07-13).
+    # g = +56 mid-rung only (unambiguously above the ~48 cliff — launchable);
+    # h = +56 and +40 (40 needs user sign-off: 'no rungs below the cliff'
+    # letter vs 'no rungs below the 32 floor' practice — do not launch h
+    # without explicit approval).
+    mp_avg48g_burst128)                    echo "128,96,64,56,48,32 0.375 128" ;;
+    mp_avg48h_burst128)                    echo "128,96,64,56,48,40,32 0.375 128" ;;
+    *)
+      echo "[hpca] unknown MP config: $cfg" >&2
+      return 1
+      ;;
+  esac
+}
+
+sc_cycles_for_cfg() {  # <config> -> uniform halved-space cycle count
+  local cfg="$1"
+  case "$cfg" in
+    sc_int8)   echo 128 ;;
+    sc_avg192) echo 96 ;;
+    sc_int7)   echo 64 ;;
+    sc_avg96)  echo 48 ;;
+    sc_int6)   echo 32 ;;
+    *)
+      echo "[hpca] unknown SC config: $cfg" >&2
+      return 1
+      ;;
+  esac
+}
+
+safe_hf() {
+  echo "$1" | tr '/:' '__'
+}
+
 run_sensitivity() {  # <short> <hf> <config>
   local short="$1" hf="$2" cfg="$3"
   local spec levels ratio ref layer_buckets
@@ -348,6 +447,10 @@ run_sensitivity() {  # <short> <hf> <config>
 
 run_ppl() {  # <short> <hf> <config>
   local short="$1" hf="$2" cfg="$3"
+  if [[ "$cfg" == mp || "$cfg" == mp_* ]]; then
+    run_mp_ppl "$short" "$hf" "$cfg"
+    return
+  fi
   local log="$OUTDIR/${short}_${cfg}_ppl.log"
   # SC cells also emit the scmp_kernels precision trace — the execution log
   # (per-(op,block) calls/rows/macs/row_cycles) the energy/latency simulator
@@ -391,6 +494,150 @@ run_ppl() {  # <short> <hf> <config>
   local v; v=$(grep "\[RESULT\]" "$log" | grep -oE "value=[^ ]+" | sed 's/value=//' | tail -1)
   if [[ -n "$v" ]]; then
     record "$short" "$cfg" ppl "$v"
+  else
+    fail_cell "$short" "$cfg" ppl "rc=$rc, no [RESULT] in log"
+  fi
+}
+
+run_mp_ppl() {  # <short> <hf> <mp_config>
+  local short="$1" hf="$2" cfg="$3"
+  local spec levels ratio ref
+  spec="$(mp_budget_for_cfg "$cfg")" || { fail_cell "$short" "$cfg" ppl "bad_mp_cfg"; return; }
+  read -r levels ratio ref <<<"$spec"
+
+  local hybrid_env=()
+  local hybrid_config=""
+  if [[ "$SC_BACKEND" == "hybrid" ]]; then
+    hybrid_config="$HYBRID_CONFIG_JSON"
+    if [[ -z "$hybrid_config" ]]; then
+      hybrid_config="$(auto_hybrid_config "$short" "$cfg")" || {
+        fail_cell "$short" "$cfg" ppl "auto hybrid config failed"
+        return
+      }
+    fi
+    hybrid_env=(
+      SC_HYBRID_CONFIG_JSON="$hybrid_config"
+      SC_HYBRID_INT_BITS="$(hybrid_int_bits_for_cfg "$cfg")"
+      SC_HYBRID_FORCE_INT_BITS=1
+    )
+  fi
+
+  local tables="${MP_TABLES_DIR:-$TURBO_BASE/mp_calib_${TAG}}"
+  local sm safe_cfg method table wrapper log trace protect_flags
+  sm="$(safe_hf "$hf")"
+  safe_cfg="${cfg//[^A-Za-z0-9_.-]/_}"
+  method="${MP_METHOD}"
+  if [[ "$MP_PROTECT_FRAC" != "0" && "$MP_PROTECT_FRAC" != "0.0" ]]; then
+    method="${method}_pc${MP_PROTECT_FRAC}x${MP_PROTECT_STOC_LEN}_${MP_PROTECT_METRIC}"
+    [[ "$MP_PROTECT_COMPENSATE" == "1" ]] && method="${method}_comp"
+  fi
+  if [[ -n "$MP_PROTECT_FRAC_OVERRIDES" ]]; then
+    method="${method}_pcov${MP_PROTECT_FRAC_OVERRIDES//[^A-Za-z0-9]/_}"
+  fi
+  if [[ -n "$SQ_ALPHA_OVERRIDES" ]]; then
+    method="${method}_sqov${SQ_ALPHA_OVERRIDES//[^A-Za-z0-9]/_}"
+  fi
+  [[ "$SC_BACKEND" == "hybrid" ]] && method="${method}_hyb${HYBRID_INT_FRAC}"
+  table="$tables/${sm}__${safe_cfg}__${method}.json"
+  wrapper="$tables/${sm}__${safe_cfg}__${method}_wrapper.json"
+  log="$OUTDIR/${short}_${safe_cfg}_${method}_ppl.log"
+  trace="/home/allenjin/Projects/hpca_results/llm/uniform/traces/${short}_sc_int7_trace.json"
+
+  protect_flags=()
+  if [[ "$MP_PROTECT_FRAC" != "0" && "$MP_PROTECT_FRAC" != "0.0" ]]; then
+    protect_flags=(
+      --protect-channel-frac "$MP_PROTECT_FRAC"
+      --protect-channel-stoc-len "$MP_PROTECT_STOC_LEN"
+      --protect-channel-metric "$MP_PROTECT_METRIC"
+    )
+    [[ -n "$MP_PROTECT_FRAC_OVERRIDES" ]] && protect_flags+=(--protect-channel-frac-overrides "$MP_PROTECT_FRAC_OVERRIDES")
+    protect_flags+=(
+    )
+    [[ "$MP_PROTECT_COMPENSATE" == "1" ]] && protect_flags+=(--protect-compensate-budget)
+  fi
+
+  local v2_flags=()
+  if [[ "$MP_METHOD" == "act_global_v2" ]]; then
+    v2_flags=(--argmin-pricing macs --metric-select auto)
+  elif [[ "$MP_METHOD" == "act_global_v3" ]]; then
+    # v2 + MAC-consistent residual greedy fill (spends the ~1% budget the
+    # discrete argmin leaves unspent on the best Δσ/Δprice rows).
+    v2_flags=(--argmin-pricing macs --metric-select auto --refine sigma)
+  elif [[ "$MP_METHOD" == "act_global_v3m" ]]; then
+    v2_flags=(--argmin-pricing macs --metric-select auto --refine sigma
+              --cross-layer-weight measured)
+  elif [[ "$MP_METHOD" == "act_global_v3s" ]]; then
+    # v3 + squared-error (sigma2) objective: per-row cliff-aware surrogate.
+    v2_flags=(--argmin-pricing macs --metric-select auto --refine sigma
+              --objective sigma2)
+  elif [[ "$MP_METHOD" == "act_global_v3c" ]]; then
+    # v3 + measured per-level dLoss curve. The curve method auto-enables its own
+    # MAC-priced residual budget fill (_curve_applied) so --refine is omitted.
+    v2_flags=(--argmin-pricing macs --metric-select auto
+              --cross-layer-weight measured_curve)
+  fi
+
+  echo "[hpca] >>> MP-PPL $short / $cfg ($method levels=$levels ratio=$ratio hybrid=${hybrid_config:-none}) -> $log"
+  if [[ $DRY -eq 1 ]]; then
+    echo "  DRY: ${hybrid_env[*]} python benchmark/ppl/calibrate_mp_thresholds.py --mp_levels $levels --budget_ratio $ratio --budget-weight macs --mac-weights-trace $trace ${protect_flags[*]} ${v2_flags[*]} --output_json $table"
+    echo "  DRY: MP_CONFIG_JSON=$wrapper ${hybrid_env[*]} QUANT_CONFIG=mp python benchmark/quant/eval_quant.py"
+    return
+  fi
+
+  mkdir -p "$tables"
+  {
+    echo "=== MP CELL $short $cfg method=$method $(date) ==="
+    echo "levels=$levels ratio=$ratio ref=$ref hybrid=${hybrid_config:-none}"
+    echo "table=$table"
+    env SQ_ALPHA="$SQ_ALPHA" SQ_ALPHA_OVERRIDES="$SQ_ALPHA_OVERRIDES" \
+        ACT_SCALES_DIR="$ACT_SCALES_DIR" \
+        SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" \
+        "${hybrid_env[@]}" \
+        python -u "$HERE/benchmark/ppl/calibrate_mp_thresholds.py" \
+          --model_path "$hf" \
+          --mp_levels "$levels" \
+          --budget_ratio "$ratio" \
+          --budget_ref_stoc_len "$ref" \
+          --sc_prec 8 --halve 1 \
+          --seed "$MP_SEED" \
+          --ctx_len "$PPL_CTX" \
+          --budget-scope global \
+          --budget-weight macs \
+          --mac-weights-trace "$trace" \
+          --calib-smoothquant \
+          "${protect_flags[@]}" \
+          "${v2_flags[@]}" \
+          --output_json "$table"
+    local rc="${PIPESTATUS[0]}"
+    if [[ $rc -ne 0 || ! -s "$table" ]]; then
+      echo "CALIB_FAILED rc=$rc"
+      exit 21
+    fi
+    python -c "import json;json.dump({'type':'AdaptiveMPConfig','stoc_len_levels':[int(x) for x in '$levels'.split(',')],'threshold_table_path':'$table'},open('$wrapper','w'))"
+    env MODEL_PATH="$hf" QUANT_CONFIG=mp SQ_ALPHA="$SQ_ALPHA" \
+        SQ_ALPHA_OVERRIDES="$SQ_ALPHA_OVERRIDES" \
+        PPL_MAX_TOKENS="$PPL_MAX_TOKENS" CTX="$PPL_CTX" \
+        SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" \
+        MP_CONFIG_JSON="$wrapper" ACT_SCALES_DIR="$ACT_SCALES_DIR" \
+        SC_MP_TRACE="$tables/${sm}__${safe_cfg}__${method}_trace.json" \
+        SC_MP_TRACE_MODE="${SC_MP_TRACE_MODE:-summary}" \
+        "${hybrid_env[@]}" \
+        python -u "$HERE/benchmark/quant/eval_quant.py"
+  } 2>&1 | tee "$log"
+
+  local rc="${PIPESTATUS[0]}"
+  local ppl avg flop exp
+  ppl=$(grep "\[RESULT\]" "$log" | grep -oE "value=[^ ]+" | sed 's/value=//' | tail -1)
+  avg=$(grep "\[RESULT\]" "$log" | grep -oE "realized_avg_sl=[0-9.]+" | sed 's/realized_avg_sl=//' | tail -1)
+  flop=$(grep "\[RESULT\]" "$log" | grep -oE "realized_flop_avg_sl=[0-9.]+" | sed 's/realized_flop_avg_sl=//' | tail -1)
+  exp=$(python -c "import json;print(round(json.load(open('$table')).get('expected_flop_avg_stoc_len',0),4))" 2>/dev/null)
+  if [[ -n "$ppl" ]]; then
+    record "$short" "$cfg" ppl "$ppl"
+    [[ -n "$avg" ]] && record "$short" "$cfg" mp_realized_avg_sl "$avg"
+    [[ -n "$flop" ]] && record "$short" "$cfg" mp_realized_flop_avg_sl "$flop"
+    [[ -n "$exp" ]] && record "$short" "$cfg" mp_expected_flop_avg_sl "$exp"
+    record "$short" "$cfg" mp_table "$table"
+    [[ -n "$hybrid_config" ]] && record "$short" "$cfg" hybrid_config "$hybrid_config"
   else
     fail_cell "$short" "$cfg" ppl "rc=$rc, no [RESULT] in log"
   fi
@@ -440,10 +687,34 @@ RULER_MAXSEQ="${RULER_MAXSEQ:-4096}"
 RULER_TASK="${RULER_TASK:-niah_single_1}"   # single task; loop externally for full RULER
 run_ruler() {  # <short> <hf> <config>
   local short="$1" hf="$2" cfg="$3"
-  [[ "$cfg" == sc_* ]] && { echo "[hpca] [skip] RULER $short/$cfg — SC cells are ppl-only"; return; }
   local rname="${RULER_NAME[$short]:-}"
   [[ -z "$rname" ]] && { echo "[hpca] [skip] RULER $short/$cfg — no ruler_config_models.sh name mapped for '$short'"; return; }
-  local mode="fp16"; [[ "$cfg" != "fp16" ]] && mode="quant"
+  local mode="fp16" stoc_len="" tag_suffix="" tagdir="fp16"
+  local hybrid_env=()
+  if [[ "$cfg" == sc_* ]]; then
+    mode="sc"
+    stoc_len="$(sc_cycles_for_cfg "$cfg")" || { fail_cell "$short" "$cfg" ruler "bad_sc_cfg"; return; }
+    tag_suffix="_${cfg}"
+    if [[ "$SC_BACKEND" == "hybrid" ]]; then
+      local hybrid_config="$HYBRID_CONFIG_JSON"
+      if [[ -z "$hybrid_config" ]]; then
+        hybrid_config="$(auto_hybrid_config "$short" "$cfg")" || {
+          fail_cell "$short" "$cfg" ruler "auto hybrid config failed"
+          return
+        }
+      fi
+      tag_suffix="${tag_suffix}_hyb${HYBRID_INT_FRAC}"
+      hybrid_env=(
+        SC_HYBRID_CONFIG_JSON="$hybrid_config"
+        SC_HYBRID_INT_BITS="$(hybrid_int_bits_for_cfg "$cfg")"
+        SC_HYBRID_FORCE_INT_BITS=1
+      )
+    fi
+    tagdir="sc_prec8_stoc${stoc_len}_gran-per_row${tag_suffix}"
+  elif [[ "$cfg" != "fp16" ]]; then
+    mode="quant"
+    tagdir="quant_${cfg}"
+  fi
   echo "[hpca] >>> RULER  $short ($rname) / $cfg (mode=$mode, task=$RULER_TASK)"
   if ! grep -q "\b${rname})" "$HERE/benchmark/ruler/ruler_config_models.sh" 2>/dev/null; then
     echo "  [skip] '$rname' not registered in ruler_config_models.sh — register it first."; return
@@ -452,16 +723,19 @@ run_ruler() {  # <short> <hf> <config>
   # SC_ATTN_GRANULARITY=per_row: ruler_run.sh forwards it to call_api.py for
   # every mode, and benchmark/config.py now only permits per_row — its default
   # (per_head) would be rejected in argparse before the model even loads.
-  [[ $DRY -eq 1 ]] && { echo "  DRY: QUANT_CONFIG=$cfg SC_ATTN_GRANULARITY=per_row bash ruler_run.sh $rname synthetic $RULER_MAXSEQ $RULER_TASK $mode fp16 cuda:0"; return; }
-  ( cd "$HERE/benchmark/ruler" && QUANT_CONFIG="$cfg" SC_ATTN_GRANULARITY=per_row \
-      bash ruler_run.sh "$rname" synthetic "$RULER_MAXSEQ" "$RULER_TASK" "$mode" fp16 cuda:0 ) 2>&1 \
+  [[ $DRY -eq 1 ]] && { echo "  DRY: QUANT_CONFIG=$cfg RULER_TAG_SUFFIX=$tag_suffix SC_STOC_LEN=${stoc_len:-256} ${hybrid_env[*]} bash ruler_run.sh $rname synthetic $RULER_MAXSEQ $RULER_TASK $mode fp16 cuda:0 8 ${stoc_len:-256}"; return; }
+  ( cd "$HERE/benchmark/ruler" && env QUANT_CONFIG="$cfg" SQ_ALPHA="$SQ_ALPHA" \
+      SC_ATTN_GRANULARITY=per_row SC_HALVE_BIPOLAR_STOC_LEN=1 \
+      SC_OWEN_MODE="$SC_OWEN_MODE" SC_SCRAMBLE_MASKS="$SC_SCRAMBLE_MASKS" \
+      RULER_TAG_SUFFIX="$tag_suffix" \
+      "${hybrid_env[@]}" \
+      bash ruler_run.sh "$rname" synthetic "$RULER_MAXSEQ" "$RULER_TASK" "$mode" fp16 cuda:0 8 "${stoc_len:-256}" ) 2>&1 \
       | tee "$OUTDIR/${short}_${cfg}_ruler.log"
   # Summary: ruler_eval_result/<name>/synthetic/<maxseq>/<tag>/pred/
   # summary-<task>.csv (tag=fp16 or quant_<cfg>). Rows are Tasks/Score/Nulls —
   # read the Score row explicitly. (The old glob missed the /pred/ level and the
   # fp16 tag, and `tail -1` grabbed the Nulls value instead of the score.)
-  local rtag="fp16"; [[ "$cfg" != "fp16" ]] && rtag="quant_${cfg}"
-  local sumdir="$HERE/benchmark/ruler/ruler_eval_result/${rname}/synthetic/${RULER_MAXSEQ}/${rtag}/pred"
+  local sumdir="$HERE/benchmark/ruler/ruler_eval_result/${rname}/synthetic/${RULER_MAXSEQ}/${tagdir}/pred"
   local scsv="$sumdir/summary-${RULER_TASK}.csv"; [[ -f "$scsv" ]] || scsv="$sumdir/summary.csv"
   local v; v=$(python3 - "$scsv" <<'PYEOF'
 import csv, sys

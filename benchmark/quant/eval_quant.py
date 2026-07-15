@@ -3,6 +3,9 @@ accuracy harnesses (LongBench / RULER) import.
 
 Config tags:  fp16 | W8A8_symm | W8A8_asymm | W7A7_symm | ... | W4A4_asymm
               | sc_int8 | sc_avg192 | sc_int7 | sc_avg96 | sc_int6
+              | W4A16_symm | W3A16_symm | ...        (weight-only INT, g128, no SQ)
+              | W4A16_fp | W3A16_fp                  (BitMoD plain FP4-E2M1 / FP3)
+              | W4A16_bitmod | W3A16_bitmod          (BitMoD mixed ER/EA, argmin-MSE)
 
 SmoothQuant smoothing scales depend only on (act_scales, weights, alpha) — NOT
 on bit-width — so we calibrate ONE act_scales table per model and reuse it for
@@ -92,18 +95,35 @@ def mp_budget_name(levels) -> str:
 
 
 def parse_config(tag: str):
-    """'fp16' -> None (pure fp16). 'W8A8_symm' -> QuantConfig(8,8,True)."""
+    """'fp16' -> None (pure fp16). 'W8A8_symm' -> QuantConfig(8,8,True).
+
+    The scheme suffix picks the WEIGHT number format (activations always RTN):
+      symm / asymm -> INT RTN (existing baselines)
+      fp           -> BitMoD plain FP datatype at w_bits (fp4=E2M1, fp3, ...)
+      bitmod       -> BitMoD mixed_bitmod (per-group argmin-MSE over ER/EA)
+    With a_bits>=16 any of these is weight-only: activation + attention QK/AV
+    fake-quant are bits<16-guarded no-ops, and build_model skips SmoothQuant.
+    """
     if tag.lower() in ("fp16", "fp", "baseline"):
         return None
     body, _, scheme = tag.partition("_")
     assert body[0].upper() == "W" and "A" in body, f"bad config tag: {tag}"
     w = int(body[1:body.index("A")])
     a = int(body[body.index("A") + 1:])
-    sym = scheme.lower().startswith("sym")
+    scheme_l = scheme.lower()
+    if scheme_l.startswith("sym") or scheme_l.startswith("asym"):
+        w_dtype = "int"
+    elif scheme_l == "fp":
+        w_dtype = f"fp{w}"       # grid resolved/validated by bitmod_dtypes
+    elif scheme_l == "bitmod":
+        w_dtype = "mixed_bitmod"
+    else:
+        raise SystemExit(
+            f"bad config scheme in tag {tag!r}: expected symm/asymm/fp/bitmod")
     return QuantConfig(
-        w_bits=w, a_bits=a, sym=sym,
+        w_bits=w, a_bits=a, sym=scheme_l.startswith("sym"),
         chunk_size=int(os.environ.get("INT_CHUNK_SIZE", "128")),
-        quantize_attention=True,
+        quantize_attention=True, w_dtype=w_dtype,
     )
 
 
@@ -305,12 +325,23 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
     model.eval()
     # act_scales depend only on (model, calib data), NOT bit-width → calibrate
     # once per model and cache; reuse across all W_xA_x configs.
-    path = os.path.join(ACT_SCALES_DIR, f"act_scales_{_safe(model_path)}.pt")
-    if os.path.isfile(path):
-        print(f"[quant] act_scales cache hit: {path}")
-        scales = torch.load(path, map_location="cpu", weights_only=True)
+    # WEIGHT-ONLY rows (a_bits>=16) skip SmoothQuant entirely: folding w'=w*s
+    # only HARDENS weight quant (outlier channels scale up) while x/s buys
+    # nothing at fp16 activations — stock weight-only baselines (BitMoD RTN,
+    # GPTQ, AWQ-none) are SQ-free, so an SQ-on W-only row would be a strawman.
+    # WONLY_SQ=1 forces SQ back on for a protocol-parity footnote cell.
+    wonly_no_sq = qcfg.a_bits >= 16 and os.environ.get("WONLY_SQ", "0") != "1"
+    if wonly_no_sq:
+        scales = None
+        print("[quant] weight-only config (A>=16): SmoothQuant skipped "
+              "(stock W-only protocol; set WONLY_SQ=1 to force it on)")
     else:
-        scales = get_act_scales(model_path, tokenizer, model)
+        path = os.path.join(ACT_SCALES_DIR, f"act_scales_{_safe(model_path)}.pt")
+        if os.path.isfile(path):
+            print(f"[quant] act_scales cache hit: {path}")
+            scales = torch.load(path, map_location="cpu", weights_only=True)
+        else:
+            scales = get_act_scales(model_path, tokenizer, model)
     n = apply_ptq(model, qcfg, act_scales=scales, alpha=alpha)
     model.config.use_int_attention = bool(qcfg.quantize_attention)
     model.config.int_attention_bits = int(qcfg.a_bits)
@@ -318,7 +349,8 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
     model.config.int_chunk_size = int(qcfg.chunk_size)
     torch.cuda.empty_cache()
     print(f"[ptq] {qcfg.tag()}: quantized {n} Linear layers in place "
-          f"(smoothquant=on alpha={alpha}, chunk={qcfg.chunk_size}, "
+          f"(smoothquant={'off' if scales is None else 'on'} alpha={alpha}, "
+          f"w_dtype={qcfg.w_dtype}, chunk={qcfg.chunk_size}, "
           f"qk_av={'on' if qcfg.quantize_attention else 'off'})")
     return model, tokenizer
 

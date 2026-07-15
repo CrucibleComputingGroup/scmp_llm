@@ -3,6 +3,10 @@ baselines — completely independent of the SC path.
 
 W_xA_x, symmetric or asymmetric, at N bits:
   * Linear weight     — per-output-channel, per-128-input-chunk RTN.
+                        (QuantConfig.w_dtype != "int" swaps the RTN number
+                        format for a BitMoD datatype at the same granularity —
+                        see benchmark.quant.bitmod_dtypes. Weight-only rows use
+                        a_bits=16, which disables every activation/QK/AV path.)
   * Linear activation — per-token, per-128-input-chunk dynamic RTN.
   * Attention QK/AV   — both operands fake-quantized per row, per 128 values,
                         before the fp16 matmul.
@@ -47,9 +51,22 @@ class QuantConfig:
     per_token_a: bool = True        # per-token dynamic activation scale
     chunk_size: int = 128           # SC-compatible input-dimension grouping
     quantize_attention: bool = True # quantize QK and AV operands too
+    # Weight number format. "int" = the RTN path below; anything else is a
+    # BitMoD datatype name resolved by benchmark.quant.bitmod_dtypes (e.g.
+    # "fp4", "fp3", "mixed_bitmod") — weights only, activations stay RTN.
+    w_dtype: str = "int"
 
     def tag(self) -> str:
-        return f"W{self.w_bits}A{self.a_bits}_{'symm' if self.sym else 'asymm'}"
+        # Inverse of eval_quant.parse_config's scheme mapping (round-trips).
+        if self.w_dtype == "int":
+            scheme = "symm" if self.sym else "asymm"
+        elif self.w_dtype == "mixed_bitmod":
+            scheme = "bitmod"
+        elif self.w_dtype == f"fp{self.w_bits}":
+            scheme = "fp"
+        else:
+            scheme = self.w_dtype
+        return f"W{self.w_bits}A{self.a_bits}_{scheme}"
 
 
 def _fake_quant(x: torch.Tensor, bits: int, sym: bool, dim: int) -> torch.Tensor:
@@ -126,8 +143,14 @@ class QuantLinear(nn.Module):
             self.smooth_scale = None
         # Weight quantized ONCE. Default is per-output-channel AND per-128
         # input chunk, so each (output row, input chunk) has its own scale.
-        wq_dim = 1 if qcfg.per_channel_w else None
-        if wq_dim is None:
+        # BitMoD datatypes use the same (out row, input chunk) scale scope, so
+        # int vs fp/mixed rows differ ONLY in the number format, never in
+        # granularity.
+        if qcfg.w_dtype != "int":
+            from benchmark.quant.bitmod_dtypes import quant_weight_dtype
+            wq = quant_weight_dtype(
+                w, qcfg.w_bits, qcfg.w_dtype, group_size=self.chunk_size)
+        elif not qcfg.per_channel_w:
             wq = _fake_quant(w.reshape(1, -1), qcfg.w_bits, qcfg.sym, dim=-1).reshape_as(w)
         else:
             wq = _fake_quant_lastdim_chunks(
