@@ -8,8 +8,8 @@
 #SBATCH --exclude=gl1810
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=100G
-#SBATCH --time=32:00:00
+#SBATCH --mem=180G
+#SBATCH --time=3-00:00:00
 #SBATCH --output=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_v20_staged/%x_%j.out
 set +u
 source ~/.bashrc
@@ -32,7 +32,7 @@ export FINAL_ADVANCE=12
 export FINAL_LADDER_GROUPS=global
 export FINAL_MIN_LEVEL=16
 export FINAL_SURROGATE_PROPOSALS=0
-export FINAL_WALLTIME_HOURS=28.0
+export FINAL_WALLTIME_HOURS="${V20_SEARCH_WALLTIME_HOURS:-28.0}"
 export FINAL_GUARD_SLACK=1.10
 export FINAL_GATE_K=2.0
 export FINAL_SKIP_GATE=0
@@ -40,12 +40,14 @@ export FINAL_PC_LENGTHS=112:104:96:95:88:84:80:76:72:68:64
 export FINAL_STRUCTURED_MASS_STEPS=0.10:0.15:0.30
 
 # 30B's 128-row MoE expert projections need independent-window batching to
-# make measured search feasible. The lane refuses this optimization unless the
-# matching real-model B=1/B=8 torch.equal manifest exists. Cap Phase 2 at 18 h
-# so the 32 h allocation retains time for both unbatched full-test evaluations.
+# make measured search feasible. By default the lane still requires the
+# matching real-model B=1/B=8 identity manifest. An explicitly authorized
+# direct final run may set V20_ALLOW_UNVALIDATED_BATCHING=1; that decision is
+# printed in the log, while both citable full-test evaluations remain B=1.
 if [[ "$V20_MODEL" == "30B" ]]; then
-  export FINAL_WINDOW_BATCH_SIZE=8
-  export FINAL_WALLTIME_HOURS=18.0
+  export FINAL_WINDOW_BATCH_SIZE="${V20_WINDOW_BATCH_SIZE:-8}"
+  export FINAL_WALLTIME_HOURS="${V20_SEARCH_WALLTIME_HOURS:-54.0}"
+  export FINAL_ALLOW_UNVALIDATED_BATCHING="${V20_ALLOW_UNVALIDATED_BATCHING:-0}"
   if [[ "$V20_TARGET" == "32" || "$V20_TARGET" == "32.0" ]]; then
     _batch_bits=6
   else
@@ -54,5 +56,5 @@ if [[ "$V20_MODEL" == "30B" ]]; then
   export FINAL_WINDOW_BATCH_IDENTITY_JSON="/nfs/turbo/coe-nbleier/allenjin/hpca/validation/v20_30B_window_batch_identity_b8_int${_batch_bits}.json"
 fi
 
-TAG="mp_v20_structured_${V20_MODEL}_t${V20_TARGET}_20260721"
+TAG="${V20_TAG:-mp_v20_structured_${V20_MODEL}_t${V20_TARGET}_20260721}"
 bash benchmark/ppl/final_mp_lane.sh "$V20_MODEL" "$TAG"

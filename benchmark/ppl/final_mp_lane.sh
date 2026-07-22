@@ -11,8 +11,9 @@
 #            (nothing decreased elsewhere; realized cost floats up and is reported).
 #
 # Budgets: 32 / 40 / 48 / 64 (halved cycles) — min PPL at each fixed budget.
-# Mask: 20% INT dose (mask-blind calibration: the MP table is byte-identical
-# across doses, so only the hybrid config swaps).
+# Mask: caller-selected INT dose (mask-blind calibration: the MP table is
+# byte-identical across doses, so only the hybrid config swaps). The historical
+# default remains 20%; FINAL_HYBRID_CONFIG selects a frozen replacement mask.
 #
 # Usage: FINAL_TARGETS=<one-width target(s)> final_mp_lane.sh <model> <tag>
 set -euo pipefail
@@ -55,13 +56,42 @@ else
   PARENT="${wrappers[0]}"
 fi
 
-# 20% INT dose (Stage 0). Mask-blind => the same MP table is valid at any dose.
+# Hybrid INT dose (Stage 0). Mask-blind => the same MP table is valid at any
+# dose. A final wave can supply a frozen mask explicitly; otherwise retain the
+# historical 20% measured-curve default.
 DOSE_DIR_4B="$TURBO/hybrid_configs/_hpca_mp_v9_hybdose_4B_20260718_143110"
 DOSE_DIR_ALL="$TURBO/hybrid_configs/_hpca_mp_v9_hybdose_all_20260718_183035"
-HYBRID="$DOSE_DIR_ALL/${SHORT}_mp_avg32_v9_rank-sc_int8_measured_curve_top0p20.json"
-[[ -s "$HYBRID" ]] || HYBRID="$DOSE_DIR_4B/${SHORT}_mp_avg32_v9_rank-sc_int8_measured_curve_top0p20.json"
+if [[ -n "${FINAL_HYBRID_CONFIG:-}" ]]; then
+  HYBRID="$FINAL_HYBRID_CONFIG"
+else
+  HYBRID="$DOSE_DIR_ALL/${SHORT}_mp_avg32_v9_rank-sc_int8_measured_curve_top0p20.json"
+  [[ -s "$HYBRID" ]] || HYBRID="$DOSE_DIR_4B/${SHORT}_mp_avg32_v9_rank-sc_int8_measured_curve_top0p20.json"
+fi
 [[ -s "$PARENT" ]] || { echo "missing parent $PARENT" >&2; exit 22; }
-[[ -s "$HYBRID" ]] || { echo "missing 20% hybrid config for $SHORT" >&2; exit 23; }
+[[ -s "$HYBRID" ]] || { echo "missing hybrid config for $SHORT: $HYBRID" >&2; exit 23; }
+
+HYBRID_FRACTION="$(python - "$HYBRID" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+fraction = p.get("selection", {}).get("fraction")
+if fraction is None:
+    raise SystemExit(f"hybrid config has no selection.fraction: {sys.argv[1]}")
+fraction = float(fraction)
+if not 0.0 <= fraction <= 1.0:
+    raise SystemExit(f"invalid hybrid selection fraction {fraction}")
+print(f"{fraction:.12g}")
+PY
+)"
+if [[ -n "${FINAL_HYBRID_FRACTION:-}" ]]; then
+  python - "$HYBRID_FRACTION" "$FINAL_HYBRID_FRACTION" <<'PY'
+import math, sys
+actual, expected = map(float, sys.argv[1:3])
+if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12):
+    raise SystemExit(
+        f"hybrid fraction mismatch: mask={actual:g}, expected={expected:g}")
+PY
+fi
+HYBRID_DOSE_PCT="$(awk -v f="$HYBRID_FRACTION" 'BEGIN { printf "%.1f", 100*f }')"
 
 export HF_HOME=/nfs/turbo/coe-nbleier/allenjin/hf_cache
 export TRANSFORMERS_CACHE="$HF_HOME"
@@ -128,11 +158,8 @@ SEARCH_WINDOW_BATCH_SIZE="${FINAL_WINDOW_BATCH_SIZE:-1}"
   }
 if (( SEARCH_WINDOW_BATCH_SIZE > 1 )); then
   BATCH_IDENTITY="${FINAL_WINDOW_BATCH_IDENTITY_JSON:-}"
-  [[ -s "$BATCH_IDENTITY" ]] || {
-    echo "search window batching requires FINAL_WINDOW_BATCH_IDENTITY_JSON from the real-model gate" >&2
-    exit 26
-  }
-  python - "$BATCH_IDENTITY" "$hf" "$HYBRID_BITS" "$SEARCH_WINDOW_BATCH_SIZE" <<'PY'
+  if [[ -s "$BATCH_IDENTITY" ]]; then
+    python - "$BATCH_IDENTITY" "$hf" "$HYBRID_BITS" "$SEARCH_WINDOW_BATCH_SIZE" <<'PY'
 import json, sys
 p = json.load(open(sys.argv[1]))
 want_model, want_bits, want_batch = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
@@ -150,9 +177,16 @@ if bad:
     raise SystemExit(f"window-batch identity manifest failed {bad}: {sys.argv[1]}")
 print(f"[final] verified search window batching from {sys.argv[1]}")
 PY
-  export PPL_WINDOW_BATCH_IDENTITY_JSON="$BATCH_IDENTITY"
+    export PPL_WINDOW_BATCH_IDENTITY_JSON="$BATCH_IDENTITY"
+  elif [[ "${FINAL_ALLOW_UNVALIDATED_BATCHING:-0}" == "1" ]]; then
+    echo "[final] WARNING: running search with unvalidated window batching B=$SEARCH_WINDOW_BATCH_SIZE" >&2
+    unset PPL_WINDOW_BATCH_IDENTITY_JSON
+  else
+    echo "search window batching requires FINAL_WINDOW_BATCH_IDENTITY_JSON from the real-model gate (or explicit FINAL_ALLOW_UNVALIDATED_BATCHING=1)" >&2
+    exit 26
+  fi
 fi
-echo "[final] model=$SHORT targets=$TARGETS dose=20% hybrid=INT${HYBRID_BITS} search_window_batch=$SEARCH_WINDOW_BATCH_SIZE parent=$PARENT"
+echo "[final] model=$SHORT targets=$TARGETS dose=${HYBRID_DOSE_PCT}% hybrid=INT${HYBRID_BITS} search_window_batch=$SEARCH_WINDOW_BATCH_SIZE parent=$PARENT"
 echo "[final] PHASE 2: measured search"
 PPL_WINDOW_BATCH_SIZE="$SEARCH_WINDOW_BATCH_SIZE" \
 python -u benchmark/ppl/mp_v16_refine.py \
