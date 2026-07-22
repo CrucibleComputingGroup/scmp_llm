@@ -1,7 +1,134 @@
 # scmp_llm — reproduction guide
 
 > ═══════════════════════════════════════════════════════════════════════════
-> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-06
+> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-19
+>
+> ### 2026-07-19 — V17 pivot: measured-damage currency. READ `~/Projects/MP_V17_HANDOFF_20260719.md` FIRST
+> Oracle-cell night settled the phase-2 design: σ may not price cross-op/
+> cross-length trades (4B floor-down cells lost +6.5%/+8.4% at iso-compute;
+> σ-said-cheap), measured-direction compound WON on "saturated" 14B
+> (attn→96 + psl 112→95 + floors raised: **9.7378@32.08 vs 9.8366@32.15**),
+> rotation (R1/R2-only QuaRot) REFUTED on llama8B (10.5532@32.12 vs
+> 10.4879@32.04; autopsy `~/Projects/papers/ROT_FAILURE_ANALYSIS.md`).
+> V16.1 finals all in (llama8B t40 8.986@39.91 w/ 4 accepts incl. first
+> surrogate compound; 14B 0 accepts at ALL targets — now known to be
+> search-blindness, not saturation). Three user-approved tracks were specced
+> but their build agents died with a session restart (zero partial work):
+> A transplant wave (14B winner → 4B/llama8B/30B), B Stage-2 tonight =
+> FALLBACK measured search (user decision: V16.1 + fixed acceptance
+> [accept-on-A→B-replication, confirm stop-only, patience 3-4] + new
+> `lift_compound` macro family; branches 4B t32/t36, llama8B t40, 14B t32;
+> damage-model d_b(L) fit runs as background analysis only),
+> C absolute escape gate (first runtime change, sc_common.py). Full specs,
+> lessons, gotchas, artifact paths: `~/Projects/MP_V17_HANDOFF_20260719.md`
+> + `~/Projects/MP_ORACLE_REPORT_20260718.md`. Paper story (user-approved):
+> ONE algorithm, two-stage calibration — σ for dispatch/init (zero evals),
+> measured NLL for allocation (small eval budget).
+>
+> ### 2026-07-17 — V14 forensics verdict + V16 paired-window refinement launched
+> **V14 post-mortem (5-agent audit, all conclusions from primary artifacts):**
+> the `--fp16-ppl` gate compared 8k VALIDATION-window PPL against a FULL-TEST
+> FP16 threshold; validation windows run 21–25% easier (parent val/test ratio
+> 0.75–0.79), so the parent was already under threshold on 4B/14B/30B and
+> **9/10 completed V14 branches stopped at their first accepted candidate in
+> sweep 1 — the threshold phase never ran on any gated branch.** llama8B (parent
+> above threshold) is the control: 3 genuine sweeps, 2 accepted moves ≈ −1.6%
+> val. The 12.19→13.50 confirm→test gap is ~95% DISTRIBUTION SHIFT (a
+> never-selected control shows the same 0.90 ratio), ≤5% selection overfit.
+> Eval parity 13.5048 vs 13.7840 vs fp16 10.0445 CONFIRMED identical protocol
+> (same compute_ppl/build_model, 298,862 loss tokens); BUT the 4B t32 "win" is
+> not iso-compute (realized 31.998 vs V9's 31.31; local slope −0.42 PPL/cycle
+> prices the gap at ≈ the whole gain). Measured noise: single-8k-window
+> candidate ΔNLL σ≈0.0076 nats ⇒ V14's 0.002 accept gates were ~0.3σ;
+> shortlist-by-screen bias +0.0069 nats. Details in the session memory
+> (`project_scmp_phase2_v14_gate_artifact`).
+>
+> **V16 (`benchmark/ppl/mp_v16_refine.py` + `mp_v16_lane.sh`)** replaces the
+> V12/V14 protocol: whole-validation-split block partition (32-window rotating
+> screen pool ×4 subsets split A/B, 16-window confirm set spread over the split,
+> ~69-window holdout), PAIRED per-window ΔNLL vs incumbent everywhere
+> (`compute_ppl(..., window_losses=)` opt-in, default bit-identical), pooled-σ
+> gates (select on A → replicate on B → ONE confirm eval that GATES but never
+> chooses), macro-moves (floor-exchange via propose_floor_exchange,
+> ceiling-compress/raise, joint-pair of prev sweep's best value moves), family
+> quotas, removal allowed but confirm-gated, per-sweep checkpoints with
+> bit-identity resume probe, walltime guard. FP16 stop is two-tier per user
+> decision: tier-1 = confirm-set PPL vs 0.90×1.1×fp16-val (measured on the SAME
+> windows by `fp16_val_reference.py`, refs in Turbo `fp16_val_refs/`) only
+> TRIGGERS tier-2 = a REAL full-test eval; stop only if test ≤ 1.1×fp16-test
+> (capped once/target, stop-only, never selects). Budget band is ASYMMETRIC
+> [target−0.35, target+1.0] (user: +1 cycle is fine if PPL improves; energy
+> table will report realized costs). Tests: 20 v16 unit+mocked-flow tests
+> (incl. full main() dry-run, resume, corrupt-checkpoint) + all 29 prior ppl
+> tests pass.
+>
+> **Live V16 wave:** tag `mp_v16_paired_20260717_165536`, 12 cells = {4B,
+> llama8B, 14B, 30B} × targets {32,36,40}, one GPU each, 24h, jobs
+> `53835227-38` (submitted 16:55 ET; account cap 10 shared — cells start as
+> GPUs free). Outputs `$TURBO/mp_v16_refine_mp_v16_paired_20260717_165536/`;
+> logs scratch `logs/_mp_v16_refine_mp_v16_paired_20260717_165536/`. Compare
+> winners vs V9 full-test at the QUOTED realized costs (V9 4B 13.7840@31.31,
+> llama8B 10.4879@32.04, 14B 9.8366@32.15, 30B 10.2951@31.54).
+> Confirmed sweep-1/2 accepts (16-window confirm, paired vs incumbent):
+> 4B t32 insert-16 −1.78%, t36 insert-28 −1.41%, t40 remove_i3_up −1.84%;
+> llama8B t32 none. All accepts are ladder-SHAPE moves; threshold moves 0/165.
+>
+> ### 2026-07-18 — hybrid-mask dose-response: the biggest single-knob lever
+> 4B avg32 full-test PPL vs INT-mask fraction (same V9 pipeline, only
+> `--hybrid-int-frac` changed; tag `mp_v9_hybdose_4B_20260718_143110`):
+> 10% 13.784@31.31 → 15% 13.584@31.17 (−1.45%) → **20% 13.190@31.52 (−4.31%)**
+> — larger than any phase-2 search gain, at ~unchanged SC cycle cost. Caveats:
+> more INT7 compute (energy axis prices it; "use less SC" identity risk for the
+> thesis) and the calibrator is mask-blind, so this is the lower bound of a
+> mask-aware calibration. Full-matrix dose wave launched 18:30 ET, tag
+> `mp_v9_hybdose_all_20260718_183035`, jobs `53927482-511`: 30 cells =
+> {4B,llama8B,14B,30B} × {avg32,avg36,avg40} × {10,15,20}% (minus existing
+> avg32@10% anchors + today's two 4B cells). New driver configs
+> `mp_avg36_v9`/`mp_avg40_v9` (same ladder, ratios 0.28125/0.3125); the
+> act_global_v9 guard now accepts mp_avg{32,36,40}_v9.
+>
+> **v16/v16.1 full-test scoreboard so far** (vs V9 4B 13.784@31.31, 8B
+> 10.488@32.04, 14B 9.837@32.15, 30B 10.295@31.54): 4B t32 13.589@32.04 (V14's
+> 13.505 still best-at-32), t36 12.435@35.98, t40 11.756@40.02; 8B t32 null
+> (=V9), t36 9.542@35.92 ([96,50,31,27,24] via v16.1 removal); 14B t32 null
+> (=V9, 1.139×fp16); 30B t32 10.196@32.07 (budget-projection only,
+> walltime_guard). In flight: 14B t36/t40, 30B t36/t40, 8B t40 (holds the
+> first surrogate-proposed accept, surr_i5-4_i6-2 confirm −1.58%).
+>
+> ### 2026-07-18 — V16.1 (user-approved; no QuaRot) + trace-mining verdicts
+> 3-agent mining of the v16 histories (~400 candidates): threshold family
+> carries ZERO signal (variance at/below noise floor, both confirms
+> sign-flipped — ~30% of search compute wasted); compound moves replicate
+> (A→B r +0.87/+0.56/+0.37) while single moves don't; paired noise is 2-4.5×
+> smaller than pooled σ_w (74-93% of in-region variance explainable);
+> protected 112-cycle pins hold ~3% of MACs but ~10% of the t32 cycle budget
+> and were never ablated. Full verdicts in session memory
+> (`project_scmp_v17_method_mining`); dense-grid Lloyd-Max ladder design +
+> fresh anchor-σ measurement identified as the v17 lever (pass1 per-level
+> error vectors in v14/v16 tables are position-copied stale V9 values — DATA
+> BUG, do not trust them).
+>
+> **V16.1 changes in `mp_v16_refine.py` (defaults; queued jobs pick them up
+> automatically at start):** (1) threshold phase OFF by default
+> (`--threshold-phase` to re-enable); (2) surrogate-guided compound proposals
+> — pure-python ridge on the branch's own history.jsonl (era-centered paired
+> deltas, ladder-shape features), gated on B-stage transfer r≥0.2 and ≥40
+> history rows, nominates ≤5 two-coordinate ladders/sweep (family
+> `surrogate`); (3) protected-channel LENGTH move family (`pc_length`,
+> default 96:88:80:72:64) — table-driven stoc_len rewrite + budget
+> reprojection, per-candidate psl threaded through occupancy/state/summary
+> (`best_protected_stoc_len`). Family quotas now
+> macro=3,value=3,insert=3,remove=1,surrogate=4,pc_length=2. 56 tests pass
+> (incl. surrogate fit/transfer-gate/proposal validity, pc-family, mocked
+> end-to-end flow). Running cells (4B×3, 8B t32) finish under v16 semantics
+> (in-memory code); pending cells (8B t36/40, 14B×3, 30B×3) run v16.1.
+> A v16.1 resume wave over the finished v16 branches (starts from their
+> winners via checkpoint/parent chaining) needs explicit approval to launch.
+>
+> **V15 jobs left running:** 53824168 (14B t32 full-test backfill, done ~17:45
+> ET), 53823059 (8B resume + full test, done ~18:00–21:00 ET). 4B makeup done:
+> full-test 13.504833@31.998. V14 14B t32.141/36/40 still lack full-test
+> backfills; no 30B V15 exists.
 >
 > **Read this block first.** BIG RESULT 2026-07-05: the MP budget was **ROW-weighted
 > (a bug)**. Fixing it to **MAC/FLOP-weighted** (`--budget-weight macs`) makes
@@ -10,6 +137,189 @@
 > act_global`, ships row-weighted `act_global` config C, or reports MP *losing* on
 > llama8B is a **SUPERSEDED row-weighted artifact** — see "Status of the algorithm"
 > below. (The pre-Jul-2 kernel-confound caveat on those tables still also applies.)
+>
+> ### 2026-07-16 — act_global_v9 implemented + launched (int6/avg32 only)
+> V9 is the low-precision-only experiment requested after inspecting the
+> `mp_final` traces. `hpca --mp-method act_global_v9` is paired exclusively with
+> `--configs mp_avg32_v9`: levels `{96,64,48,32,24,16}`, target avg_sl 32, v3
+> MAC pricing + auto metric + residual fill, and the new objective
+> `max(0, sigma(level)-sigma(96))^2` (`--objective delta_sigma2`). All allocator
+> stages now use the same objective transform (global lambda, argmin, metric
+> selection, and residual refinement). This also fixes a discovered confound in
+> the old sigma2 experiment: refinement reconstructed its assignment with raw
+> sigma after lambda had been solved with sigma2, so prior v3s logs do not cleanly
+> evaluate sigma2. V9 protected channels are fixed at **112 cycles** (a multiple
+> of 16), with the existing compensated fractions/act_collapse recipe. Legacy
+> methods retain their 128-cycle default. Lightweight objective tests, pycompile,
+> shell syntax, dry-run wiring, and `git diff --check` pass.
+>
+> **Live v9 PPL wave:** tag `mp_v9_int6_20260716_001908`, launched 00:19 ET
+> outside the sandbox after a real four-model preflight. Jobs: `53670488`
+> (`v9_4B_l8_i6`, 4B then llama8B, gl1802), `53670489` (`v9_14B_i6`, gl1803),
+> `53670490` (`v9_30B_i6`, gl1803). All three entered RUNNING and their startup
+> logs confirm levels `[96,64,48,32,24,16]`, ratio 0.25, `act_global_v9`, and
+> protected `pc0.01x112_act_collapse_comp` with MLP overrides
+> `down=0.06,up=0.03,gate=0.03`. Results:
+> `/nfs/turbo/coe-nbleier/allenjin/hpca/results/results_mp_v9_int6_20260716_001908.tsv`;
+> tables: `/nfs/turbo/coe-nbleier/allenjin/hpca/mp_calib_mp_v9_int6_20260716_001908/`;
+> cell logs: scratch `logs/_hpca_mp_v9_int6_20260716_001908/`.
+>
+> ### 2026-07-16 — v10 frozen-threshold PPL ladder refinement: completed
+> New `benchmark/ppl/mp_ladder_refine.py` is a **second pass**, not a replacement
+> allocator. It freezes a completed AdaptiveMPConfig's thresholds, signed
+> dispatch metrics, class count/topology, hybrid mask, and protected channels;
+> raises the lowest adaptive rung by 4 cycles; then lowers higher adaptive rungs
+> one cycle at a time using measured MAC occupancy until the parent deployment
+> cost is restored. Each candidate is evaluated on a fixed 32k-token WikiText-2
+> **validation** stream in one model load. A round is accepted only if validation
+> NLL improves and realized trace cost is within 0.35 cycles of the baseline;
+> stop at the first rejection (max four rounds). Candidate tables retain parent
+> provenance and the full move/evaluation history. The test split is not used for
+> search. Pure tests cover protected/level trace separation, exact budget
+> projection, ordering propagation, frozen thresholds, table provenance, and the
+> public eval-model entry point. The completed 4B `mp_final` result validates the
+> floor-for-ceiling idea. Strict parent-cost branch: levels
+> `{128,64,48,32,16}` -> `{55,51,44,32,24}`, 32k validation PPL
+> `16.0295 -> 13.0764`, realized cost `30.7260 -> 30.7405`. Nominal-32 branch:
+> `{65,63,47,32,24}`, validation PPL `12.6769`, cost `32.0207`. A third move
+> toward near-uniform was worse and correctly rejected in each branch. Outputs:
+> `mp_ladder_refine_mp_v10_{ppl_refine_20260716_004007,iso_parent_20260716_011224}/4B/`.
+> Repro launcher: `benchmark/ppl/mp_ladder_refine_lane.sh`.
+>
+> ### 2026-07-16 — v11 joint ladder + threshold refinement: completed
+> `benchmark/ppl/mp_joint_refine.py` starts directly from the completed
+> `mp_final` avg32 wrapper; it does **not** depend on v9/v10. It alternates
+> MAC-budget-projected integer ladder moves with end-to-end validation-NLL
+> threshold candidates. Runtime profiling records GPU-resident histograms of
+> normalized dispatch metrics per operator/layer bucket, allowing threshold
+> changes to be expressed as small profiled-MAC-mass moves. Tested candidates:
+> promote MLP floor, promote attention-linear floor, demote qk/av top, and a
+> combined attention-to-MLP transfer. Signed dispatch metrics, protected channel
+> indices/length, class topology, and hybrid INT mask stay frozen. `sc_prec=8`
+> and maximum stream length **128** are enforced; a briefly submitted max-256
+> experiment was cancelled at user request and all cap-extension code removed.
+> 19 objective/v10/v11 unit tests, pycompile, shell syntax, and diff checks pass.
+>
+> Search protocol: fixed 8,188-token WikiText-2 validation prefix, followed by
+> 32,752-token **validation confirmation** for each selected branch. These are
+> not test-split numbers; run one frozen test evaluation before using them as
+> final paper PPL. All 20 branches completed and wrote wrappers. Confirmed
+> validation PPL / realized cost / levels for targets `{32,36,40,48}`:
+>
+> ```text
+> model     32                         36                         40                         48
+> 4B        12.9006/31.9759/57-56-42-32-25  11.8839/35.9895/89-69-47-33-26  11.0825/39.9835/89-66-47-33-31  10.4534/48.0139/123-63-48-39-37
+> llama8B   10.1432/31.9047/86-63-48-30-20   9.0980/35.9464/88-61-47-34-25    8.6171/39.8899/128-64-48-34-27   8.0751/48.0291/128-64-47-39-38
+> 14B        9.4217/31.9407/82-63-48-31-20   9.0353/36.0268/85-63-48-32-26    8.8465/40.0205/87-61-48-33-32    8.7574/47.9928/128-65-48-41-38
+> 30B        9.7789/32.0158/49-48-47-31-25   8.9264/36.0279/82-64-48-30-26    8.4672/40.0703/126-65-51-31-27   8.1405/48.0546/128-68-48-40-37
+> ```
+>
+> Threshold refinement was the selected 8k winner in 13/16 budget branches;
+> the exact selected move varies by model/budget, so do not hard-code “MLP
+> promotion always wins.” It is **not yet proven to generalize**: on 4B the
+> 32k-confirmed frozen-threshold v10 remains better than v11 both at strict iso
+> cost (`13.0764 < 13.2174`) and nominal 32 (`12.6769 < 12.9006`). Use 32k or
+> multiple validation prefixes for threshold selection before adopting v11 over
+> v10. The monotonic 32k curves strongly support increasing budget, while 14B
+> begins saturating around 40-48. Strict realized-parent-cost
+> confirmations also completed: 4B `13.2174@30.7378`, llama8B
+> `10.0254@32.3286`, 14B `9.5209@32.3316`, 30B `9.7444@31.5189`.
+>
+> Outputs: budget sweep
+> `/nfs/turbo/coe-nbleier/allenjin/hpca/mp_joint_refine_mp_v11_budget_mpfinal_20260716_025421/`;
+> strict parent-cost ablations
+> `/nfs/turbo/coe-nbleier/allenjin/hpca/mp_joint_refine_mp_v11_joint_mpfinal_20260716_025421/`.
+> Completed jobs: strict parent `53675955-58`; `{32,36,40,48}` sweep
+> `53676395-98`. Launcher: `benchmark/ppl/mp_joint_refine_lane.sh`.
+
+### 2026-07-16 — V12 generalized precision-topology pass launched
+V12 (`benchmark/ppl/mp_systematic_refine.py`) is a second pass directly over
+the completed `mp_final` avg32 wrappers.  The ladder cardinality is searchable:
+the pass can move any rung, insert a new level at every internal gap or either
+endpoint (including retaining a lower top and adding 112/128), remove a rung,
+and perturb every threshold boundary.  Insertions split the profiled MAC mass
+of the affected class; all candidates are reprojected to the requested
+MAC-weighted budget.  Protected-channel lengths are not newly introduced as
+adaptive rungs, pass-1 counts/fractions are preserved under diagnostic names,
+and guard plus confirmation costs are checked against budget tolerance.
+
+The initial four-job wave (`53718948-51`) was stopped at the user's request
+after being capped at two sweeps.  It was relaunched outside the sandbox at
+12:38 ET with tag `mp_v12_topology_mpfinal_conv_20260716_123829`:
+`53719771` (4B), `53719772` (llama8B), `53719773` (14B), and `53719774`
+(30B), all RUNNING on gl1802/gl1805.  This wave searches targets
+`parent:32:36:40:48`, allows up to 8 sweeps, and stops after 2 consecutive
+rejected sweeps; it tests two candidate insertion values per gap.  Outputs:
+`/nfs/turbo/coe-nbleier/allenjin/hpca/mp_systematic_refine_mp_v12_topology_mpfinal_conv_20260716_123829/`;
+logs: `/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_mp_systematic_refine_mp_v12_topology_mpfinal_conv_20260716_123829/`.
+Scheduler commands were intentionally run outside the Codex sandbox per the
+execution-environment decision above.
+
+### 2026-07-16 — 4B V13 focused follow-up
+The first V12 4B branch selected a short-window-favorable four-level removal.
+To test the proposed correction without interrupting the four-model V12 wave,
+the launcher now supports insertion-only topology (`--no-allow-removal`),
+family-specific guard shortlists, and a nonzero minimum mean-NLL improvement.
+Job `53767030` (tag `mp_v13_4b_insertonly_mpfinal_182418`) is RUNNING on gl1802
+with targets `parent:32`, 8k screen and guard windows, up to 8 sweeps,
+two-rejection patience, three guard candidates per family, and no rung removal.
+Its outputs are under
+`/nfs/turbo/coe-nbleier/allenjin/hpca/mp_systematic_refine_mp_v13_4b_insertonly_mpfinal_182418/`.
+
+### 2026-07-16 — V9 + phase-2 cardinality branches and FP16 gate
+The next phase-2 wave starts from the stronger `mp_v9_int6_20260716_001908`
+parent rather than `mp_final`: V9's six-level ladder and protected 112-cycle
+channels remain intact, while phase 2 re-optimizes end-to-end PPL.  The lane now
+supports an explicit `--fixed-class-count` filter.  The fixed-six branch disables
+insertions/removals, so it cannot erase the V9 topology; the insertion-only branch
+allows up to eight adaptive levels but never removes a V9 rung.  These are
+separate, auditable cardinality branches rather than one greedy topology path.
+
+The search also accepts `--fp16-ppl` and stops a target early when an accepted
+candidate is below `1.1 * PPL_FP16` on both screen and guard windows.  The mandatory
+32k validation confirmation is still run and recorded separately; because the
+gate uses full-test FP16 references against validation windows, it is an early
+stopping heuristic, not a substitute for the final frozen test evaluation.
+The V9 branch uses tag `mp_v14_v9_insertonly_20260716` under
+`/nfs/turbo/coe-nbleier/allenjin/hpca/`; the four fixed-six jobs were cancelled
+before useful evaluation at the user's request. Slurm commands were issued
+outside the Codex sandbox per the execution-environment requirement above.
+Existing V12/V13 jobs were left running.
+
+### 2026-07-17 — automatic full-test reporting and makeup wave
+`benchmark/ppl/mp_systematic_refine.py` now evaluates each selected frozen
+branch on the complete WikiText-2 `test` split after validation confirmation
+(`--test-tokens 0`, about 298k tokens).  It records `final_test_ppl`, realized
+test cost, token count, and `final_test_trace.json`; when resuming an older
+summary it backfills the final test without repeating the search.  The test
+split is never used for candidate selection.
+
+The focused V15 jobs are `53823059` (8B resume from the accepted partial
+eight-level candidate, two fixed-topology sweeps), `53823060` (4B makeup
+final-test evaluation from the selected V14 target-32 wrapper), and `53824168`
+(14B equivalent, relaunched after the old 12-hour job `53823061` was
+cancelled).  Outputs are under
+`/nfs/turbo/coe-nbleier/allenjin/hpca/mp_v15_v9_*_20260717*/`.
+
+**Scheduler policy:** systematic-refinement and full-test jobs use a 24-hour
+wall-clock limit (`--time=24:00:00`); do not use the old 12-hour limit.
+>
+> The active 30B MP-RULER jobs can be cancelled and resumed: `call_api.py` reads
+> existing prediction JSONL indices, appends only missing samples, and the lane
+> also skips completed summary cells. At inspection, avg64f/avg48f/avg32 had
+> 15/14/14 of 50 samples saved. Cancelling loses at most the in-flight sample and
+> model-load time; relaunch with the same tag/budget. Do not delete prediction
+> directories. With explicit user approval, jobs `53553136` (avg64f), `53553137`
+> (avg48f), and `53553138` (avg32) were cancelled to launch v9. Resume each with
+> its original `SubmitLine`/budget and tag `mp_ruler_ctx4096_20260714_021537`.
+>
+> **Execution-environment requirement (user decision, 2026-07-16):** Slurm
+> scheduler operations must be run **outside the Codex sandbox**. This includes
+> scheduler inspection (`squeue`, `scontrol`, `sacct`) as well as mutations
+> (`scancel`, `sbatch`, `srun`). Sandboxed scheduler calls can hang or fail to
+> reach Slurm services and must not be treated as authoritative. Request/use
+> elevated unsandboxed execution for these commands, while still obtaining the
+> user's explicit approval before cancelling jobs or submitting a new wave.
 >
 > ### 2026-07-06 — PIPELINE v2: SQ-calibration fix (+3 more calibrator fixes)
 > **Model scope is now EXACTLY 4B / llama8B / 14B / 30B** (user decision; 1.7B+32B

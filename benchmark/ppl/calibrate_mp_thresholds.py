@@ -54,6 +54,7 @@ from transformers import AutoTokenizer  # noqa: E402
 from loader import load_sc_model, apply_sc_env_overrides  # noqa: E402
 from model.sc_common import SCLinear  # noqa: E402
 from scmp_kernels import sc_matmul as _sc_matmul  # noqa: E402
+from benchmark.ppl.mp_objectives import objective_errors as _objective_errors  # noqa: E402
 
 
 # -- defaults --
@@ -447,11 +448,11 @@ class ThresholdCalibrator:
         self.refine_mode = str(refine_mode)
         self._refined_assignments: dict = {}
         self.refine_stats: dict = {}
-        # WF-RQ C1: allocation objective. "sigma" = relative-L2 recon error
-        # (original). "sigma2" = squared error = propagated-loss surrogate; in
-        # the NEAR-LOSSLESS regime this water-fills the attention pool while the
-        # rep_g cost pricing keeps the high-σ linears pinned near 128 (do NOT
-        # additionally row-weight linears — that collapses them to the floor).
+        # Allocation objective. "sigma" = relative-L2 recon error (original);
+        # "sigma2" = total squared error; "delta_sigma2" (v9) = squared error
+        # INCREASE relative to the highest available stream length. V9 does not
+        # spend budget chasing an irreducible high-level error floor and
+        # strongly prices the 32->16 degradation cliff.
         self.objective = "sigma"
         # open-issue #5: measure per-level σ on the SmoothQuant-transformed
         # activation (a/s) that the deployed kernel actually quantizes, so the
@@ -766,8 +767,9 @@ class ThresholdCalibrator:
         """Diagnostic (the near-lossless lever). Runtime assigns each row a level
         by RANKING it on the dispatch metric (|x|.amax). This measures how well
         that ranking matches the row's TRUE need for cycles: Spearman ρ(metric,
-        σ-benefit) per operator, where σ-benefit = σ(min level) − σ(max level)
-        (the recon error the max stream removes). ρ≈1 ⇒ metric ranks correctly
+        objective-benefit) per operator, where benefit = objective(min level) −
+        objective(max level). Under the default objective this is the raw
+        reconstruction-error benefit. ρ≈1 ⇒ metric ranks correctly
         (granularity is the only lever left); ρ low/negative ⇒ the METRIC
         misranks rows and a better metric — not more levels/buckets — is the win.
         av is the prime suspect (peak attention weight vs σ)."""
@@ -777,7 +779,8 @@ class ThresholdCalibrator:
                 continue
             m = np.concatenate(rec["metrics"], axis=0)
             e = np.concatenate(rec["errors"], axis=0)     # [n, L] descending levels
-            benefit = e[:, -1] - e[:, 0]                   # σ(min L) − σ(max L) ≥ 0
+            eo = _objective_errors(e, self.objective)
+            benefit = eo[:, -1] - eo[:, 0]  # objective benefit: min L -> max L
             per_op[key[0]]["m"].append(m)
             per_op[key[0]]["b"].append(benefit)
         out = {}
@@ -790,7 +793,7 @@ class ThresholdCalibrator:
     def select_dispatch_metrics(self) -> dict:
         """act_global_v2 (--metric-select auto): per-operator SIGNED dispatch-
         metric selection. For each operator, pool all buckets and compute
-        Spearman ρ(candidate, σ-benefit) for amax + every captured alt; pick
+        Spearman ρ(candidate, objective-benefit) for amax + every captured alt; pick
         the candidate with the largest |ρ| (negative ρ ⇒ deploy with sign −1,
         which inverts the ranking). Switch away from raw amax only when the
         winner clears the incumbent by ``metric_select_margin`` (noise guard).
@@ -809,7 +812,8 @@ class ThresholdCalibrator:
             if not rec["metrics"]:
                 continue
             e = np.concatenate(rec["errors"], axis=0)
-            b = e[:, -1] - e[:, 0]                 # σ(min L) − σ(max L) ≥ 0
+            eo = _objective_errors(e, self.objective)
+            b = eo[:, -1] - eo[:, 0]  # objective benefit: min L -> max L
             cands = {"amax": np.concatenate(rec["metrics"], axis=0)}
             for name, lst in rec["alts"].items():
                 if lst:
@@ -874,14 +878,18 @@ class ThresholdCalibrator:
         elif lam is None:
             # Per-group budget: pin this group to budget_ratio·ref average.
             budget_total = self.budget_ratio * self.budget_ref_stoc_len * metrics.size
-            assignment = _cost_assignments(errors, self.costs, budget_total)
+            assignment = _cost_assignments(
+                _objective_errors(errors, self.objective),
+                self.costs,
+                budget_total,
+            )
         else:
             # Global cross-layer: assign at the shared price λ, with the cost
             # scaled by rep_g = R_g/n_g so cheap (few-row) groups buy precision
             # cheaply (consistent with the R_g-weighted budget — see
             # _global_lambda). weight = W_g importance; within-group quantile is
             # act-style (rep/weight are per-group constants).
-            err_obj = errors ** 2 if self.objective == "sigma2" else errors
+            err_obj = _objective_errors(errors, self.objective)
             objective = (weight * err_obj) + lam * rep * self.costs[None, :]
             assignment = objective.argmin(axis=1)
         counts = np.bincount(assignment, minlength=len(self.levels))
@@ -972,9 +980,8 @@ class ThresholdCalibrator:
         if self.budget_scope == "global":
             werrs, row_counts, prices = [], [], []
             for key, rec in self.records.items():
-                e = np.concatenate(rec["errors"], axis=0)
-                if self.objective == "sigma2":
-                    e = e ** 2          # match _fit_group's squared objective
+                e = _objective_errors(
+                    np.concatenate(rec["errors"], axis=0), self.objective)
                 werrs.append(self._weight_for_key(key) * e)
                 # Per-group budget weight R_g (un-subsampled): rows (latency) or
                 # MACs (FLOP/energy) per self.budget_weight. Fall back to the
@@ -1019,7 +1026,8 @@ class ThresholdCalibrator:
                 >= self.min_bucket_units]
         data, total_R, realized = {}, 0.0, 0.0
         for key in keys:
-            errors = np.concatenate(self.records[key]["errors"], axis=0)  # [n,L]
+            errors = np.concatenate(self.records[key]["errors"], axis=0)  # raw sigma [n,L]
+            objective_errors = _objective_errors(errors, self.objective)
             w = self._weight_for_key(key)
             rep = self._rep_for_key(key)
             # act_global_v2/v3: the argmin + greedy RANKING use the KKT price
@@ -1029,10 +1037,16 @@ class ThresholdCalibrator:
             # fill stays exactly iso-compute.
             price = self._price_for_key(key)
             R = self._weight_count(key, errors.shape[0])
-            obj = (w * errors) + global_lam * price * costs[None, :]
+            obj = (w * objective_errors) + global_lam * price * costs[None, :]
             assign = obj.argmin(axis=1).astype(np.int64)   # == _fit_group's argmin
-            data[key] = {"errors": errors, "w": w, "rep": rep, "price": price,
-                         "assign": assign}
+            data[key] = {
+                "errors": errors,
+                "objective_errors": objective_errors,
+                "w": w,
+                "rep": rep,
+                "price": price,
+                "assign": assign,
+            }
             total_R += R
             realized += rep * float(costs[assign].sum())    # = R_g · mean_row cost
         target = self.budget_ratio * self.budget_ref_stoc_len * total_R
@@ -1050,7 +1064,9 @@ class ThresholdCalibrator:
             for i in range(d["assign"].shape[0]):
                 j = int(d["assign"][i])
                 if j > 0:
-                    dsig = d["w"] * (float(d["errors"][i, j]) - float(d["errors"][i, j - 1]))
+                    dsig = d["w"] * (
+                        float(d["objective_errors"][i, j])
+                        - float(d["objective_errors"][i, j - 1]))
                     drank = d["price"] * (float(costs[j - 1]) - float(costs[j]))
                     if drank > 0 and dsig > 0:
                         heapq.heappush(heap, (-(dsig / drank), key, i))
@@ -1072,7 +1088,9 @@ class ThresholdCalibrator:
             spent_cost += dcost
             upgrades += 1
             if j - 1 > 0:
-                dsig2 = d["w"] * (float(d["errors"][i, j - 1]) - float(d["errors"][i, j - 2]))
+                dsig2 = d["w"] * (
+                    float(d["objective_errors"][i, j - 1])
+                    - float(d["objective_errors"][i, j - 2]))
                 drank2 = d["price"] * (float(costs[j - 2]) - float(costs[j - 1]))
                 if drank2 > 0 and dsig2 > 0:
                     heapq.heappush(heap, (-(dsig2 / drank2), key, i))
@@ -1784,6 +1802,41 @@ def _iter_calib_windows(enc: torch.Tensor, ctx: int, num_seqs: int):
         yield enc[start:end]
 
 
+def _select_int_swap_windows(
+    enc: torch.Tensor, ctx: int, num_windows: int, *,
+    sampling: str = "prefix", seed: int = 0,
+):
+    """Select deterministic, non-overlapping windows for an INT-swap sweep.
+
+    ``prefix`` preserves the v18 behavior.  ``stratified`` divides the entire
+    token stream into equal block-index strata and samples one ctx-aligned
+    block from each stratum.  It therefore covers the corpus instead of letting
+    one contiguous WikiText prefix decide the mask, while remaining exactly
+    reproducible from ``seed``.
+    """
+    ctx = int(ctx)
+    num_windows = int(num_windows)
+    if ctx <= 0 or num_windows <= 0:
+        raise ValueError("ctx and num_windows must be positive")
+    total_blocks = int(enc.shape[0]) // ctx
+    take = min(num_windows, total_blocks)
+    if take <= 0:
+        return [], []
+    if sampling == "prefix":
+        block_ids = list(range(take))
+    elif sampling == "stratified":
+        rng = np.random.default_rng(int(seed))
+        # With take <= total_blocks, every integer stratum is non-empty and the
+        # disjoint strata guarantee that no sampled window overlaps another.
+        edges = np.linspace(0, total_blocks, take + 1, dtype=np.int64)
+        block_ids = [int(rng.integers(int(edges[i]), int(edges[i + 1])))
+                     for i in range(take)]
+    else:
+        raise ValueError(f"unknown int_swap window sampling mode: {sampling}")
+    starts = [b * ctx for b in block_ids]
+    return [enc[s:s + ctx] for s in starts], starts
+
+
 def _reseed_sc_for_draw(draw_idx: int, base_seed: int) -> None:
     """Make SC draw ``draw_idx`` use independent noise — when the kernel's Owen
     scramble is in its stochastic ('random') mode.
@@ -1954,6 +2007,441 @@ def _measure_group_curve(
     return curves, L0
 
 
+# ---------------------------------------------------------------------------
+# int_swap — the hybrid INT mask ranking (v18)
+# ---------------------------------------------------------------------------
+
+_INT_SWAP_CFG_KEYS = (
+    "use_sc_linear", "use_sc_attn", "sc_ste_grad", "sc_mp_config",
+    "sc_stoc_len", "sc_group_stoclen",
+    "sc_hybrid_schedule", "sc_hybrid_default", "sc_hybrid_int_bits",
+    "sc_hybrid_int_sym", "sc_hybrid_chunk_size",
+)
+
+
+def _int_swap_window_losses(model, cfg, windows, device, schedule) -> list:
+    """Per-window losses with ``schedule`` as the active hybrid override map.
+
+    Returns the per-window list (not the mean) so a split-half stability check
+    costs nothing extra.
+    """
+    cfg.sc_hybrid_schedule = dict(schedule)
+    out = []
+    with torch.no_grad():
+        for w in windows:
+            ids = w.unsqueeze(0).to(device)
+            out.append(float(model(input_ids=ids, labels=ids).loss))
+    return out
+
+
+def _int_swap_score(paired_gains, mode: str = "mean", lcb_z: float = 1.0):
+    """Return mean, sample std, standard error, and the ranking score.
+
+    Each sample is paired (the all-SC loss and swapped loss use the same text),
+    so corpus difficulty cancels before uncertainty is estimated.  ``lcb``
+    ranks by ``mean - z*SE`` and therefore requires evidence that an apparent
+    gain survives calibration-text variation.
+    """
+    x = np.asarray(paired_gains, dtype=np.float64)
+    if x.size == 0:
+        return float("nan"), float("nan"), float("nan"), float("nan")
+    mean = float(np.mean(x))
+    std = float(np.std(x, ddof=1)) if x.size > 1 else 0.0
+    se = std / math.sqrt(int(x.size))
+    if mode == "mean":
+        score = mean
+    elif mode == "lcb":
+        score = mean - float(lcb_z) * se
+    else:
+        raise ValueError(f"unknown int_swap score mode: {mode}")
+    return mean, std, se, float(score)
+
+
+def _atomic_write_json(path, payload) -> None:
+    """Atomically replace a JSON checkpoint so preemption cannot truncate it."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp.{os.getpid()}")
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
+def _measure_group_int_swap(
+    model, enc, total_blocks, operators, *,
+    int_bits, ref_mode, ref_level, mp_config_path,
+    n_windows, ctx, device, int_sym=True, int_chunk=128,
+    window_sampling="prefix", window_seed=0,
+    score_mode="mean", lcb_z=1.0, stability_folds=2,
+    checkpoint_path=None,
+):
+    """int_swap: per-(operator, LAYER) ΔLoss of swapping that entry SC → INT<b>.
+
+    The hybrid mask decides a BACKEND (SC vs INT), so the quantity that decides
+    it is the backend-swap gain, not the SC precision-degradation curve that
+    ``measured_curve`` measures. For each (operator, block) this flips exactly
+    that entry to ``int<bits>`` — via ``config.sc_hybrid_schedule``, the same
+    handle the deployed mask uses — leaving every other entry on SC, and records
+
+        gain(op, b) = L_ref − L_swap        (>0 ⇒ INT<bits> HELPS here)
+
+    Ranking by gain descending and masking the top fraction is then the direct
+    criterion, replacing ``max(level_mean_error[1:])`` (which ranks by SC
+    fragility and only equals the swap gain under "INT is lossless").
+
+    Two references, both at the DEPLOYED operating point rather than at the top
+    of the SC ladder:
+      * ``mp_config``  — every entry on SC at its calibrated per-row MP levels,
+        loaded from a V9 wrapper JSON. Closest to deployment. Mask OFF, so the
+        measurement is a swap from SC in every cell.
+      * ``uniform``    — every entry on SC at a single ``ref_level`` (halved).
+
+    Granularity is native per-LAYER (no bucket broadcast). Cost is
+    ``|ops|·total_blocks + 1`` forward-groups — cheaper than measured_curve's
+    ``|ops|·buckets·(|levels|−1) + 1`` — which is what buys the extra windows
+    that ``max`` over noisy per-level estimates cannot afford.
+
+    Returns ``(gains, info)`` where gains maps (op, block) → float.
+    """
+    ops = [o for o in _ALL_SC_OPS if o in operators]
+    cfg = model.config
+    prev = {k: getattr(cfg, k, None) for k in _INT_SWAP_CFG_KEYS}
+
+    old_mp_config_env = os.environ.get("MP_CONFIG_JSON")
+    try:
+        cfg.use_sc_linear = True
+        cfg.use_sc_attn = True
+        cfg.sc_ste_grad = False
+        cfg.sc_hybrid_default = "sc"
+        cfg.sc_hybrid_int_bits = int(int_bits)
+        cfg.sc_hybrid_int_sym = bool(int_sym)
+        cfg.sc_hybrid_chunk_size = int(int_chunk)
+
+        if ref_mode == "mp_config":
+            if not mp_config_path:
+                raise SystemExit("[calib] int_swap --int-swap-ref mp_config requires "
+                                 "--int-swap-mp-config <wrapper json>")
+            # Reuse the deployment loader so the reference is byte-identical to
+            # what eval runs.  The hybrid schedule remains empty while probing.
+            os.environ["MP_CONFIG_JSON"] = mp_config_path
+            from loader import apply_mp_config_from_env
+            apply_mp_config_from_env(model)
+            cfg.sc_group_stoclen = None
+            ref_desc = f"mp_config={os.path.basename(mp_config_path)}"
+        elif ref_mode == "uniform":
+            cfg.sc_mp_config = None
+            cfg.sc_group_stoclen = {}
+            cfg.sc_stoc_len = int(ref_level)
+            ref_desc = f"uniform_sl={int(ref_level)}"
+        else:
+            raise SystemExit(f"[calib] unknown --int-swap-ref: {ref_mode}")
+
+        windows, window_starts = _select_int_swap_windows(
+            enc, ctx, n_windows, sampling=window_sampling, seed=window_seed)
+        if len(windows) < 4:
+            print(f"[int_swap] WARN: {len(windows)} windows — split-half stability "
+                  "is meaningless below 4; raise --measure-windows.")
+
+        signature = {
+            "total_blocks": int(total_blocks),
+            "operators": list(ops),
+            "int_bits": int(int_bits),
+            "int_sym": bool(int_sym),
+            "int_chunk_size": int(int_chunk),
+            "ref_mode": ref_mode,
+            "ref_level": int(ref_level),
+            "mp_config_path": (os.path.abspath(mp_config_path)
+                               if mp_config_path else None),
+            "token_count": int(enc.shape[0]),
+            "ctx": int(ctx),
+            "windows": len(windows),
+            "window_sampling": window_sampling,
+            "window_seed": int(window_seed),
+            "window_starts": window_starts,
+            "score_mode": score_mode,
+            "lcb_z": float(lcb_z),
+        }
+        checkpoint = None
+        per_window = {}
+        if checkpoint_path and Path(checkpoint_path).is_file():
+            with open(checkpoint_path) as f:
+                checkpoint = json.load(f)
+            if checkpoint.get("signature") != signature:
+                raise SystemExit(
+                    f"[int_swap] checkpoint signature mismatch: {checkpoint_path}; "
+                    "use a new checkpoint path for changed sweep settings")
+            for key, losses in checkpoint.get("per_window_loss", {}).items():
+                op, bpart = key.split(":")
+                if len(losses) != len(windows):
+                    raise SystemExit(f"[int_swap] incomplete checkpoint row: {key}")
+                per_window[(op, int(bpart[1:]))] = [float(x) for x in losses]
+            print(f"[int_swap] resume: loaded {len(per_window)}/"
+                  f"{len(ops) * total_blocks} completed probes from {checkpoint_path}")
+
+        ref_losses = _int_swap_window_losses(model, cfg, windows, device, {})
+        if checkpoint and checkpoint.get("baseline_window_losses") is not None:
+            saved_ref = np.asarray(checkpoint["baseline_window_losses"], dtype=np.float64)
+            if saved_ref.shape != (len(ref_losses),) or not np.allclose(
+                    saved_ref, ref_losses, rtol=1e-6, atol=1e-7):
+                raise SystemExit(
+                    "[int_swap] checkpoint baseline changed on resume; refusing "
+                    "to combine measurements from different model/runtime states")
+        L0 = float(np.mean(ref_losses))
+        print(f"[int_swap] reference L0={L0:.5f} ({ref_desc}, all-SC, mask OFF, "
+              f"{len(windows)} {window_sampling} windows × {ctx} ctx)")
+
+        def save_checkpoint():
+            if not checkpoint_path:
+                return
+            _atomic_write_json(checkpoint_path, {
+                "format": "scmp_llm_int_swap_checkpoint_v1",
+                "signature": signature,
+                "baseline_window_losses": ref_losses,
+                "per_window_loss": {
+                    f"{op}:b{b}": v for (op, b), v in per_window.items()
+                },
+            })
+
+        save_checkpoint()
+        gains, gain_std, gain_se, selection_scores = {}, {}, {}, {}
+        n_total = len(ops) * total_blocks
+        done = 0
+        for op in ops:
+            for b in range(total_blocks):
+                key = (op, b)
+                if key not in per_window:
+                    per_window[key] = _int_swap_window_losses(
+                        model, cfg, windows, device,
+                        {key: f"int{int(int_bits)}"})
+                    save_checkpoint()
+                paired = np.asarray(ref_losses) - np.asarray(per_window[key])
+                mean, std, se, score = _int_swap_score(
+                    paired, score_mode, lcb_z)
+                gains[key] = mean
+                gain_std[key] = std
+                gain_se[key] = se
+                selection_scores[key] = score
+                done += 1
+            row = [gains[(op, b)] for b in range(total_blocks)]
+            score_row = [selection_scores[(op, b)] for b in range(total_blocks)]
+            print(f"[int_swap] {op:9s} gain: mean={np.mean(row):+.5f} "
+                  f"min={np.min(row):+.5f} max={np.max(row):+.5f}; "
+                  f"{score_mode} score max={np.max(score_row):+.5f} "
+                  f"[{done}/{n_total}]")
+
+        # For corpus-spread windows, even/odd halves each span the corpus.  The
+        # legacy prefix mode keeps its contiguous split for byte-compatible
+        # diagnostics on old invocations.
+        half = len(windows) // 2
+        split = None
+        if half >= 2:
+            if window_sampling == "stratified":
+                idx_a = list(range(0, 2 * half, 2))
+                idx_b = list(range(1, 2 * half, 2))
+            else:
+                idx_a = list(range(half))
+                idx_b = list(range(half, 2 * half))
+
+            def subset_maps(indices):
+                gm, sm = {}, {}
+                for key, losses in per_window.items():
+                    paired = np.asarray([ref_losses[i] - losses[i]
+                                         for i in indices])
+                    mean, _std, _se, score = _int_swap_score(
+                        paired, score_mode, lcb_z)
+                    gm[key], sm[key] = mean, score
+                return gm, sm
+
+            gains_a, scores_a = subset_maps(idx_a)
+            gains_b, scores_b = subset_maps(idx_b)
+            split = {
+                "windows_per_half": half,
+                "indices_a": idx_a,
+                "indices_b": idx_b,
+                "gain_a": gains_a,
+                "gain_b": gains_b,
+                "score_a": scores_a,
+                "score_b": scores_b,
+            }
+
+            k_folds = max(2, min(int(stability_folds), len(windows)))
+            fold_scores = []
+            for fold in range(k_folds):
+                indices = list(range(fold, len(windows), k_folds))
+                if indices:
+                    _gm, sm = subset_maps(indices)
+                    fold_scores.append(sm)
+            split["fold_scores"] = fold_scores
+            split["stability_folds"] = len(fold_scores)
+
+        info = {
+            "reference": ref_desc,
+            "ref_mode": ref_mode,
+            "baseline_loss": L0,
+            "baseline_window_losses": ref_losses,
+            "int_bits": int(int_bits),
+            "int_sym": bool(int_sym),
+            "int_chunk_size": int(int_chunk),
+            "windows": len(windows),
+            "ctx": int(ctx),
+            "window_sampling": window_sampling,
+            "window_seed": int(window_seed),
+            "window_starts": window_starts,
+            "ranking": {"score_method": score_mode, "lcb_z": float(lcb_z)},
+            "selection_score": {
+                f"{op}:b{b}": v for (op, b), v in selection_scores.items()
+            },
+            "gain_std": {f"{op}:b{b}": v for (op, b), v in gain_std.items()},
+            "gain_se": {f"{op}:b{b}": v for (op, b), v in gain_se.items()},
+            "per_window_loss": {
+                f"{op}:b{b}": v for (op, b), v in per_window.items()
+            },
+        }
+        return gains, info, split
+    finally:
+        for k, v in prev.items():
+            setattr(cfg, k, v)
+        if old_mp_config_env is None:
+            os.environ.pop("MP_CONFIG_JSON", None)
+        else:
+            os.environ["MP_CONFIG_JSON"] = old_mp_config_env
+
+
+def int_swap_stability(gains_a: dict, gains_b: dict, frac: float = 0.20) -> dict:
+    """Split-half agreement of the mask ranking: Spearman ρ over all entries and
+    overlap of the top-``frac`` selected SETS (the set is what ships, so set
+    overlap — not ρ — is the gate)."""
+    keys = sorted(set(gains_a) & set(gains_b))
+    if not keys:
+        return {"n": 0, "spearman": float("nan"), "top_overlap": float("nan")}
+    a = np.array([gains_a[k] for k in keys], dtype=np.float64)
+    b = np.array([gains_b[k] for k in keys], dtype=np.float64)
+    ra, rb = _rankdata(a), _rankdata(b)
+    if ra.std() == 0 or rb.std() == 0:
+        rho = float("nan")
+    else:
+        rho = float(np.corrcoef(ra, rb)[0, 1])
+    t = max(1, int(math.ceil(len(keys) * frac)))
+    top_a = {keys[i] for i in np.argsort(-a)[:t]}
+    top_b = {keys[i] for i in np.argsort(-b)[:t]}
+    return {"n": len(keys), "frac": frac, "top_n": t,
+            "spearman": rho,
+            "top_overlap": len(top_a & top_b) / t}
+
+
+def int_swap_cross_fold_stability(fold_scores, frac: float = 0.20) -> dict:
+    """Pairwise ranking agreement across corpus-interleaved folds."""
+    pairwise = []
+    for i in range(len(fold_scores)):
+        for j in range(i + 1, len(fold_scores)):
+            s = int_swap_stability(fold_scores[i], fold_scores[j], frac)
+            pairwise.append({"fold_a": i, "fold_b": j, **s})
+    if not pairwise:
+        return {"folds": len(fold_scores), "pairs": [],
+                "mean_top_overlap": float("nan"),
+                "min_top_overlap": float("nan"),
+                "mean_spearman": float("nan"), "min_spearman": float("nan")}
+    overlaps = np.asarray([x["top_overlap"] for x in pairwise], dtype=np.float64)
+    rhos = np.asarray([x["spearman"] for x in pairwise], dtype=np.float64)
+    return {
+        "folds": len(fold_scores),
+        "pairs": pairwise,
+        "mean_top_overlap": float(np.nanmean(overlaps)),
+        "min_top_overlap": float(np.nanmin(overlaps)),
+        "mean_spearman": float(np.nanmean(rhos)),
+        "min_spearman": float(np.nanmin(rhos)),
+    }
+
+
+def build_int_swap_payload(gains: dict, info: dict, split: Optional[dict],
+                           *, model_path: str, total_blocks: int,
+                           operators, frac_report: float = 0.20) -> dict:
+    """The ranking JSON consumed by ``hpca``'s ``auto_hybrid_config``.
+
+    Deliberately a DIFFERENT schema from the measured_curve sensitivity file:
+    ``swap_gain`` is a signed gain ranked DESCENDING, whereas that file's
+    ``level_mean_error`` is an SC error ranked by ``max(...[1:])``. Reusing the
+    same key for the opposite quantity would silently mis-rank if a stale file
+    were pointed at the new selector.
+    """
+    measurement = dict(info)
+    selection_score = measurement.pop("selection_score", None)
+    gain_std = measurement.pop("gain_std", None)
+    gain_se = measurement.pop("gain_se", None)
+    payload = {
+        "format": "scmp_llm_int_swap_v1",
+        "method": "int_swap",
+        "model_path": model_path,
+        "total_blocks": int(total_blocks),
+        "operators": sorted(operators),
+        "swap_gain": {f"{op}:b{b}": float(g) for (op, b), g in gains.items()},
+        "measurement": measurement,
+    }
+    if selection_score is not None:
+        payload["selection_score"] = {
+            k: float(v) for k, v in selection_score.items()
+        }
+    if gain_std is not None:
+        payload["gain_std"] = {k: float(v) for k, v in gain_std.items()}
+    if gain_se is not None:
+        payload["gain_se"] = {k: float(v) for k, v in gain_se.items()}
+    if split is not None:
+        rank_a = split.get("score_a", split["gain_a"])
+        rank_b = split.get("score_b", split["gain_b"])
+        stab = int_swap_stability(rank_a, rank_b, frac_report)
+        payload["split_half"] = {
+            "windows_per_half": split["windows_per_half"],
+            "indices_a": split.get("indices_a"),
+            "indices_b": split.get("indices_b"),
+            "spearman": stab["spearman"],
+            "top_overlap": stab["top_overlap"],
+            "top_frac": stab["frac"],
+            "gain_a": {f"{op}:b{b}": float(v) for (op, b), v in split["gain_a"].items()},
+            "gain_b": {f"{op}:b{b}": float(v) for (op, b), v in split["gain_b"].items()},
+        }
+        if "score_a" in split:
+            payload["split_half"]["score_a"] = {
+                f"{op}:b{b}": float(v) for (op, b), v in split["score_a"].items()
+            }
+            payload["split_half"]["score_b"] = {
+                f"{op}:b{b}": float(v) for (op, b), v in split["score_b"].items()
+            }
+        if split.get("fold_scores"):
+            fold_stab = int_swap_cross_fold_stability(
+                split["fold_scores"], frac_report)
+            payload["cross_fold"] = {
+                **fold_stab,
+                "top_frac": frac_report,
+                "fold_scores": [
+                    {f"{op}:b{b}": float(v) for (op, b), v in scores.items()}
+                    for scores in split["fold_scores"]
+                ],
+            }
+    return payload
+
+
+def _rankdata(x: np.ndarray) -> np.ndarray:
+    """Average-tie ranks (scipy-free, so the calibrator keeps its dependency
+    surface)."""
+    x = np.asarray(x, dtype=np.float64)
+    order = np.argsort(x, kind="mergesort")
+    ranks = np.empty(len(x), dtype=np.float64)
+    ranks[order] = np.arange(1, len(x) + 1, dtype=np.float64)
+    # average ties
+    i = 0
+    xs = x[order]
+    while i < len(xs):
+        j = i
+        while j + 1 < len(xs) and xs[j + 1] == xs[i]:
+            j += 1
+        if j > i:
+            ranks[order[i:j + 1]] = (i + j + 2) / 2.0
+        i = j + 1
+    return ranks
+
+
 def _normalize_group_weights(raw: dict, floor_frac: float = 0.1) -> dict:
     """Floor ΔL at a small positive fraction of the mean (so no group is fully
     starved by measurement noise / negative ΔL), then normalize to mean 1 so the
@@ -2058,12 +2546,16 @@ def _build_parser():
                         "(USE_SMOOTHQUANT=1 α=0.5). Also auto-enabled when the "
                         "USE_SMOOTHQUANT=1 env is set. Off → byte-identical.")
     p.add_argument("--objective", dest="objective",
-                   choices=["sigma", "sigma2"], default="sigma",
+                   choices=["sigma", "sigma2", "delta_sigma2"], default="sigma",
                    help="Allocation objective. 'sigma' (default): minimize Σ "
                         "relative-L2 recon error. 'sigma2': minimize Σσ² "
                         "(propagated-loss surrogate) — the near-lossless "
                         "water-filling objective; keeps high-σ linears pinned "
-                        "near 128 while water-filling the attention pool.")
+                        "near 128 while water-filling the attention pool. "
+                        "'delta_sigma2' (v9): minimize the squared increase "
+                        "relative to each row's error at the maximum MP level, "
+                        "max(0, σ(L)-σ(Lmax))²; this prices the low-precision "
+                        "cliff without chasing irreducible error at Lmax.")
     p.add_argument("--refine", dest="refine_mode",
                    choices=["none", "sigma"], default="none",
                    help="2nd-stage refinement on top of the (global) solve. "
@@ -2087,7 +2579,8 @@ def _build_parser():
                         "attention weight). Off (default) = linear-only, "
                         "byte-identical to shipped fisher.")
     p.add_argument("--cross-layer-weight", dest="cross_layer_weight",
-                   choices=["uniform", "measured", "measured_marg", "grad_group", "fisher", "measured_curve"],
+                   choices=["uniform", "measured", "measured_marg", "grad_group",
+                            "fisher", "measured_curve", "int_swap"],
                    default="uniform",
                    help="Per-group importance weight W_g for --budget-scope "
                         "global. 'uniform' (default): W_g=1 (act_global). "
@@ -2102,7 +2595,56 @@ def _build_parser():
                         "backward), instead of the per-row g·σ multiply that "
                         "over-concentrates budget and crosses the cliff. All three "
                         "keep act-style σ quantile WITHIN each group and imply "
-                        "--budget-scope global.")
+                        "--budget-scope global. 'int_swap' does NOT produce an MP "
+                        "table at all: it measures the per-(operator, layer) SC→INT "
+                        "backend-swap gain and writes the hybrid-mask RANKING JSON, "
+                        "then exits (no σ collection, no export).")
+    p.add_argument("--int-swap-ref", dest="int_swap_ref",
+                   choices=["mp_config", "uniform"], default="uniform",
+                   help="int_swap reference point. 'mp_config': every entry on SC "
+                        "at its calibrated per-row MP levels from "
+                        "--int-swap-mp-config (closest to deployment). 'uniform' "
+                        "(default): every entry on SC at --int-swap-ref-level.")
+    p.add_argument("--int-swap-ref-level", dest="int_swap_ref_level", type=int,
+                   default=None,
+                   help="int_swap uniform reference stoc_len (HALVED space). "
+                        "Defaults to the deployed AVERAGE, round(budget_ratio · "
+                        "budget_ref_stoc_len), clamped to the ladder — NOT the top "
+                        "of the ladder, which is where measured_curve measures and "
+                        "where the mask does not operate.")
+    p.add_argument("--int-swap-mp-config", dest="int_swap_mp_config", default=None,
+                   help="int_swap: V9 wrapper JSON used as the --int-swap-ref "
+                        "mp_config reference. The mask is OFF while measuring, so "
+                        "every entry is swapped FROM SC.")
+    p.add_argument("--int-swap-bits", dest="int_swap_bits", type=int, default=7,
+                   help="int_swap: INT bit width probed (must match the width the "
+                        "deployed mask uses — hpca's hybrid_int_bits_for_cfg).")
+    p.add_argument("--int-swap-window-sampling",
+                   dest="int_swap_window_sampling",
+                   choices=["prefix", "stratified"], default="prefix",
+                   help="int_swap calibration-text selection. 'prefix' keeps "
+                        "the v18 contiguous-prefix behavior. 'stratified' "
+                        "(recommended) samples deterministic ctx-aligned "
+                        "windows across the full token stream.")
+    p.add_argument("--int-swap-score", dest="int_swap_score",
+                   choices=["mean", "lcb"], default="mean",
+                   help="int_swap ranking statistic. 'mean' is the v18 mean "
+                        "paired gain. 'lcb' ranks by mean - z*standard_error, "
+                        "penalizing text-sensitive candidates.")
+    p.add_argument("--int-swap-lcb-z", dest="int_swap_lcb_z", type=float,
+                   default=1.0,
+                   help="One-sided uncertainty penalty z for --int-swap-score "
+                        "lcb. Default 1.0.")
+    p.add_argument("--int-swap-stability-folds",
+                   dest="int_swap_stability_folds", type=int, default=2,
+                   help="Number of interleaved calibration-text folds used for "
+                        "pairwise ranking diagnostics. Default 2; use 4 with "
+                        "at least 24 windows.")
+    p.add_argument("--int-swap-checkpoint", dest="int_swap_checkpoint",
+                   default=None,
+                   help="Resumable partial JSON written after every completed "
+                        "operator-layer probe. 'auto' uses "
+                        "<output_json>.partial.json.")
     p.add_argument("--measure-probe-level", dest="measure_probe_level", type=int,
                    default=0, help="stoc_len a group is knocked down to in the "
                         "'measured' probe. 0 (default) → lowest level (max noise). "
@@ -2731,6 +3273,68 @@ def main():
     print(f"[calib] using up to {min(total_tokens, needed)} tokens "
           f"({args.num_calib_sequences} × {args.ctx_len}).")
 
+    # int_swap produces the hybrid-mask RANKING, not an MP table: it needs the
+    # model and the token stream and nothing else, so it runs here and returns
+    # before the (expensive) σ collection and the export chain.
+    if cross_layer_weight == "int_swap":
+        device = next(model.parameters()).device
+        if args.int_swap_ref_level:
+            ref_level = int(args.int_swap_ref_level)
+        else:
+            # The deployed AVERAGE (budget_ratio · ref), not the ladder floor and
+            # not its top: the mask trades against what a typical entry actually
+            # gets, and both ladder ends are corners the allocator rarely uses.
+            ref_level = int(round(args.budget_ratio *
+                                  (args.budget_ref_stoc_len or max(levels))))
+            ref_level = min(max(ref_level, min(levels)), max(levels))
+        print(f"[calib] int_swap: per-(operator, layer) SC→INT{args.int_swap_bits} "
+              f"swap gain, ref={args.int_swap_ref} (level={ref_level} halved), "
+              f"{args.measure_windows} {args.int_swap_window_sampling} windows "
+              f"× {args.measure_ctx} ctx, score={args.int_swap_score}, "
+              f"{len(operators)} ops × {total_blocks} layers.")
+        checkpoint_path = args.int_swap_checkpoint
+        if checkpoint_path == "auto":
+            checkpoint_path = args.output_json + ".partial.json"
+        gains, swap_info, split = _measure_group_int_swap(
+            model, enc, total_blocks, operators,
+            int_bits=args.int_swap_bits,
+            ref_mode=args.int_swap_ref,
+            ref_level=ref_level,
+            mp_config_path=args.int_swap_mp_config,
+            n_windows=args.measure_windows,
+            ctx=args.measure_ctx,
+            device=device,
+            int_chunk=chunk_d,
+            window_sampling=args.int_swap_window_sampling,
+            window_seed=args.seed,
+            score_mode=args.int_swap_score,
+            lcb_z=args.int_swap_lcb_z,
+            stability_folds=args.int_swap_stability_folds,
+            checkpoint_path=checkpoint_path,
+        )
+        payload = build_int_swap_payload(
+            gains, swap_info, split,
+            model_path=args.model_path,
+            total_blocks=total_blocks,
+            operators=operators,
+        )
+        _atomic_write_json(args.output_json, payload)
+        if "split_half" in payload:
+            sh = payload["split_half"]
+            print(f"[int_swap] SPLIT-HALF top-{sh['top_frac']:.0%} set overlap="
+                  f"{sh['top_overlap']:.0%} spearman={sh['spearman']:+.3f} "
+                  f"({sh['windows_per_half']} windows/half) — this is the gate: "
+                  "a low overlap means the ranking is noise, not signal.")
+        if "cross_fold" in payload:
+            cf = payload["cross_fold"]
+            print(f"[int_swap] {cf['folds']}-FOLD pairwise top-"
+                  f"{cf['top_frac']:.0%} overlap mean={cf['mean_top_overlap']:.0%} "
+                  f"min={cf['min_top_overlap']:.0%}; spearman "
+                  f"mean={cf['mean_spearman']:+.3f} "
+                  f"min={cf['min_spearman']:+.3f}.")
+        print(f"[calib] int_swap: wrote {args.output_json}")
+        return
+
     protected_gn_stats = None
     if protect_needs_grad:
         device = next(model.parameters()).device
@@ -2875,11 +3479,12 @@ def main():
     # the per-row errors with a per-group-constant curve first, which reduced
     # its stored ρ to argsort tie-breaking noise).
     rho = calibrator.metric_fidelity_rho()
-    print("[calib] metric-fidelity ρ(metric, σ-benefit) per op "
+    print(f"[calib] metric-fidelity ρ(metric, {args.objective}-benefit) per op "
           "(≈1 good; low/neg ⇒ metric misranks → headroom):")
     for op in sorted(rho, key=lambda o: rho[o]["rho"] if rho[o]["rho"] == rho[o]["rho"] else 9):
         d = rho[op]
-        print(f"    {op:<11} ρ={d['rho']:+.3f}  n={d['n']:>7}  σ-benefit_mean={d['benefit_mean']:.4f}")
+        print(f"    {op:<11} ρ={d['rho']:+.3f}  n={d['n']:>7}  "
+              f"objective-benefit_mean={d['benefit_mean']:.4f}")
 
     # act_global_v2: signed per-operator dispatch-metric selection (rewrites
     # the stored metric arrays for switched ops; thresholds + the exported
@@ -3049,6 +3654,9 @@ def main():
     if args.objective == "sigma2":
         method = method + "_s2"
         payload["objective"] = "sigma2"
+    elif args.objective == "delta_sigma2":
+        method = method + "_ds2"
+        payload["objective"] = "delta_sigma2"
     if calibrator.protected_channel_indices:
         metric_suffix = (
             "" if args.protect_channel_metric == "act_weight"

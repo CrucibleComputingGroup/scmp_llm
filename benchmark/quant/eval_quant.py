@@ -356,7 +356,10 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
 
 
 @torch.no_grad()
-def compute_ppl(model, enc_ids, ctx, stride):
+def compute_ppl(model, enc_ids, ctx, stride, window_losses=None):
+    # window_losses: optional caller-owned list; every scored window appends
+    # (start, valid_token_count, mean_loss). The aggregate PPL path is
+    # unchanged (sum(loss*valid)/sum(valid) reproduces it exactly).
     dev = model.device
     total = enc_ids.shape[0]
     sum_loss, n_loss, prev_end = 0.0, 0, 0
@@ -377,6 +380,8 @@ def compute_ppl(model, enc_ids, ctx, stride):
         if valid > 0:
             sum_loss += float(out.loss) * valid
             n_loss += valid
+            if window_losses is not None:
+                window_losses.append((int(start), int(valid), float(out.loss)))
         prev_end = end
     if torch.cuda.is_available():
         torch.cuda.synchronize()

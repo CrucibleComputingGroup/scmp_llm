@@ -38,6 +38,21 @@ def load_sc_model(
     """
     p = model_path.lower()
     if "llama" in p:
+        family = "llama"
+    elif "qwen" in p:
+        family = "qwen"
+    else:
+        # Local checkpoint dirs need not carry the family in their path
+        # (e.g. rotated folds saved under .../mp_rot_gate_4B_<tag>/
+        # rotated_seed0) — fall back to the checkpoint's config.model_type.
+        # Only reached when the string match fails, so every HF-id path
+        # dispatches exactly as before.
+        from transformers import AutoConfig
+        mt = str(getattr(AutoConfig.from_pretrained(model_path),
+                         "model_type", ""))
+        family = ("llama" if mt == "llama"
+                  else "qwen" if mt.startswith("qwen") else None)
+    if family == "llama":
         # LEGACY=1 -> use the original forked-modeling implementation
         # (model/llama_sc_legacy.py). Otherwise use the new adapter.
         # Used to A/B compare the two implementations.
@@ -51,7 +66,7 @@ def load_sc_model(
             )
         from model.llama_sc import make_llama_sc
         return make_llama_sc(model_path, torch_dtype=dtype, device_map=device_map)
-    if "qwen" in p:
+    if family == "qwen":
         qwen_dir = os.path.join(_REPO_ROOT, "model_qwen4b")
         if qwen_dir not in sys.path:
             sys.path.insert(0, qwen_dir)
@@ -59,7 +74,8 @@ def load_sc_model(
         return make_qwen3_sc(model_path, torch_dtype=dtype, device_map=device_map)
     raise ValueError(
         f"Unknown model family for {model_path!r}. "
-        f"Expected a path/id containing 'llama' or 'qwen'.")
+        f"Expected a path/id containing 'llama' or 'qwen', or a local "
+        f"checkpoint whose config.model_type is llama/qwen*.")
 
 
 def apply_sc_env_overrides(model) -> None:
@@ -256,9 +272,14 @@ def apply_mp_config_from_env(model) -> None:
         table_path = spec["threshold_table_path"]
         if not os.path.isabs(table_path):
             table_path = os.path.join(os.path.dirname(os.path.abspath(path)), table_path)
+        # Escape gate (R7): optional wrapper keys. Absent/null escape_gate_k
+        # => gate OFF, byte-identical to the pre-gate loader.
+        esc_k = spec.get("escape_gate_k")
         mp = AdaptiveMPConfig(
             stoc_len_levels=[int(x) for x in spec["stoc_len_levels"]],
             threshold_table_path=table_path,
+            escape_gate_k=None if esc_k is None else float(esc_k),
+            escape_stoc_len=int(spec.get("escape_stoc_len", 128)),
         )
         model.config.sc_mp_config = mp
         n_default = len(mp.operator_default_thresholds)
@@ -267,9 +288,13 @@ def apply_mp_config_from_env(model) -> None:
         dm_note = ("" if not dm else " dispatch_metrics=" + ",".join(
             f"{op}:{name}{'-inv' if sign < 0 else ''}"
             for op, (name, sign) in sorted(dm.items())))
+        gate_note = ("" if mp.escape_gate_k is None else
+                     f" escape_gate=k{mp.escape_gate_k:g}@sl{mp.escape_stoc_len}"
+                     f"(buckets={len(mp.bucket_escape_thresholds)})")
         print(f"[mp] loaded AdaptiveMPConfig from {path}: "
               f"levels={mp.stoc_len_levels} "
-              f"operator_defaults={n_default} buckets={n_bucket}{dm_note}")
+              f"operator_defaults={n_default} buckets={n_bucket}{dm_note}"
+              f"{gate_note}")
         return
     raise SystemExit(
         f"MP_CONFIG_JSON: unknown type={kind!r}. "

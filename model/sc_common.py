@@ -182,6 +182,92 @@ def mp_tracker_flop_avg_stoc_len() -> float:
     return (s["mac_sl"] / s["macs"]) if s.get("macs") else 0.0
 
 
+def _mp_metric_profile() -> dict:
+    """GPU-resident histograms of the normalized MP dispatch metric.
+
+    This is an opt-in calibration/evaluation aid for validation-loss pass 2.
+    Keeping the counters on-device avoids a synchronization for every layer;
+    ``mp_metric_profile_snapshot`` performs the device-to-host copies once at
+    the end of an evaluation.
+    """
+    if not hasattr(_mp_metric_profile, "_state"):
+        _mp_metric_profile._state = {
+            "enabled": False, "bins": 257, "groups": {},
+        }
+    return _mp_metric_profile._state
+
+
+def mp_metric_profile_reset(*, enabled: bool = True, bins: int = 257) -> None:
+    if bins < 17:
+        raise ValueError("MP metric profile requires at least 17 bins")
+    state = _mp_metric_profile()
+    state["enabled"] = bool(enabled)
+    state["bins"] = int(bins)
+    state["groups"] = {}
+
+
+def mp_metric_profile_disable() -> None:
+    _mp_metric_profile()["enabled"] = False
+
+
+def mp_metric_profile_snapshot() -> dict:
+    state = _mp_metric_profile()
+    groups = {}
+    for key, payload in state["groups"].items():
+        hist = payload["hist"].detach().cpu().double()
+        groups[key] = {
+            "op": payload["op"],
+            "t_bucket": 0,
+            "l_bucket": payload["l_bucket"],
+            "mac_weighted_hist": hist.tolist(),
+            "adaptive_mac_weight": float(hist.sum().item()),
+        }
+    return {"bins": int(state["bins"]), "groups": groups}
+
+
+def _record_mp_metric_profile(
+    metric: torch.Tensor,
+    mp_config,
+    *,
+    op,
+    block_idx,
+    total_blocks,
+    mac_scale: float = 1.0,
+) -> None:
+    state = _mp_metric_profile()
+    if (not state["enabled"] or metric.numel() == 0 or op is None
+            or block_idx is None or mac_scale <= 0.0):
+        return
+    detached = metric.detach().float().reshape(-1)
+    m_min = detached.min()
+    m_max = detached.max()
+    if (m_max - m_min).item() < 1e-8:
+        # adaptive_classify_rows sends the constant-metric case to level 0.
+        metric_norm = torch.ones_like(detached)
+    else:
+        metric_norm = (detached - m_min) / (m_max - m_min)
+    bins = int(state["bins"])
+    indices = torch.round(metric_norm * float(bins - 1)).long()
+    hist = torch.bincount(indices, minlength=bins).double()
+    mac = float(_MP_MAC_PER_ROW.get(op, 1.0)) * float(mac_scale)
+    hist.mul_(mac)
+    layer_buckets = int(getattr(mp_config, "layer_buckets", 1))
+    total = int(total_blocks or 1)
+    if layer_buckets <= 1 or total <= 1:
+        l_bucket = 0
+    else:
+        ratio = int(block_idx) / max(total - 1, 1)
+        l_bucket = min(layer_buckets - 1, int(ratio * layer_buckets))
+    key = f"{op}:t0:l{l_bucket}"
+    prior = state["groups"].get(key)
+    if prior is None:
+        state["groups"][key] = {
+            "op": str(op), "l_bucket": int(l_bucket), "hist": hist,
+        }
+    else:
+        prior["hist"].add_(hist)
+
+
 def _record_stoc_len(sl: int, n: int, op=None, mac_scale: float = 1.0) -> None:
     if n == 0 or mac_scale <= 0.0:
         return
@@ -432,7 +518,18 @@ class SCLinear(nn.Linear):
             else:
                 metric_source = x_flat if rest_idx is None else x_flat.index_select(1, rest_idx)
                 metric = _mp_dispatch_metric(metric_source, mp_config, op_name)
+            width = max(x_flat.shape[1], 1)
+            protected_scale = float(protected_idx.numel()) / float(width)
+            residual_scale = 1.0 - protected_scale
             if AdaptiveMPConfig is not None and isinstance(mp_config, AdaptiveMPConfig):
+                _record_mp_metric_profile(
+                    metric,
+                    mp_config,
+                    op=op_name,
+                    block_idx=block_idx,
+                    total_blocks=getattr(config, "_sc_total_blocks", None),
+                    mac_scale=residual_scale,
+                )
                 assignment = adaptive_classify_rows(
                     metric,
                     mp_config,
@@ -446,9 +543,6 @@ class SCLinear(nn.Linear):
                     mp_config.stoc_len_levels,
                     mp_config.level_fractions,
                 )
-            width = max(x_flat.shape[1], 1)
-            protected_scale = float(protected_idx.numel()) / float(width)
-            residual_scale = 1.0 - protected_scale
             if protected_idx.numel() > 0:
                 out_flat = torch.zeros(
                     (x_flat.shape[0], self.out_features),
@@ -668,6 +762,13 @@ def _sc_attention_matmul_ab_t(
             # PPL badly (4B int7 act_global 16.9→19.2, grad_group 46→83),
             # so GLOBAL scope on both sides is the resolution.
             metric_all = _mp_dispatch_metric(a3, mp_config, operator)  # (B*H, N)
+            _record_mp_metric_profile(
+                metric_all.reshape(-1),
+                mp_config,
+                op=operator,
+                block_idx=block_idx,
+                total_blocks=total_blocks,
+            )
             assignment = adaptive_classify_rows(
                 metric_all.reshape(-1), mp_config,
                 operator=operator,
@@ -676,7 +777,21 @@ def _sc_attention_matmul_ab_t(
             )
             _record_assignment(assignment, operator)
             row_levels = assignment.row_levels.reshape(B * H, N)
-            levels = mp_config.stoc_len_levels
+            # Escape gate (R7): classify_level_values() appends the escape
+            # rung's (index -> stoc_len) entry when the gate is on and the
+            # escape length is not already a ladder rung (escaped rows carry
+            # level index len(stoc_len_levels)). Gate off returns
+            # stoc_len_levels itself — the loop below is byte-identical.
+            # Same bucket context adaptive_classify_rows was given above, so
+            # the index -> stream-length map matches the ladder the rows were
+            # classified against.  Without the context this returned the
+            # global ladder while rows had been classified on the bucket's,
+            # so every attention row ran at the wrong stream length.
+            levels = mp_config.classify_level_values(
+                operator=operator,
+                block_idx=block_idx,
+                total_blocks=total_blocks,
+            )
             for bh in range(B * H):
                 if _sc_trace._ENABLED:
                     _sc_trace.set_context(operator, block_idx, bh % H)

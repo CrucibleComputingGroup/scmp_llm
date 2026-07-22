@@ -64,7 +64,8 @@ GPU_OVERRIDE=""
 DRY=0
 SC_BACKEND="sc"          # sc | hybrid
 HYBRID_CONFIG_JSON=""
-HYBRID_INT_BITS=""       # empty => inferred from SC budget tag
+HYBRID_INT_BITS=""       # empty => derived from the config budget (iso-precision)
+HYBRID_INT_BITS_MODE="isoprec"  # isoprec | legacy (pre-2026-07-21 hand table)
 HYBRID_INT_FRAC="0.10"   # auto hybrid schedule: fraction of (op,block) entries switched to INT
 HYBRID_SENS_DIR=""       # empty => $TURBO_BASE/sensitivity/_hpca_${TAG}
 HYBRID_SENS_CONFIG=""    # empty => same as evaluated config; e.g. sc_avg192 to reuse one ranking
@@ -75,6 +76,14 @@ SENS_CTX=512
 SENS_WINDOWS=2
 SENS_LAYER_BUCKETS="4"   # integer, or "layers"/"auto" for per-operator per-layer sensitivity
 SENS_OUTDIR=""
+INT_SWAP_REF="uniform"   # int_swap reference: uniform | mp_config
+INT_SWAP_REF_LEVEL=""    # empty => min(mp_levels), the deployed floor
+INT_SWAP_MP_CONFIG=""    # V9 wrapper JSON, required when INT_SWAP_REF=mp_config
+INT_SWAP_WINDOW_SAMPLING="prefix"  # prefix (v18) | stratified (robust)
+INT_SWAP_SCORE="mean"              # mean (v18) | lcb (uncertainty-aware)
+INT_SWAP_LCB_Z="1.0"
+INT_SWAP_STABILITY_FOLDS="2"
+INT_SWAP_CHECKPOINT=""
 MP_METHOD="act_global"        # currently supported in hpca: act_global
 MP_TABLES_DIR=""              # empty => $TURBO_BASE/mp_calib_${TAG}
 MP_PROTECT_FRAC="0.01"        # protected input channels inside remaining SC linears
@@ -84,7 +93,8 @@ SQ_ALPHA_OVERRIDES=""         # per-op SmoothQuant alpha, e.g. "down_proj:0.75,u
                               # so calib and eval geometry match by construction)
 MP_SEED=0                     # calibrator --seed (torch + row-subsample RNG); vary for
                               # replication error bars. Eval is deterministic given the table.
-MP_PROTECT_STOC_LEN="128"
+# Empty means recipe default: 128 for legacy methods, 112 for v9.
+MP_PROTECT_STOC_LEN=""
 MP_PROTECT_METRIC="act_weight"
 MP_PROTECT_COMPENSATE=1
 
@@ -105,6 +115,8 @@ while [[ $# -gt 0 ]]; do
     --sc-backend) SC_BACKEND="$2"; shift 2 ;;
     --hybrid-config) HYBRID_CONFIG_JSON="$2"; shift 2 ;;
     --hybrid-int-bits) HYBRID_INT_BITS="$2"; shift 2 ;;
+    --hybrid-int-bits-mode) HYBRID_INT_BITS_MODE="$2"; shift 2 ;;
+    --print-int-bits) PRINT_INT_BITS="$2"; shift 2 ;;
     --hybrid-int-frac) HYBRID_INT_FRAC="$2"; shift 2 ;;
     --hybrid-sensitivity-dir) HYBRID_SENS_DIR="$2"; shift 2 ;;
     --hybrid-sensitivity-config) HYBRID_SENS_CONFIG="$2"; shift 2 ;;
@@ -115,6 +127,14 @@ while [[ $# -gt 0 ]]; do
     --sens-windows) SENS_WINDOWS="$2"; shift 2 ;;
     --sens-layer-buckets) SENS_LAYER_BUCKETS="$2"; shift 2 ;;
     --sens-outdir) SENS_OUTDIR="$2"; shift 2 ;;
+    --int-swap-ref) INT_SWAP_REF="$2"; shift 2 ;;
+    --int-swap-ref-level) INT_SWAP_REF_LEVEL="$2"; shift 2 ;;
+    --int-swap-mp-config) INT_SWAP_MP_CONFIG="$2"; shift 2 ;;
+    --int-swap-window-sampling) INT_SWAP_WINDOW_SAMPLING="$2"; shift 2 ;;
+    --int-swap-score) INT_SWAP_SCORE="$2"; shift 2 ;;
+    --int-swap-lcb-z) INT_SWAP_LCB_Z="$2"; shift 2 ;;
+    --int-swap-stability-folds) INT_SWAP_STABILITY_FOLDS="$2"; shift 2 ;;
+    --int-swap-checkpoint) INT_SWAP_CHECKPOINT="$2"; shift 2 ;;
     --mp-method) MP_METHOD="$2"; shift 2 ;;
     --mp-tables-dir) MP_TABLES_DIR="$2"; shift 2 ;;
     --mp-protect-frac) MP_PROTECT_FRAC="$2"; shift 2 ;;
@@ -135,8 +155,20 @@ case "$SC_BACKEND" in
   *) echo "unknown --sc-backend: $SC_BACKEND (expected sc|hybrid)"; exit 1 ;;
 esac
 case "$SENS_METHOD" in
-  measured|measured_marg|measured_curve) ;;
+  measured|measured_marg|measured_curve|int_swap) ;;
   *) echo "unknown --sens-method: $SENS_METHOD"; exit 1 ;;
+esac
+case "$INT_SWAP_WINDOW_SAMPLING" in
+  prefix|stratified) ;;
+  *) echo "unknown --int-swap-window-sampling: $INT_SWAP_WINDOW_SAMPLING (expected prefix|stratified)"; exit 1 ;;
+esac
+case "$INT_SWAP_SCORE" in
+  mean|lcb) ;;
+  *) echo "unknown --int-swap-score: $INT_SWAP_SCORE (expected mean|lcb)"; exit 1 ;;
+esac
+case "$HYBRID_INT_BITS_MODE" in
+  isoprec|legacy) ;;
+  *) echo "unknown --hybrid-int-bits-mode: $HYBRID_INT_BITS_MODE (expected isoprec|legacy)"; exit 1 ;;
 esac
 case "$MP_METHOD" in
   act_global) ;;
@@ -161,8 +193,22 @@ case "$MP_METHOD" in
   # so this trades the per-row story for measured cliff-awareness). Runtime-free
   # (extra OFFLINE knock-down forwards only; curve auto-enables its budget fill).
   act_global_v3c) ;;
-  *) echo "unknown --mp-method: $MP_METHOD (currently supported: act_global, act_global_v2, act_global_v3, act_global_v3m, act_global_v3s, act_global_v3c)"; exit 1 ;;
+  # act_global_v9 = v3 mechanics + delta-sigma-squared objective. Intended
+  # only for the int6-specific mp_avg32_v9 ladder (96..16 with a 24 bridge).
+  act_global_v9) ;;
+  *) echo "unknown --mp-method: $MP_METHOD (currently supported: act_global, act_global_v2, act_global_v3, act_global_v3m, act_global_v3s, act_global_v3c, act_global_v9)"; exit 1 ;;
 esac
+
+if [[ -z "$MP_PROTECT_STOC_LEN" ]]; then
+  if [[ "$MP_METHOD" == "act_global_v9" ]]; then
+    MP_PROTECT_STOC_LEN="112"
+  else
+    MP_PROTECT_STOC_LEN="128"
+  fi
+elif [[ "$MP_METHOD" == "act_global_v9" && "$MP_PROTECT_STOC_LEN" != "112" ]]; then
+  echo "act_global_v9 fixes protected channels at 112 cycles; got --mp-protect-stoc-len $MP_PROTECT_STOC_LEN"
+  exit 1
+fi
 
 # model shortname -> HF id
 declare -A MODEL_ID=(
@@ -202,12 +248,15 @@ IFS=, read -ra MODELS  <<<"$MODELS_CSV"
 IFS=, read -ra CONFIGS <<<"$CONFIGS_CSV"
 IFS=, read -ra METRICS <<<"$METRICS_CSV"
 
-echo "[hpca] outdir=$OUTDIR"
-echo "[hpca] models=$MODELS_CSV configs=$CONFIGS_CSV metrics=$METRICS_CSV"
-if [[ -n "$HYBRID_CONFIG_JSON" ]]; then
-  echo "[hpca] sc_backend=$SC_BACKEND hybrid_config=$HYBRID_CONFIG_JSON"
-else
-  echo "[hpca] sc_backend=$SC_BACKEND hybrid_int_frac=$HYBRID_INT_FRAC"
+# --print-int-bits is a pure query; keep its stdout parseable.
+if [[ -z "${PRINT_INT_BITS:-}" ]]; then
+  echo "[hpca] outdir=$OUTDIR"
+  echo "[hpca] models=$MODELS_CSV configs=$CONFIGS_CSV metrics=$METRICS_CSV"
+  if [[ -n "$HYBRID_CONFIG_JSON" ]]; then
+    echo "[hpca] sc_backend=$SC_BACKEND hybrid_config=$HYBRID_CONFIG_JSON"
+  else
+    echo "[hpca] sc_backend=$SC_BACKEND hybrid_int_frac=$HYBRID_INT_FRAC"
+  fi
 fi
 
 record() {  # <model> <config> <metric> <value>
@@ -230,15 +279,63 @@ is_sc_like_cfg() {
   [[ "$cfg" == sc_* || "$cfg" == mp || "$cfg" == mp_* ]]
 }
 
-hybrid_int_bits_for_cfg() {  # <config>
-  local cfg="$1"
-  if [[ -n "$HYBRID_INT_BITS" ]]; then echo "$HYBRID_INT_BITS"; return; fi
-  case "$cfg" in
+# Legacy hand-maintained width table. Kept ONLY so pre-2026-07-21 tags stay
+# reproducible via --hybrid-int-bits-mode legacy. It disagreed with the
+# iso-precision comparator map (sc_cycles_for_cfg) on the low-budget configs:
+# mp_avg32_v9 and mp_avg32_burst128 masked at int7 while their budget is
+# compared against int6, and mp_avg96f_burst128 masked at int7 while avg96 is
+# compared against int8. Every avg32 cell of the 2026-07-18 dose wave ran int7
+# for this reason. Do not extend this table; add configs to mp_budget_for_cfg.
+hybrid_int_bits_legacy_for_cfg() {  # <config>
+  case "$1" in
     sc_int8|sc_avg192|mp_avg192|mp_len192|mp_avg96_burst128) echo 8 ;;
-    sc_int7|sc_avg96|mp_int7|mp_avg96|mp_len96|mp_len96_burst|mp_avg64_burst128|mp_avg48_burst128|mp_avg64f_burst128|mp_avg48f_burst128|mp_avg32_burst128|mp_avg64x_burst128|mp_avg48x_burst128|mp) echo 7 ;;
+    sc_int7|sc_avg96|mp_int7|mp_avg96|mp_len96|mp_len96_burst|mp_avg64_burst128|mp_avg48_burst128|mp_avg64f_burst128|mp_avg48f_burst128|mp_avg32_burst128|mp_avg32_v9|mp_avg36_v9|mp_avg40_v9|mp_avg64x_burst128|mp_avg48x_burst128|mp) echo 7 ;;
     sc_int6) echo 6 ;;
     *) echo 7 ;;
   esac
+}
+
+# Target average SC cycles (HALVED space) for a config = budget_ratio x ref.
+cfg_avg_cycles() {  # <config> -> rounded halved cycles, or nonzero rc
+  local spec levels ratio ref
+  spec="$(mp_budget_for_cfg "$1" 2>/dev/null)" \
+    || spec="$(sensitivity_budget_for_cfg "$1" 2>/dev/null)" \
+    || return 1
+  read -r levels ratio ref <<<"$spec"
+  awk -v r="$ratio" -v f="$ref" 'BEGIN{printf "%d", int(r*f+0.5)}'
+}
+
+# Iso-precision INT width for a budget of <avg> HALVED cycles.
+# An SC stream of NOMINAL length N resolves log2(N) levels and nominal = 2*avg,
+# so the matching INT width is ceil(log2(2*avg)). This reproduces the
+# comparator map in sc_cycles_for_cfg EXACTLY --
+#   halved 128 / 96 / 64 / 48 / 32  ->  int 8 / 8 / 7 / 7 / 6
+# -- which is the correspondence every iso-precision claim in the paper
+# assumes. Deriving it means a new budget config cannot silently mask at a
+# width its own comparator does not use.
+iso_int_bits_for_cycles() {  # <halved avg cycles> -> bits
+  local avg="$1" nominal bits=2
+  nominal=$(( 2 * avg ))
+  while (( (1 << bits) < nominal && bits < 8 )); do bits=$((bits + 1)); done
+  echo "$bits"
+}
+
+hybrid_int_bits_for_cfg() {  # <config>
+  local cfg="$1" avg bits
+  # Explicit --hybrid-int-bits always wins (how a wave pins a width that is
+  # deliberately NOT iso-precision, e.g. to stay comparable with older cells).
+  if [[ -n "$HYBRID_INT_BITS" ]]; then echo "$HYBRID_INT_BITS"; return; fi
+  if [[ "$HYBRID_INT_BITS_MODE" == "legacy" ]]; then
+    hybrid_int_bits_legacy_for_cfg "$cfg"; return
+  fi
+  if avg="$(cfg_avg_cycles "$cfg")" && [[ -n "$avg" ]] && (( avg > 0 )); then
+    bits="$(iso_int_bits_for_cycles "$avg")"
+    echo "$bits"
+    return
+  fi
+  # Config carries no budget spec (INT/fp16 cells never reach here). Fall back
+  # rather than guess a width from the name.
+  hybrid_int_bits_legacy_for_cfg "$cfg"
 }
 
 model_num_layers() {  # <short>
@@ -292,19 +389,44 @@ layer_buckets = int(sens.get("layer_buckets", 1))
 backend = f"int{bits}"
 schedule = {}
 candidates = []
-for key, rec in sens.get("buckets", {}).items():
-    op, _t, lpart = key.split(":")
-    l_bucket = int(lpart[1:])
-    errs = [float(x) for x in rec.get("level_mean_error", [])]
-    if len(errs) < 2:
-        continue
-    worst = max(errs[1:])
-    blocks = [
-        b for b in range(num_layers)
-        if min(layer_buckets - 1, (b * layer_buckets) // max(num_layers, 1)) == l_bucket
-    ]
-    for block in blocks:
-        candidates.append((worst, op, block, key))
+
+if "swap_gain" in sens:
+    # int_swap (v18): score = measured ΔLoss of putting THIS (op, layer) on INT
+    # instead of SC, at the deployed operating point. Native per-layer, ranked
+    # descending (largest gain = best INT candidate). This is the criterion the
+    # mask actually decides; the branch below ranks by SC precision-fragility
+    # and only coincides with it when INT is lossless.
+    if int(sens.get("measurement", {}).get("int_bits", bits)) != bits:
+        raise SystemExit(
+            f"int_swap ranking was measured at int"
+            f"{sens['measurement']['int_bits']} but this config masks at int{bits} "
+            "— re-measure, do not reuse across widths")
+    # Robust sweeps retain the raw mean in swap_gain for interpretation, but
+    # select using their uncertainty-aware score.  Old v18 JSONs have no
+    # selection_score and remain byte-for-byte on the mean-gain path.
+    score_map = sens.get("selection_score", sens["swap_gain"])
+    for key, gain in score_map.items():
+        op, bpart = key.split(":")
+        candidates.append((float(gain), op, int(bpart[1:]), key))
+    score_method = sens.get("measurement", {}).get("ranking", {}).get(
+        "score_method", "mean")
+    selection_method = ("top_fraction_by_int_swap_gain" if score_method == "mean"
+                        else f"top_fraction_by_int_swap_{score_method}")
+else:
+    for key, rec in sens.get("buckets", {}).items():
+        op, _t, lpart = key.split(":")
+        l_bucket = int(lpart[1:])
+        errs = [float(x) for x in rec.get("level_mean_error", [])]
+        if len(errs) < 2:
+            continue
+        worst = max(errs[1:])
+        blocks = [
+            b for b in range(num_layers)
+            if min(layer_buckets - 1, (b * layer_buckets) // max(num_layers, 1)) == l_bucket
+        ]
+        for block in blocks:
+            candidates.append((worst, op, block, key))
+    selection_method = "top_fraction_by_bucket_worst_delta_loss"
 
 target = int(math.ceil(len(candidates) * frac))
 chosen = sorted(candidates, key=lambda x: x[0], reverse=True)[:target]
@@ -320,11 +442,16 @@ payload = {
     "chunk_size": 128,
     "source_sensitivity": sens_path,
     "selection": {
-        "method": "top_fraction_by_bucket_worst_delta_loss",
+        "method": selection_method,
         "fraction": frac,
         "selected_entries": len(chosen),
         "total_entries": len(candidates),
         "selected_fraction": (len(chosen) / len(candidates)) if candidates else 0.0,
+        "split_half_top_overlap": sens.get("split_half", {}).get("top_overlap"),
+        "cross_fold_mean_top_overlap": sens.get("cross_fold", {}).get(
+            "mean_top_overlap"),
+        "cross_fold_min_top_overlap": sens.get("cross_fold", {}).get(
+            "min_top_overlap"),
     },
     "schedule": schedule,
 }
@@ -363,6 +490,12 @@ mp_budget_for_cfg() {  # <config> -> "levels ratio ref"
     mp_avg96f_burst128)                    echo "128,96,64,48,32 0.75 128" ;;
     # avg32 point: 128 kept (burst ceiling), ladder extended below 32.
     mp_avg32_burst128)                     echo "128,64,48,32,16 0.25 128" ;;
+    # v9 int6-only ladder: sell the 128 ceiling, add a 24-cycle bridge, and
+    # optimize squared precision-induced degradation (act_global_v9).
+    mp_avg32_v9)                           echo "96,64,48,32,24,16 0.25 128" ;;
+    # v9 ladder at the 36/40 budget rungs (hybrid-mask dose sweep 2026-07-18).
+    mp_avg36_v9)                           echo "96,64,48,32,24,16 0.28125 128" ;;
+    mp_avg40_v9)                           echo "96,64,48,32,24,16 0.3125 128" ;;
     # v4 floor-breaking ladders — REFUTED (sub-32 rung toxic under the sigma
     # objective; do not rerun): kept only so old tags stay reproducible.
     mp_avg64x_burst128)                    echo "128,96,64,48,32,16 0.5 128" ;;
@@ -403,19 +536,47 @@ safe_hf() {
 run_sensitivity() {  # <short> <hf> <config>
   local short="$1" hf="$2" cfg="$3"
   local spec levels ratio ref layer_buckets
-  spec="$(sensitivity_budget_for_cfg "$cfg")" || { fail_cell "$short" "$cfg" sensitivity "bad_cfg"; return; }
+  # int_swap is measured at the DEPLOYED budget, so it also accepts the mp_*
+  # driver configs (sensitivity_budget_for_cfg only knows the sc_* ladders).
+  if ! spec="$(sensitivity_budget_for_cfg "$cfg" 2>/dev/null)"; then
+    if [[ "$SENS_METHOD" == "int_swap" ]]; then
+      spec="$(mp_budget_for_cfg "$cfg")" || { fail_cell "$short" "$cfg" sensitivity "bad_cfg"; return; }
+    else
+      sensitivity_budget_for_cfg "$cfg" >/dev/null   # re-emit the error message
+      fail_cell "$short" "$cfg" sensitivity "bad_cfg"; return
+    fi
+  fi
   read -r levels ratio ref <<<"$spec"
   case "$SENS_LAYER_BUCKETS" in
     auto|layer|layers|per-layer|per_layer) layer_buckets="$(model_num_layers "$short")" ;;
     *) layer_buckets="$SENS_LAYER_BUCKETS" ;;
   esac
+  # int_swap ranks a BACKEND swap, so it is measured per-layer at the deployed
+  # floor and needs no bucketing; the ladder args stay only to keep one code
+  # path (min(levels) is the default reference level).
+  local swap_args=()
+  if [[ "$SENS_METHOD" == "int_swap" ]]; then
+    layer_buckets="$(model_num_layers "$short")"
+    swap_args=(
+      --int-swap-ref "$INT_SWAP_REF"
+      --int-swap-bits "$(hybrid_int_bits_for_cfg "$cfg")"
+      --int-swap-window-sampling "$INT_SWAP_WINDOW_SAMPLING"
+      --int-swap-score "$INT_SWAP_SCORE"
+      --int-swap-lcb-z "$INT_SWAP_LCB_Z"
+      --int-swap-stability-folds "$INT_SWAP_STABILITY_FOLDS"
+      --seed "$MP_SEED"
+    )
+    [[ -n "$INT_SWAP_REF_LEVEL" ]] && swap_args+=(--int-swap-ref-level "$INT_SWAP_REF_LEVEL")
+    [[ -n "$INT_SWAP_MP_CONFIG" ]] && swap_args+=(--int-swap-mp-config "$INT_SWAP_MP_CONFIG")
+    [[ -n "$INT_SWAP_CHECKPOINT" ]] && swap_args+=(--int-swap-checkpoint "$INT_SWAP_CHECKPOINT")
+  fi
   local outbase="${SENS_OUTDIR:-$TURBO_BASE/sensitivity/_hpca_${TAG}}"
   local safe_cfg="${cfg//[^A-Za-z0-9_.-]/_}"
   local out="$outbase/${short}_${safe_cfg}_${SENS_METHOD}.json"
   local log="$OUTDIR/${short}_${safe_cfg}_${SENS_METHOD}_sensitivity.log"
   echo "[hpca] >>> Sensitivity $short / $cfg ($SENS_METHOD levels=$levels ratio=$ratio ref=$ref layer_buckets=$layer_buckets) -> $out"
   if [[ $DRY -eq 1 ]]; then
-    echo "  DRY: MODEL_PATH=$hf python benchmark/ppl/calibrate_mp_thresholds.py --layer_buckets $layer_buckets --cross-layer-weight $SENS_METHOD --mp_levels $levels --budget_ratio $ratio --budget_ref_stoc_len $ref --output_json $out"
+    echo "  DRY: MODEL_PATH=$hf python benchmark/ppl/calibrate_mp_thresholds.py --layer_buckets $layer_buckets --cross-layer-weight $SENS_METHOD --mp_levels $levels --budget_ratio $ratio --budget_ref_stoc_len $ref --measure-windows $SENS_WINDOWS --measure-ctx $SENS_CTX ${swap_args[*]} --output_json $out"
     return
   fi
   mkdir -p "$outbase"
@@ -435,6 +596,7 @@ run_sensitivity() {  # <short> <hf> <config>
         --calib-smoothquant \
         --measure-windows "$SENS_WINDOWS" \
         --measure-ctx "$SENS_CTX" \
+        "${swap_args[@]}" \
         --output_json "$out" \
         2>&1 | tee "$log"
   local rc="${PIPESTATUS[0]}"
@@ -502,6 +664,14 @@ run_ppl() {  # <short> <hf> <config>
 run_mp_ppl() {  # <short> <hf> <mp_config>
   local short="$1" hf="$2" cfg="$3"
   local spec levels ratio ref
+  if [[ "$MP_METHOD" == "act_global_v9" && ! "$cfg" =~ ^mp_avg(32|36|40)_v9$ ]]; then
+    fail_cell "$short" "$cfg" ppl "act_global_v9 pairs only with mp_avg{32,36,40}_v9"
+    return
+  fi
+  if [[ "$cfg" =~ ^mp_avg(32|36|40)_v9$ && "$MP_METHOD" != "act_global_v9" ]]; then
+    fail_cell "$short" "$cfg" ppl "$cfg requires --mp-method act_global_v9"
+    return
+  fi
   spec="$(mp_budget_for_cfg "$cfg")" || { fail_cell "$short" "$cfg" ppl "bad_mp_cfg"; return; }
   read -r levels ratio ref <<<"$spec"
 
@@ -575,6 +745,11 @@ run_mp_ppl() {  # <short> <hf> <mp_config>
     # MAC-priced residual budget fill (_curve_applied) so --refine is omitted.
     v2_flags=(--argmin-pricing macs --metric-select auto
               --cross-layer-weight measured_curve)
+  elif [[ "$MP_METHOD" == "act_global_v9" ]]; then
+    # V9: objective-consistent residual fill over squared precision-induced
+    # degradation. Lambda/argmin/metric/fill share one objective transform.
+    v2_flags=(--argmin-pricing macs --metric-select auto --refine sigma
+              --objective delta_sigma2)
   fi
 
   echo "[hpca] >>> MP-PPL $short / $cfg ($method levels=$levels ratio=$ratio hybrid=${hybrid_config:-none}) -> $log"
@@ -757,6 +932,13 @@ PYEOF
     fail_cell "$short" "$cfg" ruler "no Score row in $scsv"
   fi
 }
+
+# Width diagnostic: `bash hpca --print-int-bits mp_avg32_v9` prints the mask
+# width this config would use, without running anything. Also the test hook.
+if [[ -n "${PRINT_INT_BITS:-}" ]]; then
+  hybrid_int_bits_for_cfg "$PRINT_INT_BITS"
+  exit 0
+fi
 
 for SHORT in "${MODELS[@]}"; do
   HF="${MODEL_ID[$SHORT]:-}"
