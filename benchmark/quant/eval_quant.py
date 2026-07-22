@@ -18,6 +18,8 @@ an SC number and an INT number in the results table share one PPL protocol.
 Env (PPL mode):
     MODEL_PATH, QUANT_CONFIG (tag), SQ_ALPHA (0.5),
     PPL_MAX_TOKENS (0 = full test set; BitMoD/GPTQ protocol), CTX (2048),
+    PPL_WINDOW_BATCH_SIZE (1 = historical path; >1 requires stride=ctx and
+    full windows),
     ACT_SCALES_DIR (benchmark/quant/act_scales),
     CALIB_WINDOWS (16), CALIB_CTX (512)
     SC cells also read SC_OWEN_MODE / SC_SCRAMBLE_MASKS (default bitrev / 64).
@@ -356,33 +358,94 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
 
 
 @torch.no_grad()
-def compute_ppl(model, enc_ids, ctx, stride, window_losses=None):
+def compute_ppl(
+    model,
+    enc_ids,
+    ctx,
+    stride,
+    window_losses=None,
+    window_batch_size=None,
+):
     # window_losses: optional caller-owned list; every scored window appends
     # (start, valid_token_count, mean_loss). The aggregate PPL path is
     # unchanged (sum(loss*valid)/sum(valid) reproduces it exactly).
+    if window_batch_size is None:
+        window_batch_size = int(os.environ.get("PPL_WINDOW_BATCH_SIZE", "1"))
+    window_batch_size = int(window_batch_size)
+    if window_batch_size < 1:
+        raise ValueError("window_batch_size must be >= 1")
+
     dev = model.device
     total = enc_ids.shape[0]
     sum_loss, n_loss, prev_end = 0.0, 0, 0
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     t0 = time.time()
-    for start in range(0, total - 1, stride):
-        end = min(start + ctx, total)
-        if end - start < 2:
-            break
-        ids = enc_ids[start:end].unsqueeze(0).to(dev)
-        labels = ids.clone()
-        overlap = max(0, prev_end - start)
-        if overlap > 0:
-            labels[:, :overlap] = -100
-        out = model(input_ids=ids, labels=labels)
-        valid = (labels[..., 1:] != -100).sum().item()
-        if valid > 0:
-            sum_loss += float(out.loss) * valid
-            n_loss += valid
-            if window_losses is not None:
-                window_losses.append((int(start), int(valid), float(out.loss)))
-        prev_end = end
+    if window_batch_size == 1:
+        # Historical path: keep it byte-for-byte separate. This is both the
+        # default and the citable/tracing path; batched windows are an opt-in
+        # search-throughput optimization only.
+        for start in range(0, total - 1, stride):
+            end = min(start + ctx, total)
+            if end - start < 2:
+                break
+            ids = enc_ids[start:end].unsqueeze(0).to(dev)
+            labels = ids.clone()
+            overlap = max(0, prev_end - start)
+            if overlap > 0:
+                labels[:, :overlap] = -100
+            out = model(input_ids=ids, labels=labels)
+            valid = (labels[..., 1:] != -100).sum().item()
+            if valid > 0:
+                loss = float(out.loss)
+                sum_loss += loss * valid
+                n_loss += valid
+                if window_losses is not None:
+                    window_losses.append((int(start), int(valid), loss))
+            prev_end = end
+    else:
+        # Independent full windows can share one model forward. This turns a
+        # Qwen3-30B-A3B expert's typical 128-row projection into B*128 rows,
+        # recovering GPU occupancy without mixing attention across windows.
+        # Overlap and padding would change label semantics, so reject them
+        # rather than silently compare a different PPL protocol.
+        if stride != ctx:
+            raise ValueError(
+                "window batching requires stride == ctx (independent windows)")
+        if total % ctx:
+            raise ValueError(
+                "window batching requires a token stream of full ctx windows")
+        starts = list(range(0, total, ctx))
+        for offset in range(0, len(starts), window_batch_size):
+            batch_starts = starts[offset:offset + window_batch_size]
+            ids = torch.stack(
+                [enc_ids[start:start + ctx] for start in batch_starts]
+            ).to(dev)
+            out = model(input_ids=ids)
+            logits = out.logits
+            if tuple(logits.shape[:2]) != tuple(ids.shape):
+                raise RuntimeError(
+                    "batched PPL requires one logit row per input token; got "
+                    f"logits={tuple(logits.shape)} ids={tuple(ids.shape)}")
+            for row, start in enumerate(batch_starts):
+                # Match transformers 4.51 ForCausalLMLoss exactly for one
+                # window: upcast all logits, shift by padding labels on the
+                # right, retain the final ignore_index row, then mean CE.
+                shifted = torch.nn.functional.pad(
+                    ids[row], (0, 1), value=-100)[1:].contiguous()
+                loss_t = torch.nn.functional.cross_entropy(
+                    logits[row].float().contiguous(),
+                    shifted,
+                    ignore_index=-100,
+                    reduction="mean",
+                )
+                loss = float(loss_t)
+                valid = ctx - 1
+                sum_loss += loss * valid
+                n_loss += valid
+                if window_losses is not None:
+                    window_losses.append((int(start), int(valid), loss))
+            del out, logits, ids
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     ppl = math.exp(sum_loss / n_loss) if n_loss else float("inf")
@@ -422,7 +485,9 @@ def main():
         _has_mptrack = True
     except Exception:
         _has_mptrack = False
-    ppl, n, secs = compute_ppl(model, enc, ctx, stride)
+    window_batch_size = int(os.environ.get("PPL_WINDOW_BATCH_SIZE", "1"))
+    ppl, n, secs = compute_ppl(
+        model, enc, ctx, stride, window_batch_size=window_batch_size)
     realized_sl = mp_tracker_avg_stoc_len() if _has_mptrack else 0.0
     realized_flop_sl = mp_tracker_flop_avg_stoc_len() if _has_mptrack else 0.0
     # realized_flop_avg_sl = MAC-weighted (iso-compute) — the budget's units;
@@ -439,6 +504,7 @@ def main():
             "model": model_path, "config": tag, "ppl": ppl,
             "eval_tokens": n, "ctx": ctx, "stride": stride,
             "ppl_max_tokens": max_tok,
+            "ppl_window_batch_size": window_batch_size,
             "sc_cycles": SC_CONFIGS.get(tag),
             "sc_halve": tag in SC_CONFIGS or bool(os.environ.get("MP_CONFIG_JSON")),
             "sc_prec": 8,

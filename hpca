@@ -66,6 +66,7 @@ SC_BACKEND="sc"          # sc | hybrid
 HYBRID_CONFIG_JSON=""
 HYBRID_INT_BITS=""       # empty => derived from the config budget (iso-precision)
 HYBRID_INT_BITS_MODE="isoprec"  # isoprec | legacy (pre-2026-07-21 hand table)
+PRINT_INT_BITS_CYCLES=""
 HYBRID_INT_FRAC="0.10"   # auto hybrid schedule: fraction of (op,block) entries switched to INT
 HYBRID_SENS_DIR=""       # empty => $TURBO_BASE/sensitivity/_hpca_${TAG}
 HYBRID_SENS_CONFIG=""    # empty => same as evaluated config; e.g. sc_avg192 to reuse one ranking
@@ -117,6 +118,7 @@ while [[ $# -gt 0 ]]; do
     --hybrid-int-bits) HYBRID_INT_BITS="$2"; shift 2 ;;
     --hybrid-int-bits-mode) HYBRID_INT_BITS_MODE="$2"; shift 2 ;;
     --print-int-bits) PRINT_INT_BITS="$2"; shift 2 ;;
+    --print-int-bits-cycles) PRINT_INT_BITS_CYCLES="$2"; shift 2 ;;
     --hybrid-int-frac) HYBRID_INT_FRAC="$2"; shift 2 ;;
     --hybrid-sensitivity-dir) HYBRID_SENS_DIR="$2"; shift 2 ;;
     --hybrid-sensitivity-config) HYBRID_SENS_CONFIG="$2"; shift 2 ;;
@@ -149,6 +151,12 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown flag: $1"; exit 1 ;;
   esac
 done
+
+# Width diagnostics are read-only queries.  Skip environment activation and
+# run-directory creation even when the caller did not also pass --dry-run.
+if [[ -n "${PRINT_INT_BITS:-}" || -n "$PRINT_INT_BITS_CYCLES" ]]; then
+  DRY=1
+fi
 
 case "$SC_BACKEND" in
   sc|hybrid) ;;
@@ -248,8 +256,8 @@ IFS=, read -ra MODELS  <<<"$MODELS_CSV"
 IFS=, read -ra CONFIGS <<<"$CONFIGS_CSV"
 IFS=, read -ra METRICS <<<"$METRICS_CSV"
 
-# --print-int-bits is a pure query; keep its stdout parseable.
-if [[ -z "${PRINT_INT_BITS:-}" ]]; then
+# Width diagnostics are pure queries; keep stdout parseable.
+if [[ -z "${PRINT_INT_BITS:-}" && -z "$PRINT_INT_BITS_CYCLES" ]]; then
   echo "[hpca] outdir=$OUTDIR"
   echo "[hpca] models=$MODELS_CSV configs=$CONFIGS_CSV metrics=$METRICS_CSV"
   if [[ -n "$HYBRID_CONFIG_JSON" ]]; then
@@ -935,6 +943,13 @@ PYEOF
 
 # Width diagnostic: `bash hpca --print-int-bits mp_avg32_v9` prints the mask
 # width this config would use, without running anything. Also the test hook.
+if [[ -n "$PRINT_INT_BITS_CYCLES" ]]; then
+  [[ "$PRINT_INT_BITS_CYCLES" =~ ^[0-9]+$ ]] \
+    && (( PRINT_INT_BITS_CYCLES > 0 )) \
+    || { echo "--print-int-bits-cycles requires a positive integer" >&2; exit 2; }
+  iso_int_bits_for_cycles "$PRINT_INT_BITS_CYCLES"
+  exit 0
+fi
 if [[ -n "${PRINT_INT_BITS:-}" ]]; then
   hybrid_int_bits_for_cfg "$PRINT_INT_BITS"
   exit 0

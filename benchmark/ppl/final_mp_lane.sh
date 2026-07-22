@@ -14,7 +14,7 @@
 # Mask: 20% INT dose (mask-blind calibration: the MP table is byte-identical
 # across doses, so only the hybrid config swaps).
 #
-# Usage: final_mp_lane.sh <4B|llama8B|14B|30B> <tag>
+# Usage: FINAL_TARGETS=<one-width target(s)> final_mp_lane.sh <model> <tag>
 set -euo pipefail
 set +u
 source ~/.bashrc
@@ -73,7 +73,34 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export SC_OWEN_MODE=bitrev
 export SC_SCRAMBLE_MASKS=64
 export SC_HYBRID_CONFIG_JSON="$HYBRID"
-export SC_HYBRID_INT_BITS=7
+
+# The hybrid backend is part of the precision protocol, not a fixed property
+# of the old avg32 mask JSON.  Derive it from each target in HALVED-cycle space:
+#   32 -> INT6; 40/48/64 -> INT7.
+# One model load has one hybrid width, so mixed-width targets must be separate
+# lane invocations. FINAL_HYBRID_INT_BITS is retained only for explicit legacy
+# reproduction (for example, the pre-2026-07-21 all-INT7 dose wave).
+TARGETS="${FINAL_TARGETS:-32:40:48:64}"
+if [[ -n "${FINAL_HYBRID_INT_BITS:-}" ]]; then
+  HYBRID_BITS="$FINAL_HYBRID_INT_BITS"
+else
+  HYBRID_BITS=""
+  IFS=':' read -r -a _precision_targets <<< "$TARGETS"
+  for _t in "${_precision_targets[@]}"; do
+    [[ "$_t" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+      echo "cannot derive hybrid width for non-numeric target $_t; set FINAL_HYBRID_INT_BITS explicitly" >&2
+      exit 24
+    }
+    _rounded="$(awk -v x="$_t" 'BEGIN { printf "%d", int(x + 0.5) }')"
+    _bits="$(bash hpca --print-int-bits-cycles "$_rounded")"
+    if [[ -n "$HYBRID_BITS" && "$HYBRID_BITS" != "$_bits" ]]; then
+      echo "targets=$TARGETS span hybrid widths INT${HYBRID_BITS}/INT${_bits}; run one precision width per lane" >&2
+      exit 25
+    fi
+    HYBRID_BITS="$_bits"
+  done
+fi
+export SC_HYBRID_INT_BITS="$HYBRID_BITS"
 export SC_HYBRID_FORCE_INT_BITS=1
 
 # FP16 reference on the SAME validation windows (tier-1 stop trigger only).
@@ -87,15 +114,47 @@ if [[ ! -s "$FP16_REF" ]]; then
 fi
 FP16_ARG=(); [[ -s "$FP16_REF" ]] && FP16_ARG=(--fp16-ref "$FP16_REF")
 
-TARGETS="${FINAL_TARGETS:-32:40:48:64}"
 PARTITION_ARG=()
 if [[ -n "${FINAL_EXCLUDE_PARTITION_CHECKPOINT:-}" ]]; then
   PARTITION_ARG=(--exclude-partition-checkpoint \
     "$FINAL_EXCLUDE_PARTITION_CHECKPOINT")
 fi
 QUOTAS="${FINAL_FAMILY_QUOTAS:-macro=2,value_move=1,topology_insert=3,topology_remove=0,surrogate=0,pc_length=2,lift_compound=3,structured_transfer=3,group_exchange=3,threshold_move=0}"
-echo "[final] model=$SHORT targets=$TARGETS dose=20% parent=$PARENT"
+SEARCH_WINDOW_BATCH_SIZE="${FINAL_WINDOW_BATCH_SIZE:-1}"
+[[ "$SEARCH_WINDOW_BATCH_SIZE" =~ ^[0-9]+$ ]] \
+  && (( SEARCH_WINDOW_BATCH_SIZE >= 1 )) || {
+    echo "FINAL_WINDOW_BATCH_SIZE must be a positive integer" >&2
+    exit 27
+  }
+if (( SEARCH_WINDOW_BATCH_SIZE > 1 )); then
+  BATCH_IDENTITY="${FINAL_WINDOW_BATCH_IDENTITY_JSON:-}"
+  [[ -s "$BATCH_IDENTITY" ]] || {
+    echo "search window batching requires FINAL_WINDOW_BATCH_IDENTITY_JSON from the real-model gate" >&2
+    exit 26
+  }
+  python - "$BATCH_IDENTITY" "$hf" "$HYBRID_BITS" "$SEARCH_WINDOW_BATCH_SIZE" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+want_model, want_bits, want_batch = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+checks = {
+    "schema": p.get("schema") == "scmp-30b-window-batch-identity-v1",
+    "model": p.get("model") == want_model,
+    "hybrid_bits": int(p.get("hybrid_int_bits", -1)) == want_bits,
+    "loaded_bits": int(p.get("loaded_hybrid_int_bits", -1)) == want_bits,
+    "force": p.get("loaded_force_int_bits") is True,
+    "batch": int(p.get("batch_size", -1)) == want_batch,
+    "identity": p.get("torch_equal_window_nll") is True,
+}
+bad = [name for name, ok in checks.items() if not ok]
+if bad:
+    raise SystemExit(f"window-batch identity manifest failed {bad}: {sys.argv[1]}")
+print(f"[final] verified search window batching from {sys.argv[1]}")
+PY
+  export PPL_WINDOW_BATCH_IDENTITY_JSON="$BATCH_IDENTITY"
+fi
+echo "[final] model=$SHORT targets=$TARGETS dose=20% hybrid=INT${HYBRID_BITS} search_window_batch=$SEARCH_WINDOW_BATCH_SIZE parent=$PARENT"
 echo "[final] PHASE 2: measured search"
+PPL_WINDOW_BATCH_SIZE="$SEARCH_WINDOW_BATCH_SIZE" \
 python -u benchmark/ppl/mp_v16_refine.py \
   --parent-wrapper "$PARENT" \
   --model-path "$hf" \
@@ -138,7 +197,7 @@ for _t in "${_test_targets[@]}"; do
   branch="$OUTDIR/target$(printf '%.3f' "$_t" | tr '.' 'p')"
   win="$branch/best_wrapper.json"
   [[ -s "$win" ]] || { echo "[final]   $(basename "$branch"): no winner"; continue; }
-  python -u benchmark/ppl/mp_ladder_refine.py \
+  PPL_WINDOW_BATCH_SIZE=1 python -u benchmark/ppl/mp_ladder_refine.py \
     --parent-wrapper "$win" --model-path "$hf" \
     --output-dir "$branch/eval_test" \
     --split test --max-rounds 0 --max-tokens 0 --ctx 2048 --alpha 0.5
@@ -180,7 +239,7 @@ w["escape_stoc_len"] = 128          # additive: nothing else is decreased
 json.dump(w, open(sys.argv[2], "w"), indent=1)
 print(f"  gate wrapper -> {sys.argv[2]}")
 PY
-  python -u benchmark/ppl/mp_ladder_refine.py \
+  PPL_WINDOW_BATCH_SIZE=1 python -u benchmark/ppl/mp_ladder_refine.py \
     --parent-wrapper "$gated" --model-path "$hf" \
     --output-dir "$branch/eval_gate${GATE_K}" \
     --split test --max-rounds 0 --max-tokens 0 --ctx 2048 --alpha 0.5

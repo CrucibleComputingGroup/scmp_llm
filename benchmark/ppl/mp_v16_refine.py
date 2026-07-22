@@ -59,6 +59,7 @@ import copy
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 import time
@@ -2020,6 +2021,14 @@ def _run_fingerprint(
         "confirm_veto": bool(args.confirm_veto),
         "sigma_fallback": float(args.sigma_fallback),
         "seed_protected_sl": args.seed_protected_sl,
+        "ppl_window_batch_size": int(
+            os.environ.get("PPL_WINDOW_BATCH_SIZE", "1")),
+        "ppl_window_batch_identity": (
+            str(Path(os.environ["PPL_WINDOW_BATCH_IDENTITY_JSON"]).resolve())
+            if os.environ.get("PPL_WINDOW_BATCH_IDENTITY_JSON") else None),
+        "ppl_window_batch_identity_sha256": (
+            _sha256_file(Path(os.environ["PPL_WINDOW_BATCH_IDENTITY_JSON"]))
+            if os.environ.get("PPL_WINDOW_BATCH_IDENTITY_JSON") else None),
         "parent_wrapper": str(root_wrapper),
         "parent_wrapper_sha256": _sha256_file(root_wrapper),
         "parent_table": str(root_table_path),

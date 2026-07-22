@@ -8,8 +8,8 @@ k is the global wrapper key ``escape_gate_k``.
 
 Safety property proven here: ``escape_gate_k`` absent (None) is byte-identical
 to the pre-gate classifier. The pre-gate reference is the kernels-submodule
-git HEAD version of ``config.py`` (HEAD 3ba991b predates the gate), imported
-as a scratch module and compared bit-for-bit against the working tree.
+``config.py`` pinned at commit 3ba991b, imported as a scratch module and
+compared bit-for-bit against the working tree.
 
 Env: conda annstention. No pytest; run
     python -m unittest benchmark.ppl.test_mp_escape_gate -v
@@ -39,22 +39,24 @@ from benchmark.ppl.mp_ladder_refine import (  # noqa: E402
 )
 
 LEVELS = [96, 64, 48, 32, 24, 16]
+PREGATE_COMMIT = "3ba991b120fca922df30ab5ed94c6294ec09f164"
 
 
 def _load_pregate_module():
-    """Import the kernels git-HEAD (pre-gate) config.py as a scratch module.
+    """Import the pinned pre-gate config.py as a scratch module.
 
     This is the byte-identity reference: the escape gate must not perturb the
     classifier when the wrapper carries no ``escape_gate_k``.
     """
     src = subprocess.check_output(
-        ["git", "-C", str(KERNELS), "show", "HEAD:scmp_kernels/mp/config.py"],
+        ["git", "-C", str(KERNELS), "show",
+         f"{PREGATE_COMMIT}:scmp_kernels/mp/config.py"],
         text=True,
     )
     if "escape_gate_k" in src:
         raise AssertionError(
-            "kernels HEAD already contains the gate — not a clean pre-gate "
-            "reference; pick an earlier commit")
+            f"pinned commit {PREGATE_COMMIT} already contains the gate — "
+            "not a clean pre-gate reference")
     tmp = tempfile.NamedTemporaryFile(
         "w", suffix="_pregate_config.py", delete=False)
     tmp.write(src)

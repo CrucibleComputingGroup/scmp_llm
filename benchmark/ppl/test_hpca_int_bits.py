@@ -56,7 +56,25 @@ def _bits(cfg, *extra):
     return int(out)
 
 
+def _bits_for_cycles(cycles):
+    r = subprocess.run(
+        ["bash", str(HPCA), "--print-int-bits-cycles", str(cycles)],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        raise AssertionError(
+            f"hpca --print-int-bits-cycles {cycles} failed: {r.stderr}")
+    out = r.stdout.strip()
+    assert out.isdigit(), out
+    return int(out)
+
+
 class IsoPrecisionWidthTest(unittest.TestCase):
+    def test_direct_cycle_query_for_search_targets(self):
+        self.assertEqual(
+            {target: _bits_for_cycles(target)
+             for target in (32, 40, 48, 64)},
+            {32: 6, 40: 7, 48: 7, 64: 7})
+
     def test_matches_comparator_anchors(self):
         for cfg, want in COMPARATOR_ANCHORS.items():
             self.assertEqual(_bits(cfg), want, f"{cfg} width diverges from "

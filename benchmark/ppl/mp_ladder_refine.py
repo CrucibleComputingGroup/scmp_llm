@@ -453,6 +453,8 @@ def _eval_once(
             "nll": math.log(ppl),
             "eval_tokens": tokens,
             "eval_seconds": seconds,
+            "ppl_window_batch_size": int(
+                os.environ.get("PPL_WINDOW_BATCH_SIZE", "1")),
             "realized_avg_sl": row_cost,
             "realized_flop_avg_sl": tracker_cost,
         },

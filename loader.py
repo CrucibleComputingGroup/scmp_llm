@@ -173,13 +173,24 @@ def apply_hybrid_config_from_env(model) -> None:
         spec = json.load(f)
 
     default = _normalize_backend(spec.get("default", "sc"))
-    int_bits = int(spec.get(
-        "int_bits",
-        os.environ.get(
-            "SC_HYBRID_INT_BITS",
-            os.environ.get("HYBRID_INT_BITS", "7"),
-        ),
-    ))
+    force_int_bits = (
+        os.environ.get("SC_HYBRID_FORCE_INT_BITS", "0") == "1"
+    )
+    env_int_bits = (
+        os.environ.get("SC_HYBRID_INT_BITS", "").strip()
+        or os.environ.get("HYBRID_INT_BITS", "").strip()
+    )
+    # A generated schedule records the width it was created with, normally in
+    # both ``int_bits`` and entries such as ``int7``.  Final-search lanes reuse
+    # the measured-curve *ranking* at several target budgets and deliberately
+    # set FORCE so the target's iso-precision width wins over both copies.
+    # Reading spec["int_bits"] first made that override a silent no-op: V20 t32
+    # exported INT6 but still executed INT7.  Without FORCE, retain the JSON as
+    # the authoritative, reproducible deployment description.
+    if force_int_bits and env_int_bits:
+        int_bits = int(env_int_bits)
+    else:
+        int_bits = int(spec.get("int_bits", env_int_bits or "7"))
     int_sym = bool(spec.get("int_sym", True))
     chunk_size = int(spec.get("chunk_size", os.environ.get("INT_CHUNK_SIZE", "128")))
     raw_schedule = spec.get("schedule", spec)
@@ -208,16 +219,15 @@ def apply_hybrid_config_from_env(model) -> None:
     model.config.sc_hybrid_int_bits = int_bits
     model.config.sc_hybrid_int_sym = int_sym
     model.config.sc_hybrid_chunk_size = chunk_size
-    model.config.sc_hybrid_force_int_bits = (
-        os.environ.get("SC_HYBRID_FORCE_INT_BITS", "0") == "1"
-    )
+    model.config.sc_hybrid_force_int_bits = force_int_bits
     model.config.sc_hybrid_path = os.path.abspath(path)
 
     counts = {}
     for backend in schedule.values():
         counts[backend] = counts.get(backend, 0) + 1
     print(f"[hybrid] loaded {path}: default={default} overrides={counts} "
-          f"int_bits={int_bits} sym={int_sym} chunk={chunk_size}")
+          f"int_bits={int_bits} force_int_bits={force_int_bits} "
+          f"sym={int_sym} chunk={chunk_size}")
 
 
 def apply_mp_config_from_env(model) -> None:
