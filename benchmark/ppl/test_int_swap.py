@@ -9,10 +9,12 @@ Covers the three things that can silently produce a wrong mask:
 
 import json
 import math
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +22,7 @@ import numpy as np
 from benchmark.ppl.calibrate_mp_thresholds import (
     _INT_SWAP_CFG_KEYS,
     _int_swap_score,
+    _int_swap_window_losses,
     _measure_group_int_swap,
     _rankdata,
     _select_int_swap_windows,
@@ -84,6 +87,36 @@ class _FakeModel:
             pass
         out = _Out()
         out.loss = torch.tensor(2.0 + self._off.get(wid, 0.0) - gain)
+        return out
+
+
+class _ExactLogitModel:
+    """CPU model whose logits are separable by row, for exact batch tests."""
+
+    def __init__(self, cfg, vocab=17):
+        self.config = cfg
+        self.vocab = vocab
+        self.batch_shapes = []
+
+    def __call__(self, input_ids=None, labels=None):
+        import torch
+        import torch.nn.functional as F
+
+        self.batch_shapes.append(tuple(input_ids.shape))
+        vocab = torch.arange(self.vocab, dtype=torch.float32)
+        pos = torch.arange(input_ids.shape[1], dtype=torch.float32)[None, :, None]
+        center = ((input_ids + pos[..., 0].long()) % self.vocab)[..., None]
+        logits = -((vocab - center.float()) ** 2) / 11.0
+
+        class _Out:
+            pass
+        out = _Out()
+        out.logits = logits
+        if labels is not None:
+            shifted = F.pad(labels[0], (0, 1), value=-100)[1:].contiguous()
+            out.loss = F.cross_entropy(
+                logits[0].float().contiguous(), shifted,
+                ignore_index=-100, reduction="mean")
         return out
 
 
@@ -181,6 +214,38 @@ class MeasureIntSwapTest(unittest.TestCase):
                 ref_level=32, mp_config_path=None, n_windows=4, ctx=8,
                 device=torch.device("cpu"))
 
+
+class IntSwapWindowBatchingTest(unittest.TestCase):
+    def test_opt_in_batching_preserves_each_window_loss_exactly(self):
+        import torch
+
+        cfg = _Cfg()
+        windows = [torch.tensor([(i + j) % 13 for j in range(8)])
+                   for i in range(5)]
+        model = _ExactLogitModel(cfg)
+        with mock.patch.dict(
+                os.environ, {"PPL_WINDOW_BATCH_SIZE": "1"}, clear=False):
+            serial = _int_swap_window_losses(
+                model, cfg, windows, torch.device("cpu"), {})
+        serial_shapes = list(model.batch_shapes)
+        model.batch_shapes.clear()
+        with mock.patch.dict(
+                os.environ, {"PPL_WINDOW_BATCH_SIZE": "3"}, clear=False):
+            batched = _int_swap_window_losses(
+                model, cfg, windows, torch.device("cpu"), {})
+        self.assertEqual(serial, batched)
+        self.assertEqual(serial_shapes, [(1, 8)] * 5)
+        self.assertEqual(model.batch_shapes, [(3, 8), (2, 8)])
+
+    def test_invalid_batch_size_is_rejected(self):
+        import torch
+
+        with mock.patch.dict(
+                os.environ, {"PPL_WINDOW_BATCH_SIZE": "0"}, clear=False):
+            with self.assertRaises(ValueError):
+                _int_swap_window_losses(
+                    _ExactLogitModel(_Cfg()), _Cfg(),
+                    [torch.arange(8)], torch.device("cpu"), {})
 
 class SplitHalfTest(unittest.TestCase):
     def test_identical_halves_are_perfectly_stable(self):

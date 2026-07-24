@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -2023,14 +2024,54 @@ def _int_swap_window_losses(model, cfg, windows, device, schedule) -> list:
     """Per-window losses with ``schedule`` as the active hybrid override map.
 
     Returns the per-window list (not the mean) so a split-half stability check
-    costs nothing extra.
+    costs nothing extra.  ``PPL_WINDOW_BATCH_SIZE=1`` retains the historical
+    labels-based path exactly.  Larger values are an opt-in search acceleration
+    for independent, equal-length windows; their per-row loss formula mirrors
+    transformers' causal-LM loss instead of averaging a whole batch together.
     """
     cfg.sc_hybrid_schedule = dict(schedule)
+    batch_size = int(os.environ.get("PPL_WINDOW_BATCH_SIZE", "1"))
+    if batch_size < 1:
+        raise ValueError("PPL_WINDOW_BATCH_SIZE must be >= 1")
     out = []
     with torch.no_grad():
-        for w in windows:
-            ids = w.unsqueeze(0).to(device)
-            out.append(float(model(input_ids=ids, labels=ids).loss))
+        if batch_size == 1:
+            # Historical path: checkpoints and published rankings made before
+            # window batching continue through precisely the same model call.
+            for w in windows:
+                ids = w.unsqueeze(0).to(device)
+                out.append(float(model(input_ids=ids, labels=ids).loss))
+        else:
+            for offset in range(0, len(windows), batch_size):
+                chunk = windows[offset:offset + batch_size]
+                if not chunk:
+                    continue
+                lengths = {int(w.numel()) for w in chunk}
+                if len(lengths) != 1:
+                    raise ValueError(
+                        "batched int_swap requires equal-length windows")
+                ids = torch.stack(chunk).to(device)
+                model_out = model(input_ids=ids)
+                logits = model_out.logits
+                if tuple(logits.shape[:2]) != tuple(ids.shape):
+                    raise RuntimeError(
+                        "batched int_swap requires one logit row per input "
+                        f"token; got logits={tuple(logits.shape)} "
+                        f"ids={tuple(ids.shape)}")
+                for row in range(ids.shape[0]):
+                    # Match transformers 4.51 ForCausalLMLoss for one window:
+                    # upcast logits, right-pad labels, shift, and mean CE over
+                    # the ctx-1 non-ignored next-token targets.
+                    shifted = F.pad(
+                        ids[row], (0, 1), value=-100)[1:].contiguous()
+                    loss_t = F.cross_entropy(
+                        logits[row].float().contiguous(),
+                        shifted,
+                        ignore_index=-100,
+                        reduction="mean",
+                    )
+                    out.append(float(loss_t))
+                del model_out, logits, ids
     return out
 
 
@@ -2144,6 +2185,42 @@ def _measure_group_int_swap(
             print(f"[int_swap] WARN: {len(windows)} windows — split-half stability "
                   "is meaningless below 4; raise --measure-windows.")
 
+        window_batch_size = int(os.environ.get("PPL_WINDOW_BATCH_SIZE", "1"))
+        if window_batch_size < 1:
+            raise SystemExit("[int_swap] PPL_WINDOW_BATCH_SIZE must be >= 1")
+        batch_identity = None
+        if window_batch_size > 1:
+            identity_path = os.environ.get("PPL_WINDOW_BATCH_IDENTITY_JSON")
+            if not identity_path or not Path(identity_path).is_file():
+                raise SystemExit(
+                    "[int_swap] batched windows require a real-GPU identity "
+                    "manifest via PPL_WINDOW_BATCH_IDENTITY_JSON")
+            identity_bytes = Path(identity_path).read_bytes()
+            batch_identity = json.loads(identity_bytes)
+            expected_wrapper = (str(Path(mp_config_path).resolve())
+                                if mp_config_path else None)
+            checks = {
+                "schema": batch_identity.get("schema")
+                          == "scmp-30b-intswap-window-batch-identity-v1",
+                "batch_size": int(batch_identity.get("batch_size", -1))
+                              == window_batch_size,
+                "ctx": int(batch_identity.get("ctx", -1)) == int(ctx),
+                "int_bits": int(batch_identity.get("hybrid_int_bits", -1))
+                            == int(int_bits),
+                "wrapper": batch_identity.get("wrapper") == expected_wrapper,
+                "exact": bool(batch_identity.get(
+                    "all_schedules_torch_equal", False)),
+            }
+            failed = [name for name, ok in checks.items() if not ok]
+            if failed:
+                raise SystemExit(
+                    "[int_swap] invalid window-batch identity manifest "
+                    f"({', '.join(failed)}): {identity_path}")
+            batch_identity = {
+                "path": str(Path(identity_path).resolve()),
+                "sha256": hashlib.sha256(identity_bytes).hexdigest(),
+            }
+
         signature = {
             "total_blocks": int(total_blocks),
             "operators": list(ops),
@@ -2163,6 +2240,12 @@ def _measure_group_int_swap(
             "score_mode": score_mode,
             "lcb_z": float(lcb_z),
         }
+        # Preserve signature compatibility for the already-running B=1 robust
+        # sweeps.  Batched checkpoints are explicitly pinned to the validated
+        # implementation/configuration that produced them.
+        if window_batch_size > 1:
+            signature["window_batch_size"] = window_batch_size
+            signature["window_batch_identity"] = batch_identity
         checkpoint = None
         per_window = {}
         if checkpoint_path and Path(checkpoint_path).is_file():
@@ -2289,6 +2372,8 @@ def _measure_group_int_swap(
             "window_sampling": window_sampling,
             "window_seed": int(window_seed),
             "window_starts": window_starts,
+            "window_batch_size": window_batch_size,
+            "window_batch_identity": batch_identity,
             "ranking": {"score_method": score_mode, "lcb_z": float(lcb_z)},
             "selection_score": {
                 f"{op}:b{b}": v for (op, b), v in selection_scores.items()
