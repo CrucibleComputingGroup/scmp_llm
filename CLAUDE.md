@@ -1,7 +1,34 @@
 # scmp_llm — reproduction guide
 
 > ═══════════════════════════════════════════════════════════════════════════
-> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-24
+> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-25
+>
+> ### 2026-07-25 — INT-mask DOSE ablation promoted → `hpca_results/llm/int_ablation/`
+> The 10% hybrid-mask fraction that every `mp_final`/`ppl/mp_best` cell inherits
+> was never justified. It is now swept: k ∈ {0,5,10,20}% × {nominal 256, 192,
+> 128} × 4 models = 48 cells, uniform SC (allocator OFF) so it isolates the
+> mask. Sources: `../uniform/` (0%), NEW `int_abl_5pct_20260724` (jobs
+> 54688418/58/59/60), `../uniform_hybrid/` (10%), `uni_hyb20_20260724` (20%,
+> previously unpromoted) + NEW `int_abl_96i8_20260724` (jobs 54686166–69, the
+> INT8 gap-fill so the 192 row is width-consistent). All 36 promoted traces
+> re-verified full-protocol by `rebuild.py`, which RAISES rather than emit an
+> unverified number. **Masks are strictly nested (5% ⊂ 10% ⊂ 20%) off an
+> identical sensitivity source** ⇒ the columns are a genuine dose curve.
+> Findings: (1) **sharply diminishing returns** — 5% of the mask captures 64%
+> of the whole 0→20% gain, 10% captures 85% (53%/77% over the 10 monotone
+> cells); this is the first direct evidence the sensitivity RANKING orders
+> correctly, not just that masking helps. (2) **llama8B inverts it** — ~linear
+> dose response (5% captures only 12–24%), because its 5% mask selects NO `qk`
+> at all while 4B already spends 5/17 there. (3) **14B saturates at 10% and
+> mildly regresses at 20%** (+1.0% @256, +0.4% @192) — "20% everywhere" is not
+> free; monotone at the aggressive 128. (4) **mask width is ~free at 20% dose**
+> — INT7 vs INT8 masked cells differ −0.23%…+0.13%, so `../energy/` may price
+> the mask at INT7. ⚠ Dose is priced on the ENERGY axis, NOT iso-total-compute
+> (higher k = more INT MACs outside the SC budget) — never quote the PPL column
+> alone as "20% beats 10%". This is the UNIFORM ladder and says nothing about
+> the best dose UNDER MP (that is `mp_v9_hybdose/`, which need not agree).
+> Gap: `sc_avg96`/`sc_int6` have 0/10/20% but no 5% cell (8 more cells if the
+> collapse budgets need a curve).
 >
 > ### Frozen deployment archive = `hpca_results/llm/ppl/mp_best/`
 > The citable per-cell best MP deployment. 4 models × targets
@@ -182,18 +209,20 @@
 >    fractions are NOT iso-total-compute — the energy table must price the INT
 >    layers so cells compare fairly.
 >
-> **In flight (2026-07-24):** avg96 @ 20% INT mask gap-fill — 4 cells, tag
-> `mp_avg96_hyb20_20260724`, jobs 54619966-69, one GPU each. Reproduces the
-> deployed 10% avg96 cell EXACTLY (mp_avg96f_burst128, act_global_v3, pc0.01x128
-> act_collapse + MLP overrides down0.06/up0.03/gate0.03, INT7 via
-> `--hybrid-int-bits-mode legacy`), changing ONLY `--hybrid-int-frac 0.10→0.20`.
-> Launcher `benchmark/ppl/avg96_hyb20/run_avg96_hyb20.sbatch`. When done, compare
-> full-test PPL vs the deployed 10% t96 cell (4B 10.2986 / llama8B 7.7270 / 14B
-> 8.6789 / 30B 7.6510); fold the winners into `ppl/mp_best/` via a new
-> `avg96_hyb20_candidate()` in `rebuild.py`. Expect little movement — t96 is
-> near-lossless (1.02–1.05×fp16), so 20% has little headroom.
-> Scheduler ops (squeue/sbatch/scancel) must run OUTSIDE the Codex sandbox (see
-> the Slurm rules below); new waves / deletions need explicit user approval.
+> **2026-07-24 — 20% waves DONE** (launchers `benchmark/ppl/avg96_hyb20/`).
+> (1) **avg96 @ 20%** (tag `mp_avg96_hyb20_20260724`; single-pass act_global_v3,
+> only `--hybrid-int-frac 0.10→0.20`, INT7 legacy): 20% BEAT the 10% cell on 3/4 —
+> 4B 10.2986→10.2084, llama8B 7.7270→7.6510, 30B 7.6510→7.6117; 14B ~tie
+> (8.6789, kept at 10%). The three winners are folded into `ppl/mp_best/`
+> (`avg96_hyb20_top20`; `rebuild.py` now has `avg96_hyb20_candidate`).
+> (2) **uniform SC + 20% mask** comparator (tag `uni_hyb20_20260724`;
+> sc_int6/avg96/int7/avg192 at INT7 + sc_int8 at INT8): **MP @20% beats uniform
+> @20% at EVERY budget × model** — −1.1 to −2.8% at t96 (pure allocator, both
+> single-pass V3) up to −56% at t32 (llama8B). Caveat: the t32–t64 MP margins
+> also include the V20 search; only t96 is search-free. Results:
+> `$TURBO/results/results_{mp_avg96_hyb20,uni_hyb20}_20260724.tsv`.
+> No long-running jobs after this; verify with `squeue`. Scheduler ops must run
+> OUTSIDE the Codex sandbox (Slurm rules below); new waves/deletions need approval.
 >
 > ### Key parameters (canonical operating point)
 > `sc_prec=8`, `halve_bipolar_stoc_len=1` (cap = 128; a level value **is** the
@@ -614,18 +643,16 @@ uniform no-MP ceiling.
 > below is retained only for the calibrator flag reference.
 
 ```bash
-# (deprecated driver — kept for flag reference only; ppl.py/run_mp_sweep removed)
+# DELETED 2026-07-04 (arch_impl 65k/ctx-1024 protocol) — kept for flag reference
+# only; do NOT run, the files are gone. Evaluate via QUANT_CONFIG=mp
+# MP_CONFIG_JSON=<wrapper> benchmark/quant/eval_quant.py (see ⚑ STATUS Commands).
 # bash tests/reproduce_crosslayer.sh
 # bash tests/reproduce_crosslayer.sh --max-tokens 4096          # quick smoke
+# bash tests/run_mp_sweep.sh --models 4B,8B,14B \
+#   --prec int8,int7,len96,len192 --method act,act_global,grad_global,measured
+# python benchmark/ppl/summarize_mp_results.py benchmark/ppl/_mp_overnight_<tag>
 
-# Or drive the sweep directly (one or more models/precs/methods):
-bash tests/run_mp_sweep.sh --models 4B,8B,14B \
-  --prec int8,int7,len96,len192 --method act,act_global,grad_global,measured
-
-# Re-print the summary table from any sweep outdir (no GPU needed):
-python benchmark/ppl/summarize_mp_results.py benchmark/ppl/_mp_overnight_<tag>
-
-# Calibrate a single table by hand:
+# Calibrate a single table by hand (STILL VALID — this is the flag reference):
 python benchmark/ppl/calibrate_mp_thresholds.py --model_path <hf> \
   --mp_levels 128,64,32 --budget_ratio 0.5 --budget_ref_stoc_len 128 \
   --sc_prec 8 --halve 1 --budget-scope global \
@@ -717,8 +744,10 @@ shape and identity. Zero overhead when off (one bool read); records only
 host-side shape metadata — never tensor values, so no device sync.
 
 ```bash
-SC_MP_TRACE=out.json          python benchmark/ppl/ppl.py   # summary (default)
-SC_MP_TRACE=out.json SC_MP_TRACE_MODE=trace ...             # per-call JSONL
+# Trace is wired through the CURRENT driver (eval_quant.py) + check_mse.py /
+# check_gen.py. The old benchmark/ppl/ppl.py driver was REMOVED 2026-07-04.
+SC_MP_TRACE=out.json          ... python benchmark/quant/eval_quant.py  # summary (default)
+SC_MP_TRACE=out.json SC_MP_TRACE_MODE=trace ...                        # per-call JSONL
 ```
 
 - **summary** (`scmp-trace-summary-v1`): per-(block, op, unit, stoc_len,
@@ -737,10 +766,10 @@ SC_MP_TRACE=out.json SC_MP_TRACE_MODE=trace ...             # per-call JSONL
   never appears. **Coverage is SC matmuls only** — lm_head, embeddings,
   norms, softmax run FP16 and are absent (header carries a `coverage` note);
   level-0 (drop) rows issue no matmul and are not recorded.
-- `ppl.py` writes one file per sweep config (`<base>_sl<N>.json`) with
-  model/config/ppl **and join metadata** (MP_CONFIG_JSON path, total_blocks,
-  SmoothQuant setting) in the header; `check_mse.py`/`check_gen.py` are
-  wired the same way. An `atexit` hook flushes for apps that never call
+- `eval_quant.py` (and `check_mse.py`/`check_gen.py`) writes one file per sweep
+  config (`<base>_sl<N>.json`) with model/config/ppl **and join metadata**
+  (MP_CONFIG_JSON path, total_blocks, SmoothQuant setting) in the header. An
+  `atexit` hook flushes for apps that never call
   `flush()` (header marked `"atexit": true` — may span multiple configs).
   `calibrate_mp_thresholds.py` **disables** tracing (probe workloads are not
   simulator input). Context is thread-local; accumulation is locked.

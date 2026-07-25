@@ -193,22 +193,35 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
         model_path, dtype=torch.float16,
         device_map=_resolve_device_map(device_map))
     model.eval()
-    scales_path = os.path.join(
-        ACT_SCALES_DIR, f"act_scales_{_safe(model_path)}.pt")
-    if not os.path.isfile(scales_path):
-        raise SystemExit(
-            f"[sc] missing act_scales cache: {scales_path}\n"
-            f"     Run any INT cell for this model first (it calibrates and "
-            f"caches) so SC and INT share byte-identical SmoothQuant scales.")
-    scales = torch.load(scales_path, map_location="cpu", weights_only=True)
-    n = apply_smoothquant_to_model(model, scales, alpha=alpha)
+    # PTQ front-end ablation: FRONTEND=smoothquant (default, byte-identical to
+    # the INT cells' scales) | awq (native AWQ, INT-objective scale search; SC
+    # stays a pure downstream substrate). Both fold via the same smooth_scales
+    # buffer, so only the SCALE VALUE differs.
+    frontend = os.environ.get("FRONTEND", "smoothquant").lower()
+    if frontend == "awq":
+        from model.awq_apply import apply_awq_frontend
+        awq_cache = os.environ.get(
+            "AWQ_SCALES_DIR", os.path.join(ACT_SCALES_DIR, "awq_scales"))
+        n = apply_awq_frontend(model, tokenizer, model_path, cache_dir=awq_cache)
+    elif frontend == "smoothquant":
+        scales_path = os.path.join(
+            ACT_SCALES_DIR, f"act_scales_{_safe(model_path)}.pt")
+        if not os.path.isfile(scales_path):
+            raise SystemExit(
+                f"[sc] missing act_scales cache: {scales_path}\n"
+                f"     Run any INT cell for this model first (it calibrates and "
+                f"caches) so SC and INT share byte-identical SmoothQuant scales.")
+        scales = torch.load(scales_path, map_location="cpu", weights_only=True)
+        n = apply_smoothquant_to_model(model, scales, alpha=alpha)
+    else:
+        raise SystemExit(f"[sc] unknown FRONTEND={frontend!r} (want smoothquant|awq)")
     n_sc = sum(1 for _ in model.modules()
                if type(_).__name__ == "SCLinear") or None
     if n == 0:
         raise SystemExit(
-            f"[sc] act_scales at {scales_path} matched 0 SCLinear modules — "
-            f"the cell would run UNSMOOTHED and be unfair vs INT. Module-name "
-            f"mismatch between the plain-HF calibration and the SC model?")
+            f"[sc] front-end {frontend!r} matched 0 SCLinear modules — the cell "
+            f"would run UNSMOOTHED and be unfair vs INT. Module-name mismatch "
+            f"between calibration and the SC model?")
     if n_sc is not None and n < n_sc:
         # Same-key skip as INT's apply_ptq: layers absent from act_scales
         # (e.g. experts that saw zero calib tokens) run unsmoothed in BOTH
@@ -263,14 +276,14 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
               f"levels={levels} table={os.path.basename(mp_table)} "
               f"(sc_prec=8, halve=on, owen={os.environ['SC_OWEN_MODE']}, "
               f"masks={os.environ['SC_SCRAMBLE_MASKS']}), "
-              f"smoothquant on {n} SCLinear layers (alpha={alpha})")
+              f"frontend={frontend} on {n} SCLinear layers (alpha={alpha})")
     else:
         cfg.sc_mp_config = None
         cfg.sc_group_stoclen = {}  # empty map => uniform explicit stoc_len
         print(f"[sc] {tag}: uniform {cycles} cycles "
               f"(sc_prec=8, halve=on, owen={os.environ['SC_OWEN_MODE']}, "
               f"masks={os.environ['SC_SCRAMBLE_MASKS']}), "
-              f"smoothquant on {n} SCLinear layers (alpha={alpha})")
+              f"frontend={frontend} on {n} SCLinear layers (alpha={alpha})")
     if getattr(cfg, "sc_hybrid_schedule", None) is not None:
         print(f"[hybrid] active schedule={getattr(cfg, 'sc_hybrid_path', '')}")
     return model, tokenizer
