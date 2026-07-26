@@ -3,6 +3,28 @@
 > ═══════════════════════════════════════════════════════════════════════════
 > ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-25
 >
+> ### 2026-07-25 — PTQ front-end ablation DONE → `hpca_results/llm/frontend_awq/`
+> Answers "is SC's quality tied to SmoothQuant specifically?" — **no.** Native
+> AWQ (INT-objective scale search, `FRONTEND=awq` → `model/awq_apply.py`) swapped
+> in on UNIFORM PURE SC (allocator OFF, no hybrid mask), everything else fixed;
+> both front-ends fold through the same `smooth_scales` buffer so only the scale
+> VALUE differs. 12 cells (4 models × nominal 128/192/256), tag
+> `frontend_awq_20260724`, jobs 54738856/57/58/60, all COMPLETED, full protocol
+> (tokens 298,862 Qwen / 288,627 Llama, ctx 2048, `PPL_MAX_TOKENS=0`).
+> **AWQ wins 12/12, mean −1.93%** — and the margin grows monotonically as the SC
+> budget tightens (4B −6.25/−3.14/−1.57% at 128/192/256; 30B only −1.18/−0.56/
+> −0.32%), i.e. the front-end and the SC budget fight the SAME outlier problem,
+> so a better front-end buys budget. Small/fragile models gain most. No uniform
+> cell is promoted across 1.1×fp16 — margin win, not a budget unlock (that stays
+> the allocator's job). ⚠ Two hard caveats: (1) the SmoothQuant column is
+> `../uniform/` (pure SC) — these deltas do NOT compose with `mp_final`/
+> `ppl/mp_best`, the allocator + mask may already capture the same gain;
+> (2) an AWQ-fed SC cell is **no longer front-end-matched to the INT baselines**
+> (the whole point of using SmoothQuant), so **never table these against INT**
+> without re-running INT on AWQ. `AWQ_OBJ_BITS=4` (the search finds nothing at 8)
+> and 30B ran `AWQ_TOK_CAP=128` over 17,598 expert-linears — its small margin may
+> be partly calibration starvation. Full caveats in that dir's `README.md`.
+>
 > ### 2026-07-25 — INT-mask DOSE ablation promoted → `hpca_results/llm/int_ablation/`
 > The 10% hybrid-mask fraction that every `mp_final`/`ppl/mp_best` cell inherits
 > was never justified. It is now swept: k ∈ {0,5,10,20}% × {nominal 256, 192,
