@@ -37,6 +37,23 @@ cd /home/allenjin/Projects/scmp_llm
 : "${FE_MODEL:?FE_MODEL is required (4B|llama8B|14B|30B)}"
 : "${FE_TARGET:?FE_TARGET is required (32|96)}"
 
+# ---- HF caches MUST live on Turbo, never /home (quota) ----------------------
+# This driver calls eval_quant.py directly, so unlike `bash hpca` it does NOT
+# inherit hpca's cache exports and nothing in ~/.bashrc sets them. Omitting them
+# cost a full wave: the Qwen cells silently re-downloaded weights into
+# ~/.cache/huggingface (634M -> 2.4G in three minutes, against an 80 GiB /home
+# quota with two 30B cells inbound at ~68G each) and both llama8B cells died on
+# a gated-repo 401 because the HF token lives at $HF_HOME/token.
+# Both cache LAYOUTS are needed and are not interchangeable here:
+#   $HF_CACHE/hub/models--*        <- Qwen 4B/14B/30B (current layout, HF_HUB_CACHE)
+#   $HF_CACHE/models--*            <- Llama-3.1-8B    (legacy layout, TRANSFORMERS_CACHE)
+# These four exports mirror `hpca` lines 244-247 verbatim.
+HF_CACHE=/nfs/turbo/coe-nbleier/allenjin/hf_cache
+export HF_HOME="$HF_CACHE"
+export TRANSFORMERS_CACHE="$HF_HOME"
+export HF_DATASETS_CACHE="$HF_HOME/datasets"
+export HF_HUB_CACHE="$HF_HOME/hub"
+
 TAG="mpbest_awq_20260726"
 MP_BEST=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best
 BUNDLE="$MP_BEST/configs/${FE_MODEL}/target${FE_TARGET}"
@@ -100,6 +117,17 @@ AWQ_CACHE="$AWQ_SCALES_DIR/awq_scales_${HF//\//_}_b4.pt"
   echo "[mpbest_awq] MISSING AWQ cache $AWQ_CACHE -- refusing to recalibrate" >&2
   echo "[mpbest_awq] (a fresh calibration would not be byte-identical to the" >&2
   echo "[mpbest_awq]  frontend_awq uniform wave, breaking the comparison)" >&2
+  exit 2
+}
+# Refuse to run if the model weights are not already cached on Turbo — that is
+# the signal that the HF env is wrong and the job is about to download ~18-68G
+# into /home. Checks BOTH layouts (see the HF cache note above).
+SAFE_HF="${HF//\//--}"
+[[ -d "$HF_HUB_CACHE/models--$SAFE_HF" || -d "$TRANSFORMERS_CACHE/models--$SAFE_HF" ]] || {
+  echo "[mpbest_awq] $HF is NOT in the Turbo cache:" >&2
+  echo "[mpbest_awq]   $HF_HUB_CACHE/models--$SAFE_HF" >&2
+  echo "[mpbest_awq]   $TRANSFORMERS_CACHE/models--$SAFE_HF" >&2
+  echo "[mpbest_awq] refusing to run -- it would download into /home (quota)." >&2
   exit 2
 }
 
