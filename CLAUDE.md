@@ -24,6 +24,19 @@
 > without re-running INT on AWQ. `AWQ_OBJ_BITS=4` (the search finds nothing at 8)
 > and 30B ran `AWQ_TOK_CAP=128` over 17,598 expert-linears — its small margin may
 > be partly calibration starvation. Full caveats in that dir's `README.md`.
+> **COVERAGE (both arms): the front-end reaches `SCLinear` ONLY.** `qk`/`av` are
+> A×A, so neither SmoothQuant nor AWQ touches them — they run on DYNAMIC per-row
+> (SC) / per-128-chunk (INT) symmetric absmax with zero calibrated component.
+> Upstream SmoothQuant is the same (it quantizes the BMMs, never smooths them:
+> `smooth_ln_fcs` covers LN→qkv and LN→fc1 only, not `o_proj`/`down_proj`). So the
+> −1.93% is entirely from the projections, the ablation cannot be
+> attention-confounded, and the fragile ~90%-of-rows attention path has never had
+> a front-end at all. **Open lead:** `qk` DOES admit an exact static equivalent
+> transform via UPSTREAM weights — scale `W_q` out-channels by `s`, `W_k` by
+> `1/s` (Q·Kᵀ contracts over `head_dim` ⇒ score-invariant, folds into existing
+> weights, runtime-free); needs `s` constant within each RoPE pair; `av` has no
+> analog (contracts over seq positions ⇒ length-dependent). NOT covered by the
+> rotation refutation — that killed ORTHOGONAL maps, this is diagonal.
 >
 > ### 2026-07-25 — INT-mask DOSE ablation promoted → `hpca_results/llm/int_ablation/`
 > The 10% hybrid-mask fraction that every `mp_final`/`ppl/mp_best` cell inherits
