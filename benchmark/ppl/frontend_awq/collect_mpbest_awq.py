@@ -30,6 +30,16 @@ TARGETS = [32, 96]
 # longer comparable at iso-compute and the PPL cannot be quoted as a clean win.
 DRIFT_TOL = 0.02
 
+# 14B t96 does NOT use its mp_best bundle: the wave runs the 20%-INT-mask
+# variant from mp_avg96_hyb20_20260724 so the mask is a constant across all 8
+# cells. mp_best kept 10% for this cell because 20% lost there (8.6848 @ 96.16
+# vs 8.6789 @ 95.779). The baseline below is the 20% SmoothQuant number — the
+# correct A/B partner, since front-end is then the only difference.
+BASELINE_OVERRIDE = {
+    ("14B", 96): {"ppl": 8.6848, "flop_avg_sl": 96.16,
+                  "src": "mp_avg96_hyb20_20260724 (20% mask)"},
+}
+
 RESULT_RE = re.compile(
     r"\[RESULT\].*?config=(?P<config>\S+).*?value=(?P<ppl>[0-9.]+)"
     r".*?tokens=(?P<tokens>\d+).*?realized_flop_avg_sl=(?P<flop>[0-9.]+)")
@@ -72,10 +82,15 @@ def main() -> None:
     for m in MODELS:
         for t in TARGETS:
             bundle = MP_BEST / "configs" / m / f"target{t}"
-            ev = json.loads((bundle / "eval_summary.json").read_text())
             meta = json.loads((bundle / "metadata.json").read_text())
-            sq_ppl = float(ev["ppl"])
-            sq_cyc = float(ev["realized_flop_avg_stoc_len"])
+            ovr = BASELINE_OVERRIDE.get((m, t))
+            if ovr:
+                sq_ppl, sq_cyc, cfg_src = ovr["ppl"], ovr["flop_avg_sl"], ovr["src"]
+            else:
+                ev = json.loads((bundle / "eval_summary.json").read_text())
+                sq_ppl = float(ev["ppl"])
+                sq_cyc = float(ev["realized_flop_avg_stoc_len"])
+                cfg_src = "mp_best (deployed)"
             a = awq.get((m, t))
             if not a or a["status"] != "done":
                 print(f"{m:9s} {t:4d} {sq_ppl:9.4f} {'—':>9s} {'—':>7s} "
@@ -101,6 +116,7 @@ def main() -> None:
                 delta_cost_pct=f"{d_cyc:+.2f}",
                 iso_compute="yes" if abs(d_cyc) <= DRIFT_TOL * 100 else "NO",
                 x_fp16_awq=f"{a['ppl'] / meta['fp16_ppl']:.4f}",
+                config_source=cfg_src,
                 eval_tokens=a["tokens"], log=a["log"]))
     if rows:
         out = Path(__file__).resolve().parent / "mpbest_awq_transfer.csv"

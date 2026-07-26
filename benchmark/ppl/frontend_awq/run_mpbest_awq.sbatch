@@ -52,10 +52,44 @@ case "$FE_MODEL" in
   *) echo "[mpbest_awq] unknown FE_MODEL=$FE_MODEL" >&2; exit 2 ;;
 esac
 
+# ---- config selection -------------------------------------------------------
+# Default: the deployed mp_best bundle. OVERRIDE for 14B t96 so all 8 cells run
+# a 20% INT mask, making the mask a CONSTANT across the wave and leaving the
+# front-end as the only variable. mp_best kept the 10% mask for this one cell
+# because 20% lost there (8.6848 @ 96.16 vs 8.6789 @ 95.779) — consistent with
+# int_ablation, where 14B saturates at 10% and mildly regresses at 20%. The
+# baseline to beat is therefore the 20% SmoothQuant number, NOT the deployed
+# 10% one: same config, front-end the only difference.
+W20="$TURBO/mp_calib_mp_avg96_hyb20_20260724"
+H20="$TURBO/hybrid_configs/_hpca_mp_avg96_hyb20_20260724"
+V3SUF="mp_avg96f_burst128__act_global_v3_pc0.01x128_act_collapse_comp_pcovdown_proj_0_06_up_proj_0_03_gate_proj_0_03_hyb0.20"
+FE_WRAPPER="$BUNDLE/wrapper.json"
+FE_HYBRID="$BUNDLE/hybrid_config.json"
+FE_CONFIG_SRC="mp_best bundle (deployed)"
+if [[ "$FE_MODEL" == "14B" && "$FE_TARGET" == "96" ]]; then
+  FE_WRAPPER="$W20/Qwen_Qwen3-14B__${V3SUF}_wrapper.json"
+  FE_HYBRID="$H20/14B_mp_avg96f_burst128_rank-sc_int8_measured_curve_top0p20.json"
+  FE_SQ_PPL=8.6848
+  FE_SQ_CYC=96.16
+  FE_CONFIG_SRC="mp_avg96_hyb20_20260724 (20% mask; mp_best kept 10% here)"
+fi
+
 # ---- fail fast, BEFORE burning a GPU hour -----------------------------------
-for f in wrapper.json table.json hybrid_config.json runtime.json; do
-  [[ -f "$BUNDLE/$f" ]] || { echo "[mpbest_awq] missing $BUNDLE/$f" >&2; exit 2; }
+for f in "$FE_WRAPPER" "$FE_HYBRID"; do
+  [[ -f "$f" ]] || { echo "[mpbest_awq] missing config: $f" >&2; exit 2; }
 done
+# The wrapper's threshold_table_path must resolve — mp_best wrappers use a
+# relative "table.json" next to them, the 20% wrapper an absolute Turbo path.
+python - <<PY || exit 2
+import json, os, sys
+w = json.load(open("$FE_WRAPPER"))
+p = w["threshold_table_path"]
+p = p if os.path.isabs(p) else os.path.join(os.path.dirname("$FE_WRAPPER"), p)
+if not os.path.isfile(p):
+    sys.exit(f"[mpbest_awq] wrapper table does not resolve: {p}")
+print(f"[mpbest_awq] table={p}")
+print(f"[mpbest_awq] levels={w['stoc_len_levels']} gate={w.get('escape_gate_k', 'none')}")
+PY
 # The AWQ scale cache MUST already exist. If it does not, apply_awq_frontend
 # would silently spend hours recalibrating AND would write the new cache into
 # whatever AWQ_SCALES_DIR points at — a different scale than the uniform wave
@@ -81,8 +115,8 @@ export AWQ_TOK_CAP=128         # only used on a cache miss, which we refuse abov
 # as deployed. The escape gate (k=2.0, escape_stoc_len=128 on the t32 cells)
 # travels inside wrapper.json, so it needs no env.
 export QUANT_CONFIG=mp
-export MP_CONFIG_JSON="$BUNDLE/wrapper.json"
-export SC_HYBRID_CONFIG_JSON="$BUNDLE/hybrid_config.json"
+export MP_CONFIG_JSON="$FE_WRAPPER"
+export SC_HYBRID_CONFIG_JSON="$FE_HYBRID"
 export SC_OWEN_MODE=bitrev
 export SC_SCRAMBLE_MASKS=64
 export ACT_SCALES_DIR="$MP_BEST/act_scales"   # unused on the AWQ branch; kept for provenance
@@ -99,16 +133,23 @@ export SC_MP_TRACE_MODE=summary
 
 echo "[mpbest_awq] ================================================="
 echo "[mpbest_awq] cell=${FE_MODEL} target=${FE_TARGET} tag=$TAG"
-echo "[mpbest_awq] bundle=$BUNDLE"
+echo "[mpbest_awq] config_src=$FE_CONFIG_SRC"
+echo "[mpbest_awq] wrapper=$FE_WRAPPER"
+echo "[mpbest_awq] hybrid=$FE_HYBRID"
 echo "[mpbest_awq] frontend=awq (obj_bits=4) cache=$AWQ_CACHE"
-echo "[mpbest_awq] SmoothQuant baseline to beat (deployed cell):"
 python - <<PY
 import json
-e = json.load(open("$BUNDLE/eval_summary.json"))
+sq_ppl, sq_cyc = "${FE_SQ_PPL:-}", "${FE_SQ_CYC:-}"
+if sq_ppl and sq_cyc:
+    sq_ppl, sq_cyc = float(sq_ppl), float(sq_cyc)
+else:
+    e = json.load(open("$BUNDLE/eval_summary.json"))
+    sq_ppl, sq_cyc = float(e["ppl"]), float(e["realized_flop_avg_stoc_len"])
 m = json.load(open("$BUNDLE/metadata.json"))
-print(f"[mpbest_awq]   SQ ppl={e['ppl']:.4f}  realized_flop_avg_sl={e['realized_flop_avg_stoc_len']:.3f}"
-      f"  fp16={m['fp16_ppl']}  x_fp16={e['ppl']/m['fp16_ppl']:.4f}")
-print(f"[mpbest_awq]   iso-compute check: AWQ realized_flop_avg_sl must stay ~{e['realized_flop_avg_stoc_len']:.3f}")
+print(f"[mpbest_awq] SmoothQuant baseline (SAME config, front-end the only diff):")
+print(f"[mpbest_awq]   SQ ppl={sq_ppl:.4f}  realized_flop_avg_sl={sq_cyc:.3f}"
+      f"  fp16={m['fp16_ppl']}  x_fp16={sq_ppl/m['fp16_ppl']:.4f}")
+print(f"[mpbest_awq]   iso-compute check: AWQ realized_flop_avg_sl must stay ~{sq_cyc:.3f}")
 PY
 echo "[mpbest_awq] ================================================="
 
