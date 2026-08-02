@@ -83,7 +83,7 @@ V3SUF="mp_avg96f_burst128__act_global_v3_pc0.01x128_act_collapse_comp_pcovdown_p
 FE_WRAPPER="$BUNDLE/wrapper.json"
 FE_HYBRID="$BUNDLE/hybrid_config.json"
 FE_CONFIG_SRC="mp_best bundle (deployed)"
-if [[ "$FE_MODEL" == "14B" && "$FE_TARGET" == "96" ]]; then
+if [[ "${MBA_HOLD_MASK:-0}" == "1" && "$FE_MODEL" == "14B" && "$FE_TARGET" == "96" ]]; then
   FE_WRAPPER="$W20/Qwen_Qwen3-14B__${V3SUF}_wrapper.json"
   FE_HYBRID="$H20/14B_mp_avg96f_burst128_rank-sc_int8_measured_curve_top0p20.json"
   FE_SQ_PPL=8.6848

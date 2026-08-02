@@ -787,9 +787,18 @@ SC_MP_TRACE=out.json SC_MP_TRACE_MODE=trace ...                        # per-cal
 
 - **summary** (`scmp-trace-summary-v1`): per-(block, op, unit, stoc_len,
   rng_levels, smoothed) groups with `calls / rows / macs / row_cycles`;
-  `d_in`/`d_out` are representative payload (NOT key — attention dims grow
-  per decode step; such groups carry `dims_vary: true` while macs/rows stay
-  exact). Energy = Σ macs × E(stoc_len). `rng_levels` is the RESOLVED
+  **`d_in`/`d_out` ARE part of the key (fixed 2026-07-29)**, so
+  `rows × d_in × d_out == macs` holds per group. Bounded memory comes from a
+  per-base-key shape cap (`SC_MP_TRACE_MAX_SHAPES`, default 32) — shapes past
+  it fold into one `dims_vary: true` catch-all with representative dims, the
+  only place the identity may fail; macs/rows/row_cycles stay exact there too.
+  ⚠ Traces written BEFORE that fix keyed without dims and silently merged two
+  *static* shapes whenever they shared a `stoc_len` — notably an op's
+  protected-channel slice colliding with its main slice at high budgets (9/24
+  `ppl/mp_best` traces hit this; 10–34% of their MACs). Repair offline with
+  `hpca_results/llm/ppl/mp_best/repair_traces.py`; never read operand shapes
+  out of an unrepaired pre-fix trace.
+  Energy = Σ macs × E(stoc_len). `rng_levels` is the RESOLVED
   enable-grid size (never null). A few hundred KB for PPL runs.
 - **trace** (`scmp-trace-v1` JSONL): one ordered record per call (`seq`) —
   latency timeline replay. Spills to disk every 100k records (bounded RAM
@@ -813,7 +822,10 @@ SC_MP_TRACE=out.json SC_MP_TRACE_MODE=trace ...                        # per-cal
   knock-down-probe helpers); other apps (diffusion/ViT) need only that one
   call to adopt.
 - Validated: 4B MP run — rows conserve exactly (Σ per-op rows = tokens;
-  qk = H×tokens), trace avg_sl == mp_tracker avg_sl, macs == rows·d_in·d_out;
+  qk = H×tokens), trace avg_sl == mp_tracker avg_sl, and
+  `macs == rows·d_in·d_out` **per group post-fix** (that validation was run on
+  a config where no static shapes collided, which is why the pre-fix collapse
+  above went unnoticed — it needs the protected slice to share a rung);
   30B MoE — per-expert rows sum to tokens×top_k (2048 = 256×8), load
   imbalance visible (0–89 rows/expert). Tracing does not change PPL
   (bit-identical reruns). Reviewed by a 3-lens adversarial pass; all

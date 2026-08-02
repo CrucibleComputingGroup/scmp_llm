@@ -292,23 +292,34 @@ def _iter_target_linears(model: nn.Module):
 
 def apply_ptq(model: nn.Module, qcfg: QuantConfig,
               act_scales: Optional[Dict[str, torch.Tensor]] = None,
-              alpha: float = 0.5) -> int:
+              alpha: float = 0.5,
+              awq_scales: Optional[Dict[str, torch.Tensor]] = None) -> int:
     """Replace every (non-skipped) nn.Linear with a QuantLinear. Returns count.
 
-    ``act_scales[name]`` (per-input-channel activation amax) enables SmoothQuant
-    for that layer; missing → no smoothing for that layer.
+    Front-end: exactly one of two per-input-channel equivalent-transform scales
+    ``s`` (Y=(X/s)@(W·s)^T) is folded into each QuantLinear:
+      * ``awq_scales`` (FRONTEND=awq) — precomputed AWQ ``s`` used AS-IS (the same
+        cache the SC-AWQ wave used, so the INT baseline shares its front-end).
+      * else ``act_scales`` (SmoothQuant) — raw per-channel amax → compute_smooth_scales.
+    QuantLinear is front-end-agnostic; it just applies whichever ``s`` it's handed.
     """
     from scmp_kernels.quant.smoothquant import compute_smooth_scales
     n = 0
+    n_smoothed = 0
     # The list holds every target Linear; if we don't free each original fp16
     # weight as we replace it, a 60GB MoE peaks at ~2x (originals + quantized
     # copies) and OOMs a 98GB GPU. QuantLinear clones what it needs in __init__,
     # so we can drop the original weight/bias immediately after.
     for parent, attr, full, lin in list(_iter_target_linears(model)):
         s = None
-        if act_scales is not None and full in act_scales:
+        if awq_scales is not None:
+            if full in awq_scales:
+                s = awq_scales[full].to(lin.weight.device, lin.weight.dtype)
+                n_smoothed += 1
+        elif act_scales is not None and full in act_scales:
             s = compute_smooth_scales(
                 act_scales[full].to(lin.weight.device), lin.weight.data, alpha=alpha)
+            n_smoothed += 1
         setattr(parent, attr, QuantLinear(lin, qcfg, s))
         lin.weight = None          # free the fp16 original NOW
         if getattr(lin, "bias", None) is not None:
@@ -317,6 +328,14 @@ def apply_ptq(model: nn.Module, qcfg: QuantConfig,
         if n % 2000 == 0:
             torch.cuda.empty_cache()
     torch.cuda.empty_cache()
+    if awq_scales is not None:
+        if n_smoothed == 0:
+            raise SystemExit(
+                "[awq] INT path: 0/%d Linear layers matched the AWQ scale cache — "
+                "the cell would run UNSMOOTHED and be unfair vs SmoothQuant-INT. "
+                "Module-name mismatch between the SC-model calibration and the "
+                "plain-HF INT model?" % n)
+        print(f"[awq] INT path: applied AWQ scales to {n_smoothed}/{n} Linear layers")
     return n
 
 

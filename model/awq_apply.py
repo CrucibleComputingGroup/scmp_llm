@@ -236,3 +236,24 @@ def apply_awq_frontend(
     n = apply_awq_to_model(model, awq_scales)
     print(f"[awq] applied to {n} SCLinear modules (obj_bits={obj_bits})")
     return n
+
+
+@torch.no_grad()
+def load_awq_scales(model_path: str, cache_dir: str,
+                    obj_bits: Optional[int] = None) -> Dict[str, torch.Tensor]:
+    """LOAD (never calibrate) the cached AWQ per-input-channel scales for the INT
+    path. Keyed by module name — the SAME cache the SC wave built, so an INT
+    baseline shares a byte-identical front-end with SC-AWQ. Raises if absent: the
+    INT path uses a plain-HF model with no SCLinear, so it cannot calibrate AWQ
+    (calibrate_awq_scales hooks SCLinear); the SC AWQ wave must have run first."""
+    obj_bits = int(os.environ.get(
+        "AWQ_OBJ_BITS", obj_bits if obj_bits is not None else 4))
+    safe = model_path.replace("/", "_")
+    path = os.path.join(cache_dir, f"awq_scales_{safe}_b{obj_bits}.pt")
+    if not os.path.isfile(path):
+        raise SystemExit(
+            f"[awq] FRONTEND=awq (INT path) needs cached scales {path}, missing.\n"
+            f"      The INT path cannot calibrate AWQ (no SCLinear) — run the SC "
+            f"AWQ wave first, which writes this cache.")
+    print(f"[awq] scales cache hit (INT path): {path}")
+    return torch.load(path, map_location="cpu", weights_only=True)

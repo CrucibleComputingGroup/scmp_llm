@@ -345,26 +345,43 @@ def build_model(model_path: str, tag: str, *, device_map="auto",
     # nothing at fp16 activations — stock weight-only baselines (BitMoD RTN,
     # GPTQ, AWQ-none) are SQ-free, so an SQ-on W-only row would be a strawman.
     # WONLY_SQ=1 forces SQ back on for a protocol-parity footnote cell.
+    # PTQ front-end: FRONTEND=smoothquant (default) | awq. Same switch as the SC
+    # path — AWQ reuses the SAME cached per-input-channel scale vectors the SC-AWQ
+    # wave built, so an INT baseline is front-end-matched to SC-AWQ. Both fold the
+    # X/s,W·s equivalent transform into QuantLinear; only the scale VALUE differs.
     wonly_no_sq = qcfg.a_bits >= 16 and os.environ.get("WONLY_SQ", "0") != "1"
-    if wonly_no_sq:
-        scales = None
+    frontend = os.environ.get("FRONTEND", "smoothquant").lower()
+    scales = None
+    awq_scales = None
+    if frontend == "awq":
+        # AWQ is an activation-aware WEIGHT front-end, so it applies even to
+        # weight-only configs — that is its home turf (AWQ-BitMoD, AWQ-INT4-wonly).
+        # Only SmoothQuant is skipped weight-only (X/s buys nothing at fp16 acts).
+        from model.awq_apply import load_awq_scales
+        awq_cache = os.environ.get(
+            "AWQ_SCALES_DIR", os.path.join(ACT_SCALES_DIR, "awq_scales"))
+        awq_scales = load_awq_scales(model_path, awq_cache)
+    elif wonly_no_sq:
         print("[quant] weight-only config (A>=16): SmoothQuant skipped "
               "(stock W-only protocol; set WONLY_SQ=1 to force it on)")
-    else:
+    elif frontend == "smoothquant":
         path = os.path.join(ACT_SCALES_DIR, f"act_scales_{_safe(model_path)}.pt")
         if os.path.isfile(path):
             print(f"[quant] act_scales cache hit: {path}")
             scales = torch.load(path, map_location="cpu", weights_only=True)
         else:
             scales = get_act_scales(model_path, tokenizer, model)
-    n = apply_ptq(model, qcfg, act_scales=scales, alpha=alpha)
+    else:
+        raise SystemExit(f"[quant] unknown FRONTEND={frontend!r} (want smoothquant|awq)")
+    n = apply_ptq(model, qcfg, act_scales=scales, alpha=alpha, awq_scales=awq_scales)
     model.config.use_int_attention = bool(qcfg.quantize_attention)
     model.config.int_attention_bits = int(qcfg.a_bits)
     model.config.int_attention_sym = bool(qcfg.sym)
     model.config.int_chunk_size = int(qcfg.chunk_size)
     torch.cuda.empty_cache()
+    _fe = "none(w-only)" if (scales is None and awq_scales is None) else frontend
     print(f"[ptq] {qcfg.tag()}: quantized {n} Linear layers in place "
-          f"(smoothquant={'off' if scales is None else 'on'} alpha={alpha}, "
+          f"(frontend={_fe} alpha={alpha}, "
           f"w_dtype={qcfg.w_dtype}, chunk={qcfg.chunk_size}, "
           f"qk_av={'on' if qcfg.quantize_attention else 'off'})")
     return model, tokenizer
