@@ -38,6 +38,21 @@ def load_sc_model(
     """
     p = model_path.lower()
     if "llama" in p:
+        family = "llama"
+    elif "qwen" in p:
+        family = "qwen"
+    else:
+        # Local checkpoint dirs need not carry the family in their path
+        # (e.g. rotated folds saved under .../mp_rot_gate_4B_<tag>/
+        # rotated_seed0) — fall back to the checkpoint's config.model_type.
+        # Only reached when the string match fails, so every HF-id path
+        # dispatches exactly as before.
+        from transformers import AutoConfig
+        mt = str(getattr(AutoConfig.from_pretrained(model_path),
+                         "model_type", ""))
+        family = ("llama" if mt == "llama"
+                  else "qwen" if mt.startswith("qwen") else None)
+    if family == "llama":
         # LEGACY=1 -> use the original forked-modeling implementation
         # (model/llama_sc_legacy.py). Otherwise use the new adapter.
         # Used to A/B compare the two implementations.
@@ -51,7 +66,7 @@ def load_sc_model(
             )
         from model.llama_sc import make_llama_sc
         return make_llama_sc(model_path, torch_dtype=dtype, device_map=device_map)
-    if "qwen" in p:
+    if family == "qwen":
         qwen_dir = os.path.join(_REPO_ROOT, "model_qwen4b")
         if qwen_dir not in sys.path:
             sys.path.insert(0, qwen_dir)
@@ -59,7 +74,8 @@ def load_sc_model(
         return make_qwen3_sc(model_path, torch_dtype=dtype, device_map=device_map)
     raise ValueError(
         f"Unknown model family for {model_path!r}. "
-        f"Expected a path/id containing 'llama' or 'qwen'.")
+        f"Expected a path/id containing 'llama' or 'qwen', or a local "
+        f"checkpoint whose config.model_type is llama/qwen*.")
 
 
 def apply_sc_env_overrides(model) -> None:
@@ -91,19 +107,193 @@ def apply_sc_env_overrides(model) -> None:
         model.config.sc_halve_bipolar_stoc_len = (
             os.environ["SC_HALVE_BIPOLAR_STOC_LEN"] == "1")
     apply_mp_config_from_env(model)
+    apply_hybrid_config_from_env(model)
+
+
+def _normalize_backend(value) -> str:
+    """Normalize schedule entries to ``sc``, ``fp``, or ``int<N>``."""
+    if isinstance(value, bool):
+        return "sc" if value else "fp"
+    if isinstance(value, int):
+        if value == 0:
+            return "fp"
+        if value == 1:
+            return "sc"
+        if value > 1:
+            return f"int{value}"
+    s = str(value).strip().lower()
+    aliases = {
+        "0": "fp", "false": "fp", "off": "fp", "skip": "fp", "none": "fp",
+        "1": "sc", "true": "sc", "on": "sc",
+        "2": "int",
+    }
+    s = aliases.get(s, s)
+    if s == "int":
+        return "int"
+    if s.startswith("int") and s[3:].isdigit():
+        return s
+    if s in ("sc", "fp"):
+        return s
+    raise ValueError(
+        f"unknown hybrid backend {value!r}; expected sc, fp, int<N>, "
+        "or ViT-style 0/1/2 entries")
+
+
+def apply_attn_smooth_from_env(model) -> None:
+    """Load a per-(operator, layer) contracted-dim rebalance for SC attention.
+
+    Env: ``SC_ATTN_SMOOTH_JSON`` -> {"scales": {"qk:b<N>": [s_0 ... s_{D-1}]}}.
+
+    sc_matmul applies it INSIDE the attention product as (Q/s, K*s) along the
+    contracted head_dim, so sum_d (Q_d/s_d)(K_d s_d) == sum_d Q_d K_d is exactly
+    unchanged while the per-row absmax of BOTH operands moves -- and that absmax
+    is what sets the SC quantization scale. qk/av is ~90% of dispatch rows and
+    the only operator class neither SmoothQuant nor AWQ reaches (both stop at
+    SCLinear), so this is the front-end attention has never had.
+
+    Being applied inside the matmul puts it AFTER RoPE, so every head_dim entry
+    is free; folding the same idea into q_norm/k_norm would be constrained to
+    s[d] == s[d + head_dim/2] by rotate_half and would lose half the DOF.
+
+    Unset (default) leaves ``sc_attn_smooth = None`` and every attention call
+    byte-identical.
+    """
+    import json
+    import os
+    path = os.environ.get("SC_ATTN_SMOOTH_JSON", "").strip()
+    if not path:
+        model.config.sc_attn_smooth = None
+        return
+    with open(path) as f:
+        spec = json.load(f)
+    scales = spec.get("scales", spec)
+    if not isinstance(scales, dict) or not scales:
+        raise SystemExit(
+            f"[attn-smooth] {path} has no 'scales' map; refusing to run a cell "
+            f"that would silently be the unmodified baseline.")
+    model.config.sc_attn_smooth = {str(k): list(v) for k, v in scales.items()}
+    print(f"[attn-smooth] loaded {len(scales)} vectors from {path} "
+          f"(alpha={spec.get('alpha')}, mean |Q| spread="
+          f"{spec.get('mean_q_spread')}, |K|={spec.get('mean_k_spread')})")
+
+
+def apply_hybrid_config_from_env(model) -> None:
+    """Load a ViT-style per-(operator, block) backend schedule.
+
+    The env var may be ``SC_HYBRID_CONFIG_JSON`` or ``HYBRID_CONFIG_JSON``.
+    Expected schema:
+
+        {
+          "format": "scmp_llm_hybrid_v1",
+          "default": "sc",
+          "int_bits": 7,
+          "int_sym": true,
+          "chunk_size": 128,
+          "schedule": {
+            "down_proj": ["sc", "sc", "int7"],
+            "qk": ["sc", "int7", "sc"]
+          }
+        }
+
+    The schedule shape intentionally mirrors scmp_vit: one row per op, one
+    entry per block. Entries normalize to ``sc``, ``fp``, or ``int<N>``.
+    """
+    path = (
+        os.environ.get("SC_HYBRID_CONFIG_JSON", "").strip()
+        or os.environ.get("HYBRID_CONFIG_JSON", "").strip()
+    )
+    if not path:
+        model.config.sc_hybrid_schedule = None
+        return
+
+    import json
+    with open(path) as f:
+        spec = json.load(f)
+
+    default = _normalize_backend(spec.get("default", "sc"))
+    force_int_bits = (
+        os.environ.get("SC_HYBRID_FORCE_INT_BITS", "0") == "1"
+    )
+    env_int_bits = (
+        os.environ.get("SC_HYBRID_INT_BITS", "").strip()
+        or os.environ.get("HYBRID_INT_BITS", "").strip()
+    )
+    # A generated schedule records the width it was created with, normally in
+    # both ``int_bits`` and entries such as ``int7``.  Final-search lanes reuse
+    # the measured-curve *ranking* at several target budgets and deliberately
+    # set FORCE so the target's iso-precision width wins over both copies.
+    # Reading spec["int_bits"] first made that override a silent no-op: V20 t32
+    # exported INT6 but still executed INT7.  Without FORCE, retain the JSON as
+    # the authoritative, reproducible deployment description.
+    if force_int_bits and env_int_bits:
+        int_bits = int(env_int_bits)
+    else:
+        int_bits = int(spec.get("int_bits", env_int_bits or "7"))
+    int_sym = bool(spec.get("int_sym", True))
+    chunk_size = int(spec.get("chunk_size", os.environ.get("INT_CHUNK_SIZE", "128")))
+    raw_schedule = spec.get("schedule", spec)
+    if not isinstance(raw_schedule, dict):
+        raise SystemExit(f"{path}: hybrid schedule must be a dict")
+
+    schedule = {}
+    for op, row in raw_schedule.items():
+        if op in {"format", "default", "int_bits", "int_sym", "chunk_size"}:
+            continue
+        if isinstance(row, dict):
+            items = row.items()
+        elif isinstance(row, list):
+            items = enumerate(row)
+        else:
+            raise SystemExit(
+                f"{path}: schedule[{op!r}] must be a list or block-index dict")
+        for block, value in items:
+            backend = _normalize_backend(value)
+            if backend == default:
+                continue
+            schedule[(str(op), int(block))] = backend
+
+    model.config.sc_hybrid_schedule = schedule
+    model.config.sc_hybrid_default = default
+    model.config.sc_hybrid_int_bits = int_bits
+    model.config.sc_hybrid_int_sym = int_sym
+    model.config.sc_hybrid_chunk_size = chunk_size
+    model.config.sc_hybrid_force_int_bits = force_int_bits
+    model.config.sc_hybrid_path = os.path.abspath(path)
+
+    counts = {}
+    for backend in schedule.values():
+        counts[backend] = counts.get(backend, 0) + 1
+    print(f"[hybrid] loaded {path}: default={default} overrides={counts} "
+          f"int_bits={int_bits} force_int_bits={force_int_bits} "
+          f"sym={int_sym} chunk={chunk_size}")
 
 
 def apply_mp_config_from_env(model) -> None:
     """Load per-row mixed-precision config from ``MP_CONFIG_JSON`` and attach
     it to ``model.config.sc_mp_config``.
 
-    JSON schema (MPConfig, fixed-fraction quantile):
+    Two JSON schemas are accepted:
+
+    1. Fixed-fraction quantile (legacy ``MPConfig``):
 
         {
           "type": "MPConfig",
           "stoc_len_levels": [128, 64, 32],
           "level_fractions": [0.2, 0.5, 0.3]
         }
+
+    2. Calibrated thresholds (``AdaptiveMPConfig``):
+
+        {
+          "type": "AdaptiveMPConfig",
+          "stoc_len_levels": [128, 96, 64],
+          "threshold_table_path": "<safe>__int8_avg91.json"   // relative → resolved
+                                                               // against THIS json's dir
+        }
+
+       The referenced table is produced by
+       ``benchmark/ppl/calibrate_mp_thresholds.py``. The runtime
+       ``stoc_len_levels`` must match the levels recorded in that table.
 
     Unset env or empty path is a no-op (model stays in single-stoc_len mode).
     """
@@ -115,19 +305,49 @@ def apply_mp_config_from_env(model) -> None:
     with open(path) as f:
         spec = json.load(f)
     kind = spec.get("type", "MPConfig")
-    if kind != "MPConfig":
-        raise SystemExit(
-            f"MP_CONFIG_JSON: only MPConfig is wired into scmp_llm today, "
-            f"got type={kind!r}"
+    if kind == "MPConfig":
+        from scmp_kernels.mp import MPConfig
+        mp = MPConfig(
+            stoc_len_levels=[int(x) for x in spec["stoc_len_levels"]],
+            level_fractions=[float(x) for x in spec.get("level_fractions") or []] or None,
         )
-    from scmp_kernels.mp import MPConfig
-    mp = MPConfig(
-        stoc_len_levels=[int(x) for x in spec["stoc_len_levels"]],
-        level_fractions=[float(x) for x in spec.get("level_fractions") or []] or None,
+        model.config.sc_mp_config = mp
+        print(f"[mp] loaded MPConfig from {path}: "
+              f"levels={mp.stoc_len_levels} fractions={mp.level_fractions}")
+        return
+    if kind == "AdaptiveMPConfig":
+        from scmp_kernels.mp import AdaptiveMPConfig
+        table_path = spec["threshold_table_path"]
+        if not os.path.isabs(table_path):
+            table_path = os.path.join(os.path.dirname(os.path.abspath(path)), table_path)
+        # Escape gate (R7): optional wrapper keys. Absent/null escape_gate_k
+        # => gate OFF, byte-identical to the pre-gate loader.
+        esc_k = spec.get("escape_gate_k")
+        mp = AdaptiveMPConfig(
+            stoc_len_levels=[int(x) for x in spec["stoc_len_levels"]],
+            threshold_table_path=table_path,
+            escape_gate_k=None if esc_k is None else float(esc_k),
+            escape_stoc_len=int(spec.get("escape_stoc_len", 128)),
+        )
+        model.config.sc_mp_config = mp
+        n_default = len(mp.operator_default_thresholds)
+        n_bucket = len(mp.bucket_thresholds)
+        dm = getattr(mp, "dispatch_metrics", {}) or {}
+        dm_note = ("" if not dm else " dispatch_metrics=" + ",".join(
+            f"{op}:{name}{'-inv' if sign < 0 else ''}"
+            for op, (name, sign) in sorted(dm.items())))
+        gate_note = ("" if mp.escape_gate_k is None else
+                     f" escape_gate=k{mp.escape_gate_k:g}@sl{mp.escape_stoc_len}"
+                     f"(buckets={len(mp.bucket_escape_thresholds)})")
+        print(f"[mp] loaded AdaptiveMPConfig from {path}: "
+              f"levels={mp.stoc_len_levels} "
+              f"operator_defaults={n_default} buckets={n_bucket}{dm_note}"
+              f"{gate_note}")
+        return
+    raise SystemExit(
+        f"MP_CONFIG_JSON: unknown type={kind!r}. "
+        f"Expected 'MPConfig' or 'AdaptiveMPConfig'."
     )
-    model.config.sc_mp_config = mp
-    print(f"[mp] loaded MPConfig from {path}: "
-          f"levels={mp.stoc_len_levels} fractions={mp.level_fractions}")
 
 
 def describe_mode(model) -> str:

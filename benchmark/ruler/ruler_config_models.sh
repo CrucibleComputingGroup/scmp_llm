@@ -46,6 +46,16 @@ MODEL_SELECT() {
             MODEL_TEMPLATE_TYPE="meta-chat"
             MODEL_FRAMEWORK="hf"
             ;;
+        qwen3-1.7b)
+            MODEL_PATH="Qwen/Qwen3-1.7B"
+            MODEL_TEMPLATE_TYPE="meta-chat"
+            MODEL_FRAMEWORK="hf"
+            ;;
+        qwen3-14b)
+            MODEL_PATH="Qwen/Qwen3-14B"
+            MODEL_TEMPLATE_TYPE="meta-chat"
+            MODEL_FRAMEWORK="hf"
+            ;;
     esac
 
 

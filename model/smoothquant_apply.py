@@ -80,6 +80,28 @@ def calibrate_act_scales(
     return act_scales
 
 
+def _alpha_overrides_from_env() -> Dict[str, float]:
+    """Per-operator SmoothQuant alpha overrides from ``SQ_ALPHA_OVERRIDES``
+    (e.g. ``"down_proj:0.75,up_proj:0.65"``). Keys match the module name's
+    last component. Parsed HERE — inside the one apply function every caller
+    (eval_quant, calibrate_mp_thresholds, apply_smoothquant_from_env) shares —
+    so calibration and eval CANNOT disagree on the smoothing geometry (the
+    known calib==eval footgun). Empty/unset -> {} (global alpha everywhere,
+    byte-identical to the old behavior)."""
+    import os
+    raw = os.environ.get("SQ_ALPHA_OVERRIDES", "").strip()
+    if not raw:
+        return {}
+    out: Dict[str, float] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        op, _, val = part.partition(":")
+        out[op.strip()] = float(val)
+    return out
+
+
 @torch.no_grad()
 def apply_smoothquant_to_model(
     model: nn.Module,
@@ -91,6 +113,10 @@ def apply_smoothquant_to_model(
 
     Returns the number of layers wired.
     """
+    overrides = _alpha_overrides_from_env()
+    if overrides:
+        print(f"[smoothquant] per-op alpha overrides active: {overrides} "
+              f"(default alpha={alpha})")
     n = 0
     for name, mod in model.named_modules():
         if not isinstance(mod, SCLinear):
@@ -98,7 +124,8 @@ def apply_smoothquant_to_model(
         if name not in act_scales:
             continue
         a = act_scales[name].to(mod.weight.device)
-        s = compute_smooth_scales(a, mod.weight.data, alpha=alpha)
+        mod_alpha = overrides.get(name.rsplit(".", 1)[-1], alpha)
+        s = compute_smooth_scales(a, mod.weight.data, alpha=mod_alpha)
         # register_buffer is the canonical way to attach a non-parameter
         # tensor; survives model.to(device) and state_dict round-trips.
         if hasattr(mod, "smooth_scales"):

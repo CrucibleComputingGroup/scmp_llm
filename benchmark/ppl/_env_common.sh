@@ -13,7 +13,10 @@ mkdir -p /scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/tmp
 export TMPDIR=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/tmp
 
 # SC kernel knobs locked in for the MP sweep.
-unset SC_DISABLE_OWEN          # Owen-in-rescale scramble must be enabled.
-export SC_SCRAMBLE_RESCALE=1   # PR #16 path: scramble in rescale, not RNG.
+# (SC_DISABLE_OWEN / SC_SCRAMBLE_RESCALE were removed from the kernel:
+#  scramble-before-rescale is always on; SC_OWEN_MODE=off disables scrambling.)
+# Bitrev mask count M = min(SC_SCRAMBLE_MASKS, 2^sc_prec); kernel default 64.
+# Tables produced before 2026-06-03 (incl. _mp_overnight_xlayer_fix) ran at
+# M=256 — export SC_SCRAMBLE_MASKS=256 to reproduce/patch them.
 
 cd /home/allenjin/Projects/scmp_llm
