@@ -139,6 +139,44 @@ def _normalize_backend(value) -> str:
         "or ViT-style 0/1/2 entries")
 
 
+def apply_attn_smooth_from_env(model) -> None:
+    """Load a per-(operator, layer) contracted-dim rebalance for SC attention.
+
+    Env: ``SC_ATTN_SMOOTH_JSON`` -> {"scales": {"qk:b<N>": [s_0 ... s_{D-1}]}}.
+
+    sc_matmul applies it INSIDE the attention product as (Q/s, K*s) along the
+    contracted head_dim, so sum_d (Q_d/s_d)(K_d s_d) == sum_d Q_d K_d is exactly
+    unchanged while the per-row absmax of BOTH operands moves -- and that absmax
+    is what sets the SC quantization scale. qk/av is ~90% of dispatch rows and
+    the only operator class neither SmoothQuant nor AWQ reaches (both stop at
+    SCLinear), so this is the front-end attention has never had.
+
+    Being applied inside the matmul puts it AFTER RoPE, so every head_dim entry
+    is free; folding the same idea into q_norm/k_norm would be constrained to
+    s[d] == s[d + head_dim/2] by rotate_half and would lose half the DOF.
+
+    Unset (default) leaves ``sc_attn_smooth = None`` and every attention call
+    byte-identical.
+    """
+    import json
+    import os
+    path = os.environ.get("SC_ATTN_SMOOTH_JSON", "").strip()
+    if not path:
+        model.config.sc_attn_smooth = None
+        return
+    with open(path) as f:
+        spec = json.load(f)
+    scales = spec.get("scales", spec)
+    if not isinstance(scales, dict) or not scales:
+        raise SystemExit(
+            f"[attn-smooth] {path} has no 'scales' map; refusing to run a cell "
+            f"that would silently be the unmodified baseline.")
+    model.config.sc_attn_smooth = {str(k): list(v) for k, v in scales.items()}
+    print(f"[attn-smooth] loaded {len(scales)} vectors from {path} "
+          f"(alpha={spec.get('alpha')}, mean |Q| spread="
+          f"{spec.get('mean_q_spread')}, |K|={spec.get('mean_k_spread')})")
+
+
 def apply_hybrid_config_from_env(model) -> None:
     """Load a ViT-style per-(operator, block) backend schedule.
 

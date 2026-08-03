@@ -234,8 +234,10 @@ def build_sc_model(model_path: str, tag: str, *, device_map="auto",
     cfg.sc_prec = 8
     cfg.sc_stoc_len = cycles       # halved space: the value IS the cycle count
     cfg.sc_halve_bipolar_stoc_len = True
-    from loader import apply_hybrid_config_from_env
+    from loader import apply_hybrid_config_from_env, apply_attn_smooth_from_env
     apply_hybrid_config_from_env(model)
+    # qk/av contracted-dim rebalance (SC_ATTN_SMOOTH_JSON). Unset = no-op.
+    apply_attn_smooth_from_env(model)
     if mp_table:
         # Per-row mixed precision: load the calibrated table into sc_mp_config;
         # sc_common's MP dispatch handles per-row stoc_len (uniform path bypassed).

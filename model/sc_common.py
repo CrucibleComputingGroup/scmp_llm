@@ -126,6 +126,11 @@ SC_CONFIG_DEFAULTS = {
     # STE — falling back to sc_stoc_len for unmapped modules. None (default)
     # leaves every path byte-identical to normal inference.
     "sc_group_stoclen": None,
+    # Per-(operator, layer) contracted-dim rebalance for SC ATTENTION:
+    #   sc_attn_smooth["qk:b<N>"] = [s_0 ... s_{head_dim-1}]
+    # Applied inside sc_matmul as (a/s, b*s), so the product is exactly
+    # unchanged while both operands' per-row absmax moves. None = byte-identical.
+    "sc_attn_smooth": None,
     # Optional hybrid backend schedule:
     #   sc_hybrid_schedule[(op_name, block_idx)] = "sc" | "fp" | "int<N>"
     # Loaded by loader.apply_hybrid_config_from_env from a scmp_vit-style JSON.
@@ -302,6 +307,42 @@ def apply_sc_config_defaults(config) -> None:
     for k, v in SC_CONFIG_DEFAULTS.items():
         if not hasattr(config, k):
             setattr(config, k, v)
+
+
+def _k_band_columns(module, band_of_chunk, n_bands: int, chunk_d: int,
+                    residual_width: int, device):
+    """Residual column indices owned by each K-band, plus each band's width.
+
+    Chunks stay in ASCENDING order inside a band, which puts the short tail
+    chunk last in whichever band owns it — the only ordering under which the
+    gathered slice re-chunks to exactly the same groups the unsplit call used.
+
+    Cached on the module: the band map is fixed for a module's lifetime, and
+    rebuilding index tensors on every forward would add a host->device copy per
+    band per layer.
+    """
+    cache = getattr(module, "_sc_k_band_cache", None)
+    key = (tuple(band_of_chunk), n_bands, chunk_d, residual_width, str(device))
+    if cache is not None and cache[0] == key:
+        return cache[1], cache[2]
+    cols_per_band, width_per_band = [], []
+    for b in range(n_bands):
+        cols = []
+        for chunk_idx, band in enumerate(band_of_chunk):
+            if band != b:
+                continue
+            start = chunk_idx * chunk_d
+            cols.extend(range(start, min(start + chunk_d, residual_width)))
+        width_per_band.append(len(cols))
+        cols_per_band.append(
+            torch.tensor(cols, dtype=torch.long, device=device) if cols
+            else torch.empty(0, dtype=torch.long, device=device))
+    if sum(width_per_band) != residual_width:
+        raise ValueError(
+            f"K-band columns cover {sum(width_per_band)} of {residual_width} "
+            f"residual channels; the band map does not partition the residual.")
+    module._sc_k_band_cache = (key, cols_per_band, width_per_band)
+    return cols_per_band, width_per_band
 
 
 def _channel_index_tensor(indices, width: int, device) -> torch.Tensor:
@@ -577,28 +618,113 @@ class SCLinear(nn.Linear):
                 x_dispatch = x_flat
                 w_dispatch = w_fp32
                 smooth_dispatch = smooth
-            _record_assignment(assignment, op_name, mac_scale=residual_scale)
-            for sl, indices in assignment.level_row_indices.items():
-                if residual_scale <= 0.0:
-                    continue
-                if indices.numel() == 0:
-                    continue
-                if sl <= 0:
-                    if protected_idx.numel() == 0:
-                        out_flat[indices] = 0.0
-                    continue
-                x_sub = x_dispatch.index_select(0, indices).contiguous()
-                out_sub = _sc_matmul(
-                    x_sub, w_dispatch,
-                    granularity=sc_gran, mode=sc_mode,
-                    sc_prec=sc_prec, stoc_len=int(sl), chunk_d=sc_chunk_d,
-                    halve_bipolar_stoc_len=sc_halve,
-                    smooth_scales=smooth_dispatch,
-                )
-                if protected_idx.numel() > 0:
-                    out_flat[indices] += out_sub
-                else:
-                    out_flat[indices] = out_sub
+            k_bands = None
+            if AdaptiveMPConfig is not None and isinstance(mp_config, AdaptiveMPConfig):
+                k_bands = mp_config.get_k_bands(
+                    op_name, block_idx,
+                    getattr(config, "_sc_total_blocks", None))
+            if k_bands is not None and residual_scale > 0.0:
+                # ---- Phase 3: per-group (K-band) stream lengths ------------
+                # Same rung index per row as the per-row parent; band b runs
+                # that rung at its own length. Bands partition the residual
+                # into whole quantization chunks, so each chunk keeps the exact
+                # scale and Owen mask it would have had in the unsplit call
+                # (the kernel builds its RNG tables over chunk_d dims and
+                # reuses them for every chunk, so a chunk relocated by a
+                # multiple of chunk_d is numerically unchanged).
+                band_of_chunk, band_ladders = k_bands
+                if protected_idx.numel() == 0:
+                    # bands accumulate, so the buffer must start at zero
+                    out_flat = torch.zeros_like(out_flat)
+                # Band count is PER OPERATOR, read off this operator's own
+                # ladder set rather than a global constant: narrow projections
+                # (~19 residual chunks, >=2 chunks per band) cap around 9 bands
+                # while down_proj (71 chunks) can run 16+, and forcing one
+                # global count silently drops every narrow op out of the K-band
+                # path entirely.
+                n_bands_op = len(band_ladders)
+                cols_per_band, width_per_band = _k_band_columns(
+                    self, band_of_chunk, n_bands_op,
+                    int(mp_config.k_band_chunk_d), x_dispatch.shape[1],
+                    x_dispatch.device)
+                # get_levels, NOT classify_level_values: the latter APPENDS the
+                # escape length as an extra dispatch index when the gate is on
+                # and escape_stoc_len is not already a rung, which would run the
+                # loop one index past every band ladder. The escape slot is
+                # handled explicitly below instead.
+                levels = mp_config.get_levels(
+                    operator=op_name, block_idx=block_idx,
+                    total_blocks=getattr(config, "_sc_total_blocks", None))
+                n_rungs = len(levels)
+                if any(len(lad) != n_rungs for lad in band_ladders):
+                    raise ValueError(
+                        f"K-band ladder length mismatch on {op_name} block "
+                        f"{block_idx}: row ladder has {n_rungs} rungs, bands "
+                        f"have {[len(l) for l in band_ladders]}. The row's rung "
+                        f"index indexes every band ladder, so they must agree.")
+                esc_len = int(getattr(mp_config, "escape_stoc_len", 0) or 0)
+                residual_width = max(int(x_dispatch.shape[1]), 1)
+                for b in range(n_bands_op):
+                    cols = cols_per_band[b]
+                    if cols.numel() == 0:
+                        continue
+                    x_band = x_dispatch.index_select(1, cols).contiguous()
+                    w_band = w_dispatch.index_select(1, cols).contiguous()
+                    smooth_band = (smooth_dispatch.index_select(0, cols).contiguous()
+                                   if smooth_dispatch is not None else None)
+                    # MAC share of this band within the residual. macs is
+                    # linear in d_in for every linear, so a column fraction IS
+                    # the exact MAC fraction; summing over bands reproduces
+                    # residual_scale, so the child's denominator equals the
+                    # parent's and realized_flop_avg_sl stays comparable.
+                    band_scale = residual_scale * (
+                        float(width_per_band[b]) / float(residual_width))
+                    # rung index n_rungs is the escape gate's out-of-ladder
+                    # slot; it runs at escape_stoc_len in EVERY band, so the
+                    # gate contributes identically to parent and child.
+                    for k in range(n_rungs + 1):
+                        if k < n_rungs:
+                            sl = int(band_ladders[b][k])
+                        elif esc_len > 0:
+                            sl = esc_len
+                        else:
+                            continue
+                        rows = (assignment.row_levels == k).nonzero(
+                            as_tuple=True)[0]
+                        if rows.numel() == 0 or sl <= 0:
+                            continue
+                        out_flat[rows] += _sc_matmul(
+                            x_band.index_select(0, rows).contiguous(), w_band,
+                            granularity=sc_gran, mode=sc_mode,
+                            sc_prec=sc_prec, stoc_len=sl, chunk_d=sc_chunk_d,
+                            halve_bipolar_stoc_len=sc_halve,
+                            smooth_scales=smooth_band,
+                        )
+                        _record_stoc_len(sl, int(rows.numel()), op=op_name,
+                                         mac_scale=band_scale)
+            else:
+                _record_assignment(assignment, op_name, mac_scale=residual_scale)
+                for sl, indices in assignment.level_row_indices.items():
+                    if residual_scale <= 0.0:
+                        continue
+                    if indices.numel() == 0:
+                        continue
+                    if sl <= 0:
+                        if protected_idx.numel() == 0:
+                            out_flat[indices] = 0.0
+                        continue
+                    x_sub = x_dispatch.index_select(0, indices).contiguous()
+                    out_sub = _sc_matmul(
+                        x_sub, w_dispatch,
+                        granularity=sc_gran, mode=sc_mode,
+                        sc_prec=sc_prec, stoc_len=int(sl), chunk_d=sc_chunk_d,
+                        halve_bipolar_stoc_len=sc_halve,
+                        smooth_scales=smooth_dispatch,
+                    )
+                    if protected_idx.numel() > 0:
+                        out_flat[indices] += out_sub
+                    else:
+                        out_flat[indices] = out_sub
         else:
             # UNIFORM linear (no MP / STE / group_map). Under halve the level is
             # in halved space (cap 2**(sc_prec-1)); clamp to that cap so the config
@@ -705,6 +831,38 @@ def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, n_kv * n_rep, slen, head_dim)
 
 
+def _qk_smooth_scales(config, operator, block_idx, head_dim, device, dtype):
+    """Per-(operator, layer) contracted-dim rebalance vector for SC attention.
+
+    ``config.sc_attn_smooth`` maps "qk:b<N>" (or "qk" for a shared vector) to a
+    length-head_dim list. sc_matmul applies it as (a/s, b*s) along the
+    contracted dim, so the product is exactly unchanged while the per-row absmax
+    of BOTH operands moves -- and the per-row absmax is what sets the SC
+    quantization scale. qk/av is ~90% of dispatch rows and is the ONLY operator
+    class no PTQ front-end reaches (SmoothQuant and AWQ both stop at SCLinear),
+    so this is the transform attention has never had.
+
+    None (default) leaves every attention call byte-identical.
+    """
+    table = getattr(config, "sc_attn_smooth", None)
+    if not table or operator is None:
+        return None
+    vals = table.get(f"{operator}:b{block_idx}") or table.get(operator)
+    if vals is None:
+        return None
+    t = torch.as_tensor(vals, dtype=torch.float32, device=device)
+    if t.numel() != head_dim:
+        raise ValueError(
+            f"sc_attn_smooth['{operator}:b{block_idx}'] has {t.numel()} "
+            f"entries, expected head_dim={head_dim}. A wrong-length vector "
+            f"would silently rescale the wrong axis.")
+    if not bool(torch.isfinite(t).all()) or bool((t <= 0).any()):
+        raise ValueError(
+            f"sc_attn_smooth['{operator}:b{block_idx}'] must be finite and "
+            f"strictly positive (it is divided by).")
+    return t
+
+
 def _sc_attention_matmul_ab_t(
     a: torch.Tensor,
     b: torch.Tensor,
@@ -717,8 +875,21 @@ def _sc_attention_matmul_ab_t(
     operator: Optional[str] = None,
     block_idx: Optional[int] = None,
     total_blocks: Optional[int] = None,
+    smooth_scales: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """4D-aware wrapper around sc_matmul, computes ``a @ b.T``.
+
+    ``smooth_scales`` is a length-K vector applied INSIDE sc_matmul as
+    ``(a / s, b * s)`` along the CONTRACTED dim, so sum_d (a_d/s_d)(b_d s_d)
+    == sum_d a_d b_d and the product is exactly invariant. It reshapes the
+    per-row absmax of BOTH operands, which is the quantity that sets SC
+    reconstruction error -- attention is the one operator class that has never
+    received any calibrated transform (neither SmoothQuant nor AWQ reaches it;
+    both stop at SCLinear), so this is the front-end that qk/av never had.
+
+    Applied after RoPE (it lives inside the matmul), so unlike a fold into
+    q_norm/k_norm it carries NO rotate_half pair constraint: all K dims are
+    free, not K/2.
 
     a: (B, H, N, K), b: (B, H, M, K) -> (B, H, N, M).
 
@@ -811,6 +982,7 @@ def _sc_attention_matmul_ab_t(
                         granularity="per_row", mode=mode,
                         sc_prec=sc_prec, stoc_len=int(sl),
                         halve_bipolar_stoc_len=halve_bipolar_stoc_len,
+                        smooth_scales=smooth_scales,
                     )
                     out3[bh, indices] = out_sub
             return out3.reshape(B, H, N, M).to(orig_dtype)
@@ -841,6 +1013,7 @@ def _sc_attention_matmul_ab_t(
                     granularity="per_row", mode=mode,
                     sc_prec=sc_prec, stoc_len=int(sl),
                     halve_bipolar_stoc_len=halve_bipolar_stoc_len,
+                    smooth_scales=smooth_scales,
                 )
                 out3[bh, indices] = out_sub
         return out3.reshape(B, H, N, M).to(orig_dtype)
@@ -865,6 +1038,7 @@ def _sc_attention_matmul_ab_t(
         granularity="per_row", mode=mode,
         sc_prec=sc_prec, stoc_len=call_stoc_len,
         halve_bipolar_stoc_len=halve_bipolar_stoc_len,
+        smooth_scales=smooth_scales,
     )
     return out3.reshape(B, H, N, M).to(orig_dtype)
 
@@ -951,6 +1125,9 @@ def sc_eager_attention_forward(
             operator="qk",
             block_idx=block_idx,
             total_blocks=total_blocks,
+            smooth_scales=_qk_smooth_scales(
+                config, "qk", block_idx, query.shape[-1],
+                query.device, query.dtype),
         ) * scaling
     else:
         attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
