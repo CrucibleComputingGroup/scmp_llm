@@ -21,12 +21,19 @@
 > earned. llama8B t96 is the mirror: PPL flat (20× below the noise floor) but
 > −7.6% compute ⇒ **−2.13%** cost-adjusted, a real win a strict iso-cost gate
 > would have hidden. Noise floor sd 0.0069; |Δ| < ~0.014 is not a result.
-> ⚠ **REPRODUCIBILITY GAP.** `benchmark/ppl/mp_per_row_chunk_calib.py` is
-> UNTRACKED, and `KB_JOB=prccalib` today emits the `iso2` variant, which was
-> measured and LOST to the deployed v7 (4B t32 cost-adjusted −2.87% vs −3.72%).
-> The 16 v7 tables on Turbo are valid and wire-gated but **cannot be regenerated
-> from source**. Never calibrate a new cell and label it `_v7` —
-> `run_prc_ppl.sbatch` defaults `KB_TBL=v7` and will load it silently.
+> ⚠ **v7 vs iso2 = BUDGET SOURCE, not solver quality** (corrected 2026-08-04; an
+> earlier note in this block calling it a "reproducibility gap / blocker" was
+> WRONG). Without `--parent-trace` the prc calibrator falls back to the 256-row
+> calibration sample, which OVERESTIMATES the parent budget by 9–23% — that is
+> how the v7 tables were made, so v7 children overspend and partly BUY their
+> wins. `--parent-trace` (= `iso2`) is the FIX, and loses raw PPL only because it
+> stops buying compute. v7 is reproducible (omit the flag) but should not be.
+> **Consequence:** the deployed per-(row,chunk) cells are sample-budgeted and
+> overspend (4B t32 34.97 vs parent 33.72); this is disclosed in the manifest's
+> `realized_flop_avg_sl` / `cost_adjusted_value_pct`. Read the value column, not
+> the raw delta. Never label a new calibration `_v7` — `run_prc_ppl.sbatch`
+> defaults `KB_TBL=v7` and would load it silently.
+> Separate real gap: `benchmark/ppl/mp_per_row_chunk_calib.py` is UNTRACKED.
 > **P1 (pooled loss-weighted σ) REFUTED** — pre-registration + full results in
 > `benchmark/ppl/kbands/PREREG_LOSS_WEIGHTED_OBJECTIVE.md`. Allocation is ~96%
 > exhausted (deployable tracks the per-group oracle within 0.8–1.6pp) yet σ

@@ -2416,3 +2416,34 @@ story 4B should have won. Two separable hypotheses remain: **H-probe**
 model-dependent sign, like qk). Cheapest discriminator = re-probe 4B with
 paired / common-random-number draws + more windows; if the ratio stabilises and
 P1 STILL loses on 4B, H-sign wins and this whole direction is dead.
+
+## ══ 2026-08-04 RETRACTION — the "calibrator blocker" was my error ══
+
+I claimed (in PREREG section 8, HANDOFF pitfall 8, and the scmp_llm CLAUDE.md
+status block) that the deployed v7 tables "cannot be regenerated from source"
+and that this BLOCKED new algorithm work. **Both halves are wrong.**
+
+* **v7 is reproducible**: omit `--parent-trace`. `mp_per_row_chunk_calib.py`
+  (~line 448) then takes `par_targets` from the calibration-sample means, which
+  is exactly how v7 was built. I inferred "refuses by construction" from the
+  iso-cost guard's wording without reading the budget path above it.
+* **`iso2` is the BUG FIX, not a handicap.** The 256-row sample OVERESTIMATES
+  the parent budget by 9-23% (4B t32 31.96 vs true 26.09; 14B t32 38.97 vs
+  29.93), so v7 children got a too-generous budget. That is pitfall 1 and this
+  ledger's own "the two LARGE wins are partly PURCHASED".
+* The residual cost-adjusted gap (v7 -3.72% vs iso2 -2.87% on 4B t32) is a
+  2-point sensitivity extrapolated over a ~10% cost swing — inside its own
+  uncertainty, NOT evidence that v7 allocates better.
+* The blocker never applied to P1 regardless: P1 used
+  `calibrate_mp_thresholds.py`, not `prccalib`.
+
+**Standing guidance:** calibrate new levers WITH `--parent-trace`, judge
+cost-adjusted, and do not restore the sample-budget path.
+
+**What remains TRUE:** the archive's per-(row,chunk) cells are sample-budgeted
+and overspend (4B t32 34.97 vs parent 33.72). The manifest discloses it in
+`realized_flop_avg_sl` / `cost_adjusted_value_pct` — the deliberate call to
+attribute rather than gate. Anyone quoting the raw `vs parent` column without
+the `value` column is over-claiming. If the archive needs to be defensible on a
+strict iso-cost basis for the paper, the prc cells must be recalibrated with
+`--parent-trace` and re-evaluated; expect the headline wins to SHRINK.

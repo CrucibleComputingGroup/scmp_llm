@@ -116,15 +116,34 @@ REFUTED if any of:
 Project rule: a lever must show genuine upside on all four models to ship; a
 single-model win goes inside a larger algorithm, not into the archive.
 
-## 8. BLOCKER — resolve before running this
+## 8. BLOCKER — RETRACTED 2026-08-04, this section was WRONG
 
-`prccalib` today emits the `iso2` variant, measurably worse than the deployed v7
-(4B t32 cost-adjusted -2.87% vs -3.72%). Any new lever calibrated now starts
-from a handicapped parent and cannot be cleanly attributed. The v7 solve is not
-reproducible from source (`mp_per_row_chunk_calib.py` is UNTRACKED; the current
-file refuses by construction to emit a non-iso-cost table). Fix the calibrator
-baseline first, or run P1 strictly against an in-wave parent calibrated the same
-way.
+~~`prccalib` emits `iso2`, worse than v7; the v7 solve is not reproducible and
+this blocks new levers.~~ **Wrong on both counts.**
+
+* **v7 IS reproducible**: omit `--parent-trace`. `mp_per_row_chunk_calib.py`
+  then falls back to the calibration-sample budget, which is exactly how v7 was
+  made. Nothing "refuses by construction" — I inferred that from the guard's
+  wording without reading the budget path.
+* **`iso2` is not a handicap, it is the BUG FIX.** The 256-row sample
+  OVERESTIMATES the parent budget by 9-23%, so v7 children were calibrated
+  against a too-generous budget and partly BUY their wins (HANDOFF pitfall 1;
+  ledger "the two LARGE wins are partly PURCHASED"). `--parent-trace` is
+  correct; `iso2` loses raw PPL because it is no longer buying compute.
+* The residual cost-adjusted gap (v7 -3.72% vs iso2 -2.87%) should NOT be read
+  as v7 having a better allocation: it is a 2-point sensitivity extrapolated
+  across a ~10% cost swing, well inside its own uncertainty.
+
+**There is therefore no blocker.** Calibrate new levers WITH `--parent-trace`
+and judge cost-adjusted. Note this section never applied to P1 anyway: P1 used
+`calibrate_mp_thresholds.py`, not `prccalib`.
+
+**What IS true and still matters:** the deployed archive's per-(row, chunk)
+cells are built on sample-budgeted v7 tables and therefore overspend (4B t32
+34.97 vs parent 33.72). The manifest discloses this in `realized_flop_avg_sl`
+and `cost_adjusted_value_pct` — a deliberate call to attribute rather than gate,
+since a binary iso-cost gate was discarding real signal. Read the value column,
+not the raw delta.
 
 ## 9. Cost
 
