@@ -96,7 +96,12 @@ mkdir -p "$OUT"
 # The table variant is part of the TAG. Without it an iso-cost re-run
 # OVERWRITES the original prc trace and destroys the evidence for the first
 # result -- including the overspend that motivated the re-run.
-TAG="${KB_MODEL}_t${KB_TARGET}_${KB_ARM}${KB_TBL:+_${KB_TBL}}"
+# KB_TAGSUFFIX keeps a variant's trace out of the deployed cell's namespace.
+# The archive builder globs `prcppl_<model>_t<target>_<arm>_<jobid>.out` and takes
+# the NEWEST by mtime, so an unsuffixed variant run would silently SHADOW the
+# archived result and corrupt the next rebuild. Launch variants with a job name
+# that does not start with `prcppl_` as well.
+TAG="${KB_MODEL}_t${KB_TARGET}_${KB_ARM}${KB_TBL:+_${KB_TBL}}${KB_TAGSUFFIX:+_${KB_TAGSUFFIX}}"
 
 # Environment mirrors the archived parent runtime.json EXACTLY
 # (owen bitrev, masks 64, sc_prec 8, halve, INT7 sym hybrid, chunk 128),
@@ -107,7 +112,10 @@ export HF_DATASETS_CACHE="$HF_CACHE/datasets" HF_HUB_CACHE="$HF_CACHE/hub"
 export SC_OWEN_MODE=bitrev SC_SCRAMBLE_MASKS=64
 export QUANT_CONFIG=mp
 export MP_CONFIG_JSON="$CFG"
-export SC_HYBRID_CONFIG_JSON="$PARENT/hybrid_config.json"
+export SC_HYBRID_CONFIG_JSON="${KB_HYBRID:-$PARENT/hybrid_config.json}"
+[[ -f "$SC_HYBRID_CONFIG_JSON" ]] || {
+  echo "[prc-ppl] missing hybrid config $SC_HYBRID_CONFIG_JSON" >&2; exit 2; }
+echo "[prc-ppl] hybrid mask: $SC_HYBRID_CONFIG_JSON"
 export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
 export FRONTEND="${KB_FRONTEND:-awq}"
 export MODEL_PATH="$HF"
