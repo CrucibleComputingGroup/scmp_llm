@@ -2527,6 +2527,42 @@ def _rankdata(x: np.ndarray) -> np.ndarray:
     return ranks
 
 
+def _pool_group_weights(raw: dict, mode: str = "none") -> dict:
+    """Pool raw per-(op, layer-bucket) ΔLoss before normalization.
+
+    The knock-down probe estimates 36 weights (9 ops x 4 buckets) at per-cell
+    SNR ~ 1: on 4B, 22% of the raw ΔLoss entries are NEGATIVE, which is
+    impossible in expectation (cutting precision cannot reduce loss), so that
+    rate is a direct read-out of the noise. The operator-level MEAN is
+    nonetheless stable and recovers the attention mispricing the forensics
+    measured independently (attention/linear ~ 6.4x, forensics band 5-20x).
+    Pooling trades resolution for SNR and is the whole point of the lever --
+    see PREREG_LOSS_WEIGHTED_OBJECTIVE.md.
+
+      none         36 weights, per (op, bucket)      [P3 -- noise-dominated]
+      operator      9 weights, pooled over buckets   [P2]
+      attn_linear   2 weights, {qk,av} vs the rest   [P1 -- highest SNR]
+
+    Pools the RAW value (mean over the pool) and assigns it back to every
+    member, so the downstream floor/normalize path is untouched.
+    """
+    if mode == "none":
+        return dict(raw)
+    if mode == "operator":
+        key = lambda op: op
+    elif mode == "attn_linear":
+        key = lambda op: "attn" if op in ("qk", "av") else "linear"
+    else:
+        raise ValueError(f"unknown --measure-pool {mode!r}")
+    sums: dict = {}
+    for (op, lb), v in raw.items():
+        k = key(op)
+        s = sums.setdefault(k, [0.0, 0])
+        s[0] += float(v); s[1] += 1
+    means = {k: (s[0] / s[1] if s[1] else 0.0) for k, s in sums.items()}
+    return {(op, lb): means[key(op)] for (op, lb) in raw}
+
+
 def _normalize_group_weights(raw: dict, floor_frac: float = 0.1) -> dict:
     """Floor ΔL at a small positive fraction of the mean (so no group is fully
     starved by measurement noise / negative ΔL), then normalize to mean 1 so the
@@ -2663,6 +2699,14 @@ def _build_parser():
                         "each normalized in their OWN pool (never a shared "
                         "attention weight). Off (default) = linear-only, "
                         "byte-identical to shipped fisher.")
+    p.add_argument("--measure-pool", dest="measure_pool",
+                   choices=["none", "operator", "attn_linear"], default="none",
+                   help="Pool the raw per-(op,bucket) ΔLoss before flooring and "
+                        "normalizing. 'none' = 36 weights (noise-dominated: 22%% "
+                        "of raw entries are negative on 4B); 'operator' = 9; "
+                        "'attn_linear' = 2 ({qk,av} vs rest, highest SNR). "
+                        "Only affects --cross-layer-weight measured/measured_marg. "
+                        "See PREREG_LOSS_WEIGHTED_OBJECTIVE.md.")
     p.add_argument("--cross-layer-weight", dest="cross_layer_weight",
                    choices=["uniform", "measured", "measured_marg", "grad_group",
                             "fisher", "measured_curve", "int_swap"],
@@ -3599,16 +3643,35 @@ def main():
             baseline_sl=measure_baseline_sl, probe_sl=measure_probe_sl,
             n_windows=args.measure_windows, ctx=args.measure_ctx, device=device,
         )
-        norm_w = _normalize_group_weights(raw_w, floor_frac=args.measure_floor_frac)
+        neg = sum(1 for v in raw_w.values() if v < 0)
+        print(f"[calib] raw ΔLoss: {neg}/{len(raw_w)} entries NEGATIVE "
+              f"({neg/max(1,len(raw_w))*100:.0f}%) — impossible in expectation, "
+              f"so this is the probe's noise read-out.")
+        pooled_w = _pool_group_weights(raw_w, args.measure_pool)
+        if args.measure_pool != "none":
+            byop: dict = {}
+            for (op, _lb), v in pooled_w.items():
+                byop[op] = v
+            att = [v for o, v in byop.items() if o in ("qk", "av")]
+            lin = [v for o, v in byop.items() if o not in ("qk", "av")]
+            if att and lin and sum(lin):
+                ratio = (sum(att)/len(att)) / (sum(lin)/len(lin))
+                print(f"[calib] --measure-pool {args.measure_pool}: "
+                      f"attention/linear ΔLoss ratio = {ratio:.2f}x "
+                      f"(forensics band 5-20x; ~6.4x expected on 4B)")
+        norm_w = _normalize_group_weights(pooled_w, floor_frac=args.measure_floor_frac)
         calibrator.group_weights = norm_w
         measured_info = {
             "source": cross_layer_weight,
+            "measure_pool": args.measure_pool,
             "baseline_sl": measure_baseline_sl,
             "probe_sl": measure_probe_sl,
             "marg_frac": (args.measure_marg_frac if is_marg else None),
             "floor_frac": args.measure_floor_frac,
             "baseline_loss": L0,
+            "raw_negative_frac": neg / max(1, len(raw_w)),
             "raw_delta_loss": {f"{op}:l{lb}": float(v) for (op, lb), v in raw_w.items()},
+            "pooled_delta_loss": {f"{op}:l{lb}": float(v) for (op, lb), v in pooled_w.items()},
             "normalized_weights": {f"{op}:l{lb}": float(v) for (op, lb), v in norm_w.items()},
         }
     elif cross_layer_weight == "grad_group":

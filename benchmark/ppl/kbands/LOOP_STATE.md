@@ -1414,3 +1414,1005 @@ two screens built that way. **Do not act on it without testing all four models.*
 Practical consequence: 14B already passes 1.05x at t48 unaided (1.0311), so it
 needs nothing from us. Deprioritise it and spend cells on 30B/4B t32, where the
 gaps are real.
+
+## ★★★★★ 2026-08-03 — REAL-ACTIVATION CEILING: the synthetic OVERSTATED per-chunk
+
+Same exact water-fill, but on activations captured from the deployed model
+(down_proj block 12, via build_sc_model so smoothing/mask/protected match):
+
+| policy | 4B real | 14B real | 4B SYNTHETIC (old) |
+|---|---|---|---|
+| uniform | 0% | 0% | 0% |
+| per-row (today's MP) | −5.1% | −5.2% | −1.3% |
+| **per-chunk (what K-bands do)** | **−6.5%** | **−3.9%** | −31.4% |
+| **per-(row, chunk)** | **−36.8%** | **−37.6%** | −44.8% |
+
+**The synthetic overstated per-chunk by ~5x** (−31.4% vs −6.5%) because it was
+built with strong STATIC channel structure. Real activations have weak
+static-in-K structure; nearly all the value is ROW-ADAPTIVITY inside the chunk.
+per-(row,chunk) survives the reality check (−37% vs −45%), per-chunk does not.
+
+### THIS EXPLAINS THE 14B REGRESSION
+On 14B, per-chunk (−3.9%) is WORSE than per-row (−5.2%). A static chunk
+allocation is actively harmful there — which is exactly why K-bands regress 14B
+(+0.12% t32, +0.33% t48). Not a mystery any more, and not a tuning failure.
+
+### AND IT SIZES THE REMAINING WORK
+K-bands deliver −1.44% PPL because they are a STATIC per-chunk method and
+per-chunk is worth only −4 to −6% on real data. The unbuilt input-adaptive
+per-(row,chunk) policy is worth −37%, about **6x more**. The search space swept
+so far (~30 configs of alpha x band-count x hot_frac) is not too small so much
+as the WRONG SPACE: every configuration in it is static.
+
+**Next build is unambiguous: per-(row,chunk) dispatch.** The statistic it needs
+(per-chunk amax) is already computed as the group quantization scale, so it is
+free at runtime.
+
+## ★★★★★ 2026-08-03 — the GPU kernel ALREADY makes per-(row,chunk) free
+
+I had estimated per-(row,chunk) dispatch would cost ~5x kernel launches. WRONG —
+that assumed a per-cycle loop this kernel does not have.
+
+`build_cum_indicator_kernel`: `cum[d,k,v] = |{i<k : rng_b[d,i] <= v}|` — a PREFIX
+SUM over the cycle axis. `enable_matmul_tiled_kernel` does ONE O(1) lookup per
+(row,col,d); its inner loop runs over D and **never over stoc_len**. Runtime is
+independent of stream length (CLAUDE.md: 256->16 changes wall-clock ~4%).
+
+### What that buys
+1. **cum table: NO CHANGE.** Prefix sums nest, so the length-L table is the first
+   L rows of the L_max=128 table. Verified the one transform that could break
+   nesting: `_owen_scramble` is a per-dim XOR mask (position-independent) and the
+   rescale is elementwise. Deployed config (halve=1 => grid_levels=128 !=
+   base=256) always takes the rescale path, so nesting holds uniformly.
+   This SIMPLIFIES current code, which LRU-caches one cum per stoc_len.
+2. **k_table (D,V) -> (R,D,V)**, one slice per rung. 5 x 64KB = 320KB, fits L2.
+   `k_table[d,ba]` -> `k_table[rung[m],d,ba]`: same load count, per-row offset.
+3. **scale scalar -> per-row vector**, `acc *= scale_m[:,None]`.
+4. **Per-CHUNK variation is free**: the D-chunk loop is ALREADY host-side
+   (`for d_start in range(0,D,chunk_d)` in `_sc_matmul_bipolar_mlp_chunked`),
+   one launch per chunk — 76 for 4B down_proj, not 1. Per-chunk rungs are just a
+   different slice per iteration.
+5. **The dispatch statistic is already computed in the loop**: `scale_a` from
+   `fused_quantize_bipolar_perrow(a_chunk,...)` IS the per-(row,chunk) amax.
+
+No extra launches, no atomics, no row sorting, no extra FLOPs. => there is no
+wall-clock reason to restrict per-(row,chunk) to selected operators.
+
+## ★★★★★ 2026-08-03 — TWO OPERATOR CLASSES (prediction made, then confirmed)
+
+Predicted from the q_proj outlier: post-LN ops (q/k/v/gate/up) take the
+hidden state as input and should carry PERSISTENT CHANNEL outliers (what
+SmoothQuant/AWQ target) => static per-chunk structure. Intermediate ops
+(o_proj, down_proj) take post-SiLU / post-attention inputs whose outliers are
+TOKEN-dependent => row structure. Measured on real activations, t32:
+
+| op (4B) | per-row | per-chunk | per-(row,chunk) | chunk captures |
+|---|---|---|---|---|
+| k_proj    | -6.6% | -72.2% | -74.5% | **97%** |
+| q_proj    | -7.2% | -68.4% | -70.8% | **97%** |
+| v_proj    | -3.6% | -55.6% | -59.0% | **94%** |
+| gate_proj | -3.5% | -31.9% | -36.8% | **87%** |
+| up_proj   | -0.7% | -23.3% | -28.5% | **82%** |
+| o_proj    | -2.0% | -15.2% | -40.3% | 38% |
+| down_proj | -5.1% |  -6.5% | -36.8% | **18%** |
+
+14B q_proj transfers: -1.2 / -39.2 / -47.4 (chunk captures 83%).
+CONFIRMED: post-LN 82-97%, intermediate 10-38%. Clean separation.
+
+### The uncomfortable part
+**Per-row is the WRONG AXIS for 5 of the 7 linear operators.** On up_proj it
+buys -0.7% where per-chunk buys -23.3%. Today's deployed MP dispatches per-ROW
+on all of them. per-(row,chunk) / per-row ratio runs 7x (down_proj) to 41x
+(up_proj) -- EVERY linear operator, not just the one bands were tuned on.
+
+### Why K-bands did not collect this
+Bands ARE static per-chunk, so they should have paid on q/k/v/gate/up. Open
+question, two candidates: (a) band COUNT too coarse -- q_proj has 20 chunks and
+the deployed cap gave it far fewer bands than the 20 the oracle used; (b) the
+band error curves pool rows, so the allocator may never see channel structure.
+Worth checking before assuming per-(row,chunk) is the only route.
+
+## OPERATIONAL HAZARD — editing kernels while jobs run (2026-08-03)
+
+Job 56007115 died with `dynamic_func() missing 2 required positional arguments:
+'BLOCK_N' and 'BLOCK_K'` and it was NOT a code bug -- all three launch sites
+were consistently patched. Cause: `scmp_kernels` is an EDITABLE install and
+`@triton.jit` reads the kernel source LAZILY via inspect at FIRST LAUNCH, not
+at import. A job that imported the old caller into memory, then first launched
+the kernel after a signature edit landed on disk, binds the NEW signature to
+the OLD call. Any kernel-signature edit therefore kills in-flight jobs at an
+arbitrary later moment, with an error that reads like a real bug.
+
+Rule: before editing a kernel SIGNATURE, either drain the queue or accept that
+running cells must be re-run. Adding kwargs with defaults is safe; adding
+POSITIONAL params is not.
+
+## 2026-08-03 — per-(row,chunk) KERNEL BUILT AND VERIFIED (uncommitted)
+
+15/15 tests pass (`benchmark/ppl/kbands/test_per_row_chunk_len.py`, job 56007665).
+
+### Changes
+* `scmp_kernels/sc/kernels.py` — `enable_matmul_tiled_kernel` gains
+  `rung_ptr`/`row_scale_ptr` + `PER_ROW_LEN: tl.constexpr` (default False, so
+  the existing path compiles unchanged); `k_table` becomes an (R,D,V) stack via
+  `_get_cached_k_table_stack`; `_sc_matmul_bipolar_mlp_chunked` takes
+  `rung_table` (N, n_chunks) + `level_lens`.
+* `scmp_kernels/sc/matmul.py` — `rung_table`/`level_lens` on the public
+  `sc_matmul`; rejected on every path that would ignore them; **trace emits one
+  record per rung** instead of one call-level `stoc_len`.
+* `scmp_kernels/mp/config.py` — `per_row_chunk` section + `get_per_row_chunk`.
+* `model/sc_common.py` — `per_row_chunk_rungs()` + the SCLinear branch.
+
+### What the tests establish
+* Uniform rung r is **BIT-IDENTICAL** to a plain call at L_r, for all 5 rungs
+  => the prefix-nesting argument is empirically confirmed, not just argued.
+* Mixed per-row is bit-identical to a row-wise reference; per-chunk matches
+  summed single-chunk references.
+* **Trace prices the allocation**: mean L traced 55.500 == intended 55.500
+  (L_max 128). Without this a t32 cell would have been billed at 128.
+* 4 guards fire: chunk_d=0, out-of-range rung, wrong-shape table, and the
+  unscrambled-L_max case where cum would stop nesting.
+
+### Dispatch is ONE call, not K
+The per-row path gathers rows and calls sc_matmul once per rung. The
+per-(row,chunk) path passes a rung table and calls ONCE, so it issues FEWER
+launches than today's MP while allocating on a 76x finer grid.
+
+### OPEN — the gate on all of this
+Policies 1-3 in the ceiling are ORACLES (water-fill on measured error, needs
+the FP reference at runtime). Deployment sees only the per-(row,chunk) absmax.
+Policy 4 (`amax THRESHOLD`) was added to measure that gap; jobs 56007743/44/55/56
+on 4B down/q/up_proj + 14B down_proj. If the proxy captures little of the -37%,
+the statistic is wrong and the ladder needs a different one BEFORE any
+calibration pipeline is built on it.
+
+## ⚠ 2026-08-03 — the operator-class split is QWEN3-ONLY, not universal
+
+llama8B breaks it. Fraction of the per-(row,chunk) gain that STATIC per-chunk
+allocation captures, post-LN ops:
+
+| cell | per-chunk | per-(row,chunk) | chunk captures |
+|---|---|---|---|
+| 4B q_proj      | -68.4% | -70.8% | 97% |
+| 4B k_proj      | -72.2% | -74.5% | 97% |
+| 4B v_proj      | -55.6% | -59.0% | 94% |
+| 4B gate_proj   | -31.9% | -36.8% | 87% |
+| 14B q_proj     | -39.2% | -47.4% | 83% |
+| **llama8B q_proj**    | **-9.8%** | -26.1% | **38%** |
+| **llama8B gate_proj** | **-3.4%** | -15.5% | **22%** |
+
+So "post-LN ops carry persistent channel outliers" is a **Qwen3-family**
+property. Llama-3.1-8B's post-LN ops behave like INTERMEDIATE ops -- their
+structure is in rows, not channels. Do NOT write the operator-class rule as
+universal.
+
+**This independently explains llama8B's history**: it is the model where every
+lever so far came out marginal (qk -0.21%, bands nil). Both levers allocate on
+axes llama8B does not carry its structure on. per-(row,chunk) is the first
+lever that reaches llama8B's actual axis -- and it is still the weakest model
+(-15.5 to -26.1% vs 4B's -28.5 to -74.5%), so expect a smaller win there.
+
+## ⚠ 2026-08-03 — CONFOUND: the ceiling was measured on SMOOTHQUANT activations
+
+`capture_real` loads the mp_best parents, which are SmoothQuant. The DEPLOYED
+baseline is **AWQ + INT7 20%**. AWQ exists to migrate per-channel activation
+outliers into the weights -- exactly the structure the post-LN per-chunk gain
+feeds on. So the -55% to -72% per-chunk numbers on q/k/v may be materially
+OVERSTATED on the baseline that actually matters, and the operator-class split
+could be partly an artifact of the weaker front-end.
+
+Same failure class as the synthetic overstating per-chunk 5x: measure on the
+thing you will deploy on. `--frontend awq` added (KB_FRONTEND=awq); the
+post-LN cells must be re-measured there before the operator map is trusted.
+
+Prediction to test: under AWQ the per-CHUNK column shrinks a lot on q/k/v/gate/up
+and much less on down_proj/o_proj (whose outliers are token-dependent, so AWQ's
+per-channel scales cannot reach them). If per-(row,chunk) holds up while
+per-chunk collapses, the case for ROW-adaptivity gets STRONGER, not weaker.
+
+### full operator x model map (SmoothQuant capture, t32) — per-(row,chunk) vs uniform
+| | 4B | 14B | llama8B | 30B |
+|---|---|---|---|---|
+| q_proj    | -70.8% | -47.4% | -26.1% | -26.0% |
+| k_proj    | -74.5% | | | |
+| v_proj    | -59.0% | | | |
+| gate_proj | -36.8% | | -15.5% | -27.8% |
+| up_proj   | -28.5% | | | |
+| o_proj    | -40.3% | (rerun) | | |
+| down_proj | -36.8% | -37.6% | -21.4% | -19.2% |
+Per-row (today) on the same cells: -0.3% to -7.2%. Every cell favours
+per-(row,chunk); the SPREAD across models is 15-75%, so gains will be uneven.
+
+## ★★★★★ 2026-08-03 — GATE PASSED: the FREE statistic captures 94-99% of the oracle
+
+Policies 1-3 are oracles (water-fill on MEASURED error => needs the FP16
+reference at runtime). Policy 4 is what can actually be deployed: a threshold
+on the per-(row,chunk) absmax, min-max normalized per call. Rank-matched to the
+oracle's length histogram, so cost is identical and only ORDERING is tested.
+
+| cell (t32) | per-row | per-(row,chunk) ORACLE | amax THRESHOLD | captures |
+|---|---|---|---|---|
+| 4B q_proj      | -7.2% | -70.8% | **-70.1%** | **99%** |
+| 14B down_proj  | -5.2% | -37.6% | **-36.5%** | **97%** |
+| 4B down_proj   | -5.1% | -36.8% | **-35.2%** | **96%** |
+| 4B up_proj     | -0.7% | -28.5% | **-26.8%** | **94%** |
+
+The per-chunk absmax IS the group quantization scale, so this needs NO extra
+reduction -- unlike l2 or crest. The oracle is therefore nearly REACHABLE, and
+the calibrator's job reduces to picking thresholds that reproduce the
+water-filled length histogram (the same counts->thresholds step the per-row
+calibrator already does).
+
+Also in: 14B o_proj -42.7% per-(row,chunk) vs -2.5% per-row (17x).
+
+⚠ BUG in those logs: the "captures N%" line prints garbage (e.g.
+-35182316308920%) because `max(t3/base-1, 1e-12)` takes the max of a NEGATIVE
+ratio and 1e-12, so it divides by 1e-12. Fixed to `max(abs(...), 1e-12)` in the
+current script. The raw error columns are unaffected and are what the table
+above is computed from.
+
+## ★★★ 2026-08-03 — AWQ confound REFUTED + the simplest statistic WINS
+
+### (a) AWQ vs SmoothQuant: no material difference (my concern was wrong)
+| cell | SQ per-chunk | AWQ per-chunk | SQ per-(row,chunk) | AWQ per-(row,chunk) |
+|---|---|---|---|---|
+| 4B q_proj    | -68.4% | -68.6% | -70.8% | -70.6% |
+| 14B q_proj   | -39.2% | -39.0% | -47.4% | -47.3% |
+| 4B down_proj |  -6.5% |  -6.6% | -36.8% | -37.4% |
+Within 0.8pp everywhere. The channel structure per-chunk allocation exploits is
+NOT the structure AWQ removes. The ceiling and the operator map both hold on the
+deployed baseline. Concern raised, tested, retracted.
+
+### (b) DEPLOYABLE-RULE BAKE-OFF — plain amax wins, "compose both" is REFUTED
+Fraction of the per-group oracle captured (7 cells):
+
+| cell | amax | amax x \|\|w_c\|\| | static chunk + row shift |
+|---|---|---|---|
+| 4B q_proj       | **99%** | 99% | 98% |
+| 14B q_proj      | **98%** | 98% | 90% |
+| 4B down_proj    | **96%** | 96% | **41%** |
+| 14B o_proj      | **94%** | 95% | **47%** |
+| llama8B q_proj  | **94%** | 94% | **57%** |
+| llama8B down    | **92%** | 92% | **44%** |
+| 4B o_proj       | **91%** | 92% | **45%** |
+
+* **amax alone is the answer.** 91-99% everywhere including llama8B.
+* The static weight norm adds NOTHING (<=0.3pp) -- drop it, keep the statistic
+  free.
+* **My "static chunk base + row shift" design (policy 6) is REFUTED.** It was
+  motivated by the operator map (compose the channel and row structures) and it
+  collapses to 41-47% on the intermediate ops. Composing the two axes with a
+  fixed form is WORSE than letting one metric rank all pairs freely. Do not
+  revisit without new evidence.
+
+=> statistic question CLOSED: threshold on the per-(row,chunk) absmax, min-max
+normalized per call. Free at runtime (it IS the group quantization scale).
+
+## PLANNED (needs OK) — first full-protocol per-(row,chunk) PPL wave
+
+Everything so far is SQUARED ERROR on partial products. That is an upper bound
+on the allocation axis and this ledger already records four claims that died
+exactly at the error->PPL step. Nothing is claimed until these run.
+
+Proposed wave (8 cells, full protocol, PPL_MAX_TOKENS=0, ctx 2048, B=1):
+
+| cell | model | target | config | control |
+|---|---|---|---|---|
+| 1-4 | 4B / llama8B / 14B / 30B | t32 | prc thresholds, AWQ + INT7 20% | AWQ parent |
+| 5-8 | 4B / llama8B / 14B / 30B | t48 | same | AWQ parent |
+
+* Baseline: **AWQ + INT7 20% mask** (the deployed one), parent PPL from
+  `hpca_results/llm/frontend_awq/mpbest_awq_vs_smoothquant.csv`.
+* Compare S1->S2 (identity child vs allocated child), NOT S0->S2. On 4B t48,
+  83% of the naive parent-to-result delta was numerics, not allocation.
+* Noise floor sd 0.0069 PPL (n=6 identity controls); a delta under ~0.014 is
+  not a result.
+* 30B needs MoE support first (expert-keyed groups) or it drops to 6 cells.
+* Cost check: every cell must report realized MAC-weighted mean length <= its
+  target, from the TRACE (which now prices per rung, not at L_max).
+
+### Known inefficiency in the calibrator (not a correctness bug)
+`--windows` caps captures PER (op, bucket) KEY, but a single forward already
+supplies ~9 blocks per bucket, so keys fill during forward 1 and the remaining
+forwards do no work. Wastes wall-clock, does not bias the result beyond
+sampling the first ~4 blocks of each bucket. Fix with an early break when every
+key is full.
+
+## ⚠ 2026-08-03 — the GLOBAL water-fill confounds the experiment; parent budgets are the default now
+
+The first calibrator run hit its budget exactly (32.00 vs 32.0, 28 buckets) but
+its allocation is not the experiment I want to run:
+
+  o_proj    l0  hist=[32768,0,0,0,0,0]  mean_L=18.00   <- ENTIRE bucket at floor
+  k_proj    l0  hist=[20062,338,80,0,0,0] mean_L=18.17
+  q_proj    l3  hist=[72,7,1988,9542,5540,3331] mean_L=58.63
+  down_proj l3  mean_L=42.16
+
+One global multiplier over RAW squared error re-decides the CROSS-LAYER split
+at the same time as the granularity. Raw squared error is not comparable across
+operators -- a layer whose output has larger magnitude shows larger error
+regardless of sensitivity -- so this starves early layers and floods late ones.
+That is the same failure mode the sigma/measured cross-layer history already
+hit, and it would confound the first PPL cell: a loss could not be attributed to
+granularity.
+
+**FIX: `--budget-mode parent` (now the DEFAULT).** Each (op, bucket) is held at
+the PARENT's realized mean length, read from the DEPLOYED resolver
+(`adaptive_classify_rows` + `_mp_dispatch_metric`, never a reimplementation --
+two resolvers disagreeing is a four-instance bug family here), and the
+water-fill redistributes only WITHIN the group. Then:
+  * granularity is the ONLY variable that changes;
+  * the parent is INSIDE the search space (per-row == per-(row,chunk) with all
+    of a row's chunks sharing its rung), so the refinement cannot lose by
+    construction -- the property that made K-bands safe.
+`--budget-mode global` is retained for a later, separate cross-layer study.
+It now REFUSES to fall back silently: no sc_mp_config => hard error.
+
+## ★★ 2026-08-03 — BUDGET DEPENDENCE: per-(row,chunk) pays at EVERY budget
+
+| cell | t32 | t48 | t64 | t96 |
+|---|---|---|---|---|
+| 4B down_proj ORACLE      | -36.8% | -39.3% | -38.5% | -29.4% |
+| 4B down_proj DEPLOYABLE  | -35.2% | -37.8% | — | -28.6% |
+| 14B down_proj ORACLE     | -37.6% | — | -39.7% | — |
+| 14B down_proj DEPLOYABLE | -36.5% | — | -38.9% | — |
+| 4B q_proj ORACLE         | -70.8% | — | (t64 running) | — |
+
+Roughly FLAT at -29% to -40% across a 3x budget range, peaking mid-budget and
+easing slightly at t96. Deployable tracks the oracle to within 0.8-1.6pp at
+every budget.
+
+**This profile differs from BOTH earlier levers** and that is what makes it
+useful: qk pays MORE at tight budgets (30B -8.87/-5.58/-3.77% at t32/48/64),
+the allocation levers pay LESS, and this one pays everywhere. The four models
+need help at different rungs (4B t48, llama8B t128, 14B t40, 30B t64), so a
+lever that only worked at one end could never move all of them.
+
+Policy 6 (static chunk + row shift) stays refuted at every budget
+(-18.7% to -25.4% vs deployable amax's -28.6% to -37.8%).
+
+## 2026-08-03 — parent-budget calibration WORKS; two caveats recorded
+
+4B t32 with `--budget-mode parent` (job 56009322):
+  down_proj l0 hist=[42357,9788,10179,7843,4806,2851] mean_L=29.47
+  gate_proj l1 hist=[19372,478,445,168,17,0]          mean_L=18.75
+  o_proj    l3 hist=[4091,5382,6671,5550,4616,6458]   mean_L=49.13
+Mean lengths span 18.75-49.13 and every bucket keeps a spread across rungs,
+versus the global solve's 16.00-86.70 with three buckets pinned entirely at the
+floor. This is the allocation to test.
+
+### CAVEAT 1 — it UNDERSPENDS: MAC-weighted mean 28.54 vs the parent's 32
+The per-group water-fill takes the largest allocation with mean <= the parent's
+own budget, and it refuses to buy length where a pair's error curve has gone
+flat. The 3.46 unused cycles cannot be redistributed without reopening the
+cross-layer question this mode exists to hold fixed. For the first experiment
+this is FAVOURABLE (a win at 28.54 vs a parent at 32 is a win at LOWER cost),
+but the realized number must be read from the TRACE at eval time, never assumed.
+
+### CAVEAT 2 — ESCAPE-GATE PARITY (found before it could bite)
+`adaptive_classify_rows` applies `_apply_escape_gate` INTERNALLY, so the
+per-group budgets read from it already include gate spending. The child branch
+has no gate, so it would have dropped a deployed feature (every parent runs
+k=2.0, len=128) AND undershot the budget it was matched to -- surfacing as
+"cheaper and worse" rather than as a bug. Fixed by appending escape_stoc_len as
+a top rung when the parent has a gate, so the child can reach the same length
+through the ordinary threshold mechanism with no new runtime machinery.
+NOTE: the gate params live in wrapper.json, NOT table.json -- the calibrator
+reads `table`, so this must be re-pointed before the parity fix actually fires.
+
+## ══ CONSOLIDATED OPERATOR MAP (20 cells, t32, real activations) ══
+
+per-(row,chunk) vs uniform at equal mean cost; (deployable amax rule in parens);
+per-row = what deployed MP does today.
+
+| op | 4B | 14B | llama8B | 30B |
+|---|---|---|---|---|
+| k_proj    | -74.5% | | | |
+| q_proj    | -70.8% (-70.0) | -47.4% (-46.4) | -26.1% (-24.6) | -26.0% |
+| v_proj    | -59.0% | | | |
+| o_proj    | -40.3% (-36.8) | -42.7% (-40.1) | -21.8% (-18.6) | -45.2% (-41.8) |
+| down_proj | -36.8% (-35.2) | -37.6% (-36.5) | -21.4% (-19.7) | -19.2% (-17.2) |
+| gate_proj | -36.8% | | -15.5% | -27.8% |
+| up_proj   | -28.5% (-26.8) | | -15.3% (-13.7) | -28.0% (-25.7) |
+| **per-row (today), same cells** | **-0.7 to -7.2%** | **-1.2 to -5.2%** | **-0.1 to -2.4%** | **-0.1 to -8.3%** |
+
+**20/20 cells favour per-(row,chunk).** Deployable rule captures 85-99%
+(median ~93%). Ratio to per-row runs 5x to 41x.
+
+Model ordering is consistent: 4B > 14B ~ 30B > llama8B. llama8B has both the
+weakest gain AND the flattest per-row baseline -- it is the model to watch.
+
+### STATUS OF THE BUILD
+DONE: kernel (15/15 tests), sc_matmul API, mp config `per_row_chunk`, SCLinear
+branch, calibrator with parent budgets + escape-gate parity.
+NOT DONE: any PPL measurement. MoE (30B) still unsupported by the calibrator.
+
+## ⚠⚠ 2026-08-03 — CALIBRATOR BUG: three cells came out ABOVE the parent's cost
+
+Parent realized_flop_avg_sl (mp_best_all.csv) vs the child's calibrated mean:
+
+| cell | parent | child (par2) | |
+|---|---|---|---|
+| 4B t32      | 33.73 | 28.54 | under ✓ |
+| llama8B t32 | 34.00 | **38.09** | **OVER 12%** |
+| llama8B t48 | 49.62 | **52.03** | OVER 4.9% |
+| 14B t32     | 33.61 | **34.68** | OVER 3.2% |
+
+The per-group cap should make an overspend impossible, so the accounting was
+wrong. TWO causes, both mine:
+
+1. **Protected channels.** SCLinear dispatches on the RESIDUAL -- protected
+   channels are split off and run at protected_stoc_len OUTSIDE the MP ladder.
+   The calibrator captured the FULL input, so (a) `_mp_dispatch_metric` saw a
+   different vector than the deployed path and produced a different parent
+   assignment, and (b) the allocator priced channels that are not its to spend.
+   FIXED: the hook now removes protected channels before metric and error
+   curves, exactly as the runtime does.
+2. **Not comparable anyway.** The printed mean covers LINEARS ONLY; the
+   parent's realized_flop_avg_sl also includes qk/av. Now labelled as such.
+
+Added a hard guard: any group whose allocated mean exceeds its parent budget
+aborts the calibration rather than emitting a non-iso-cost table.
+
+**The binding cost check remains the child's TRACE at eval time vs the
+parent's** -- the trace now prices per rung, so it cannot flatter itself.
+Had the wave launched on the par2 tables, llama8B t32 would have run 12% over
+budget and any win would have been unattributable.
+
+## ★ 2026-08-03 — calibration is now ISO-COST BY CONSTRUCTION (ratio 1.0000)
+
+The "14B overspends 16%" reading was MY ACCOUNTING, not the allocation. The
+child's mean covers LINEARS ONLY; mp_best's realized_flop_avg_sl also covers
+qk/av, and the allocator deliberately runs attention short — so a compliant
+child looks like a large overspend against that column.
+
+Fix: aggregate the PARENT's own per-group means with the SAME mac x rep
+weights and compare on that basis. Result:
+
+  4B t48      child 46.38  parent 46.38  -> 1.0000
+  llama8B t48 child 47.73  parent 47.73  -> 1.0000
+
+The per-group water-fill realizes each group's parent budget to 4 dp (the mean
+is near-continuous in lambda with 10k-70k pairs per group), so the child is
+iso-cost BY CONSTRUCTION, not by luck. `achieved` is computed from the ACTUAL
+allocation and `parent_lin` from the targets — two independent computations, so
+1.0000 is a real check, not a tautology.
+
+Hard guard added: child > parent on the same basis => abort, no table emitted.
+
+### RULE FOR ANY FUTURE COST CLAIM
+Never compare a linear-only number against `realized_flop_avg_sl`. Either
+aggregate both on the same operator set, or read both from the TRACE (which now
+prices per rung and cannot flatter a per-(row,chunk) cell).
+
+## ★★ 2026-08-03 — MoE IS UNBLOCKED by per-(row,chunk) (K-bands never were)
+
+30B calibration RUNS and emits 28 buckets (jobs 56010567/68). K-bands could not
+touch MoE at all -- `get_k_bands` raises on the expert index -- and that is why
+every 30B post-HPCA cell is qk-only.
+
+per-(row,chunk) is not blocked because it does NOT key on expert: all experts of
+a block share the (op, layer-bucket) entry, which is also the right granularity
+(128 experts x 36 blocks of separate ladders would be absurd, and the runtime
+resolver `get_per_row_chunk(op, block, total_blocks)` has no unit dimension).
+The one MoE-specific hazard -- an expert receiving ZERO tokens under sparse
+top-k, where min()/max() over an empty dim raises, the same routing case that
+broke the per-row calibrator -- is guarded in `per_row_chunk_rungs`.
+
+This matters beyond 30B: it means the wave can be 8 cells, and it removes the
+standing "30B cannot use per-group allocation" limitation entirely.
+
+## 2026-08-03 — ALL DENSE CALIBRATIONS ISO-COST; the 14B "overspend" was accounting
+
+| cell | child linear-only | parent linear-only | ratio |
+|---|---|---|---|
+| 4B t32      | 31.96 | 31.96 | 1.0000 |
+| 4B t48      | 46.38 | 46.38 | 1.0000 |
+| llama8B t32 | 33.38 | 33.38 | 1.0000 |
+| llama8B t48 | 47.73 | 47.73 | 1.0000 |
+| 14B t32     | 38.97 | 38.97 | 1.0000 |
+| 14B t48     | 52.47 | 52.47 | 1.0000 |
+
+14B's parent linear-only mean is **38.97**, not the 33.61 in
+`realized_flop_avg_sl` (which includes qk/av, run short by the allocator). The
+"16% overspend" was entirely the wrong denominator. Tables at
+`$TURBO/kbands/kbands_20260801/prc/*_par4_prc.json`.
+
+### READY, AWAITING OK — 8-cell full-protocol wave
+4B / llama8B / 14B / 30B x {t32, t48}, PPL_MAX_TOKENS=0, ctx 2048, B=1,
+AWQ + INT7 20% parent, S1->S2, noise floor sd 0.0069, realized cost from the
+TRACE. ~20-30 GPU-hours. t64 tables calibrating now so the wave can widen
+without re-deriving anything (30B's current passing rung is t64).
+
+## ⚠⚠ 2026-08-03 — the WIRING CHECK caught a bug that would have killed all 8 cells
+
+`wrapper.json` stores `threshold_table_path` RELATIVE ("table.json"). The
+emitted per-(row,chunk) table lives in a different directory
+($TURBO/kbands/.../prc/), so the loader resolved it against the WRONG dir:
+
+  FileNotFoundError: .../kbands_20260801/prc/table.json
+
+Every wave cell would have died at load. FIXED: the calibrator now rewrites
+`threshold_table_path` ABSOLUTE against the parent bundle and verifies the file
+exists before emitting; 23 already-written tables were patched.
+
+Note this was NOT the failure the wiring check was designed for (that was the
+silent per-row fallback). It paid for itself on a different bug in its first
+run -- which is the argument for running a cheap end-to-end load test before any
+multi-hour wave, not just unit tests of the pieces.
+
+## ⚠⚠⚠ 2026-08-03 — ROOT CAUSE: per_row_chunk was written to the WRONG FILE
+
+The wiring check reported exactly the failure it was built for:
+  FAIL  AdaptiveMPConfig parsed a per_row_chunk section  -- 0 entries
+  FAIL  no SCLinear falls back to per-row dispatch -- 0 resolved, 224 MISSED
+
+`_load_per_row_chunk` is called from `AdaptiveMPConfig.load_threshold_table(path)`,
+so its payload is **table.json**, NOT wrapper.json. The calibrator wrote the
+section into the WRAPPER. `k_bands` lives in the table for the same reason —
+the precedent was right there and I did not follow it.
+
+Both earlier symptoms share this one root cause. The "fix" of pointing
+`threshold_table_path` at the PARENT table made it strictly worse: that table
+has no per_row_chunk, so the config loaded cleanly with zero entries.
+
+**What this would have produced without the wiring check:** 8 cells running to
+completion, at the parent's exact cost, reporting the parent's PPL +/- noise.
+A clean, plausible, completely null table -- which I would have read as
+"per-(row,chunk) does not transfer to PPL" and used to retire a direction that
+20 measured cells support. This is the single most dangerous failure mode in
+this whole line of work, and it was silent by construction.
+
+FIX: emit TWO files — `<name>_v5_prc_table.json` (parent table + per_row_chunk)
+and `<name>_v5_prc.json` (wrapper with an ABSOLUTE threshold_table_path). The
+calibrator now LOADS THE EMITTED TABLE BACK through the deployed parser and
+aborts unless the bucket count round-trips.
+
+RULE: never trust that an emitted config is read. Load it back through the
+deployed loader and assert the feature is live before spending GPU-hours.
+
+## 2026-08-03 — the config round-trip, and why it took four attempts
+
+The round-trip verification (load the emitted table back through the DEPLOYED
+parser, abort unless the buckets survive) found three further problems, all in
+the emit/verify path, none in the runtime:
+
+1. **Section in the wrong file** (the real one). `_load_per_row_chunk` runs
+   inside `load_threshold_table(path)`, so it parses table.json. The calibrator
+   wrote the section into wrapper.json => 0 entries parsed, 224 SCLinears
+   falling back to per-row, a perfectly plausible NULL result. `k_bands` lives
+   in the table for exactly this reason.
+2. **Validator constructor**: `AdaptiveMPConfig(stoc_len_levels)` is required
+   and takes the ladder DESCENDING; the per_row_chunk ladder is ASCENDING by
+   design (rung index IS the position, and the runtime maps bucketize() output
+   straight onto it). Two lists, two conventions — do not harmonise them.
+3. **Validator ladder**: constructing with the per-BUCKET ladder trips
+   `table levels != runtime levels`, because the per_row_chunk ladder may be
+   LONGER (it appends the escape length as a top rung). Verified the runtime is
+   unaffected: wrapper and table both carry the parent's 6-rung
+   `stoc_len_levels`, they agree at load, and each bucket's 7-rung ladder is
+   validated on its own by `_load_per_row_chunk` (cap, ascending, threshold
+   count) and never cross-checked against `stoc_len_levels`.
+
+llama8B t48 passed all along because its parent ladder already contained 128,
+so no escape rung was appended and 6 == 6 — a reminder that a single passing
+cell proves nothing about the others.
+
+## ★★ 2026-08-03 — WIRING GATE PASSES: the dispatch is LIVE in a real model
+
+  4B t32      28 buckets parsed, **252/252 SCLinear resolved, 0 fallbacks**
+  llama8B t32 28 buckets parsed, **224/224 SCLinear resolved, 0 fallbacks**
+  logits finite; 8 distinct stream lengths in use (ladder + escape rung 128)
+  traced linear-only mean: 4B 28.81 (budget 31.96), llama8B 32.00 (budget 33.38)
+
+Both UNDER budget — the water-fill declines to buy length where a pair's error
+curve has gone flat, and the protected slices run at their own length.
+
+The one FAIL was MY TEST, not the deployment: it asserted every linear record
+carries d_in == 128. Legitimate other widths exist — the residual TAIL chunk
+(residual width is not a multiple of 128 once protected channels are removed)
+and the PROTECTED slices (which run at protected_stoc_len outside the MP ladder
+entirely). Replaced with a MAC-SHARE assertion (>50% of linear MACs at
+d_in=128), which is what "per-(row,chunk) is live" actually means. The printed
+d_in list was also truncated to the 6 smallest values, so it could not have
+shown 128 even when present — a misleading diagnostic on top of a wrong test.
+
+### ALL 8 TABLES READY
+$TURBO/kbands/kbands_20260801/prc/{4B,llama8B,14B,30B}_t{32,48}_v7_prc.json
+(+ _prc_table.json). Every one: iso-cost child/parent = 1.0000, round-trip
+verified through the deployed parser, escape-gate parity, protected channels
+excluded from the allocation.
+
+## ══ FINAL PRE-WAVE STATE (2026-08-03) ══
+
+### Wiring gate — dispatch is LIVE, zero fallbacks, every model
+| cell | SCLinear resolved | traced linear-only mean | budget |
+|---|---|---|---|
+| 4B t32      | 252/252 | 28.81 | 31.96 |
+| 4B t48      | 252/252 | 42.02 | 46.38 |
+| llama8B t32 | 224/224 | 32.00 | 33.38 |
+| 14B t32     | 280/280 | 36.30 | 38.97 |
+| 14B t48     | 280/280 | — | 52.47 |
+| **30B t32** | **18624/18624** | — | — |
+
+llama8B t32 returns ALL PASS incl. **96.0% of linear MACs priced at d_in=128**.
+Every cell is UNDER budget (the water-fill declines to buy length where a
+pair's error curve is flat; protected slices run at their own length).
+30B's 18,624 resolved modules are every expert projection across 128 experts —
+MoE is not merely calibrating, it is fully DISPATCHING.
+
+### Wave launcher: benchmark/ppl/kbands/run_prc_ppl.sbatch
+* Runs BOTH arms (KB_ARM=prc | parent) so the comparison is S1->S2 in ONE
+  environment. Comparing against the ARCHIVED parent number would fold in every
+  environment change since that run.
+* REFUSES a `prc` cell whose table has zero per_row_chunk buckets — the exact
+  bug that would record a per-ROW run under the child's name.
+* Environment mirrors the archived runtime.json exactly (bitrev / masks 64 /
+  sc_prec 8 / halve / INT7 sym / chunk 128) + FRONTEND=awq + PPL_MAX_TOKENS=0.
+
+### THE ONLY UNTESTED CLAIM
+Whether a 5-41x improvement in allocation quality moves PPL. Everything above is
+squared error on partial products; this ledger records FOUR earlier claims that
+died at exactly that transfer. Needs an explicit OK: 8 cells + 8 parent
+controls, ~40-60 GPU-hours.
+
+## ══ 8/8 WIRING GATE: ALL PASS (2026-08-03) ══
+
+| cell | MACs at d_in=128 | traced mean | budget |
+|---|---|---|---|
+| 4B t32      | 94.8% | 28.81 | 31.96 |
+| 4B t48      | 94.8% | 42.02 | 46.38 |
+| llama8B t32 | 96.0% | 32.00 | 33.38 |
+| llama8B t48 | 96.1% | 45.43 | 47.73 |
+| 14B t32     | 95.0% | 36.30 | 38.97 |
+| 14B t48     | 95.0% | 50.07 | 52.47 |
+| 30B t32     | 92.0% | 35.78 | (MoE) |
+| 30B t48     | 92.0% | 52.66 | (MoE) |
+
+Zero fallbacks on any model. Every cell UNDER budget. 30B dispatches
+18,624/18,624 expert projections. The pipeline is DONE up to the PPL question.
+
+### The full self-correction ledger for this build
+REFUTED (mine): AWQ confound (<=0.8pp), amax x ||w_c|| statistic (<=0.3pp),
+static-chunk + row-shift composite (41-47% vs amax 91-96%).
+BUGS FOUND (all looked like plausible numbers with satisfied budgets):
+ 1. global water-fill silently re-deciding the cross-layer split
+ 2. escape-gate omission (parent budgets include gate spend)
+ 3. protected channels priced by the allocator + wrong dispatch metric
+ 4. linear-only vs all-op cost basis (phantom 16% overspend)
+ 5. relative threshold_table_path (would have killed all 8 cells at load)
+ 6. **per_row_chunk written to the WRAPPER; the parser reads the TABLE**
+ 7. round-trip validator constructor arity
+ 8. round-trip validator ladder (per-bucket vs stoc_len_levels)
+ 9. wiring-test d_in assertion too strict (tail chunks + protected slices)
+10. wiring-test diagnostic read the wrapper, and truncated to 6 values
+Every one was caught by checking against something INDEPENDENTLY RECORDED —
+the archived parent cost, the deployed parser, the trace. #6 is the one that
+mattered: it would have produced a flawless NULL 8-cell table.
+
+## ══ BUILD COMPLETE — BLOCKED ON APPROVAL (2026-08-03) ══
+
+16 tables ready: {4B, llama8B, 14B, 30B} x t{32,48,64,96}, at
+$TURBO/kbands/kbands_20260801/prc/<model>_t<target>_v7_prc.json
+Every one: iso-cost child/parent = 1.0000, round-trip verified through the
+deployed parser, escape-gate parity, protected channels excluded.
+
+12/12 gated cells ALL PASS (t32/t48 all four models, plus t64). 92-96% of
+linear MACs priced per 128-chunk, zero per-row fallbacks anywhere, every cell
+under budget, 30B dispatching 18,624/18,624 expert projections.
+
+### THE LOOP HAS NO SUBSTANTIVE WORK LEFT WITHOUT THE WAVE
+Everything measurable short of PPL is measured. Further gating of tables that
+may never be used would be manufacturing activity, not doing work — the GPU
+floor rule exists to avoid wasting capacity, not to consume it. Leaving GPUs
+idle is the correct state here.
+
+NEXT (needs explicit OK): benchmark/ppl/kbands/run_prc_ppl.sbatch
+  for m in 4B llama8B 14B 30B; do for t in 32 48; do
+    for arm in parent prc; do
+      KB_MODEL=$m KB_TARGET=$t KB_ARM=$arm sbatch run_prc_ppl.sbatch
+  done; done; done
+16 jobs, ~40-60 GPU-hours. Read PPL from eval_summary, cost from the trace,
+compare S1->S2 against sd 0.0069.
+
+## ══ PPL WAVE LAUNCHED 2026-08-03 (user OK) ══
+
+16 jobs 56015451-56015466: {4B, llama8B, 14B, 30B} x t{32,48} x {parent, prc}.
+Full protocol (PPL_MAX_TOKENS=0, ctx 2048, B=1), AWQ + INT7 20%, tables
+`<model>_t<target>_v7_prc.json`. Both arms run in the SAME environment so the
+comparison is S1->S2; the archived parent number is NOT the control.
+
+### How to read the result when it lands
+* PPL from each cell's eval_summary; realized cost from its TRACE (which prices
+  per rung, so a per-(row,chunk) cell cannot flatter itself).
+* Noise floor sd 0.0069 PPL (n=6 identity controls). A delta under ~0.014 is
+  NOT a result.
+* A prc cell must also come in at or under its parent arm's traced cost. All 8
+  tables calibrated to child/parent = 1.0000 and every wiring gate traced UNDER
+  budget, so an overspend would mean something changed at eval time.
+* **If the deltas are ~0**: check the trace for d_in==128 share before
+  concluding anything. A silent per-row fallback produces exactly that, and it
+  is the failure this whole verification chain exists to exclude. The launcher
+  refuses a table with 0 buckets, but check the trace anyway.
+
+## ⚠⚠⚠ 2026-08-03 — PPL WAVE: the lever TRANSFERS, but half the cells OVERSPEND
+
+4/4 completed pairs improved, all far outside the noise floor. But the cost
+check splits them:
+
+| cell | PPL delta | parent LIN | child LIN | ratio | verdict |
+|---|---|---|---|---|---|
+| 4B t48      | -0.37% | 42.20 | 40.45 | **0.959** | valid: better AND 4% cheaper |
+| llama8B t48 | -0.24% | 43.49 | 41.12 | **0.945** | valid: better AND 5% cheaper |
+| llama8B t32 | -2.18% | 28.95 | 29.20 | 1.009 | INVALID: +0.9% compute |
+| 14B t32     | -1.63% | 29.93 | 32.26 | **1.078** | INVALID: +7.8% compute |
+
+**The two LARGE wins are partly PURCHASED. The two ISO-COST wins are SMALL.**
+
+### ROOT CAUSE (mine): the parent budget came from a 256-row SAMPLE
+Calibration's per-group parent target vs the parent's TRUE realized linear cost:
+  4B t32   31.96 vs 26.09  (-18.4%)   4B t48   46.38 vs 42.20  (-9.0%)
+  llama8B t32 33.38 vs 28.95 (-13.3%) llama8B t48 47.73 vs 43.49 (-8.9%)
+  14B t32  38.97 vs 29.93  (-23.2%)
+The sample OVERESTIMATES the parent by 9-23%, so every child was calibrated
+against a too-generous budget and at t32 (where the parent runs leanest) it
+spent the difference. I applied "read the cost from the TRACE, not from a
+promise" everywhere except to the budget itself.
+
+### FIX (parent traces now exist for these cells)
+Recalibrate per-group targets from the PARENT ARM's TRACE, not from a
+calibration sample, then re-run the affected cells. Expect the -2.18% and
+-1.63% to SHRINK — they were partly bought.
+
+### vs the ARCHIVE — still behind, as expected without qk
+4B t48: archive qk+kband **10.3783 (-2.54%)** vs prc-only 10.6093 (-0.37%).
+llama8B t48: archive qk 7.9032 (-0.21%) vs prc 7.9011 (-0.24%) — TIED
+(0.0021 gap, noise floor 0.0138).
+Control: the parent arm reproduced the archived AWQ parent EXACTLY on both
+cells (10.6491, 7.9200), so the environment is right and the comparison sound.
+
+### AND: on 4B t48, prc did NOT beat static K-BANDS
+bands -0.44% vs prc -0.37% — indistinguishable. The 6x error-axis advantage of
+per-(row,chunk) over per-chunk did NOT transfer on that cell. The error metric
+overstates what the allocation is worth in PPL, which is the fifth instance of
+that pattern in this ledger.
+
+## ★★★★★ 2026-08-04 — PPL RESULT, cost-adjusted and CROSS-VALIDATED
+
+The binary iso-cost gate was DISCARDING REAL SIGNAL (user's call: +0.4% cost
+"doesn't matter at all", and the archive itself tolerates drift — 30B t48
+realizes 51.1 against a nominal 48). Attribute the gain instead, using measured
+local PPL-vs-compute sensitivity (llama8B has two prc runs at different cost,
+giving the slope directly: 0.28 %PPL per %compute; wide-range parent slopes are
+1.47x flatter, so scale the other models').
+
+### ALLOCATION VALUE of per-(row,chunk) vs the deployed per-row MP
+| cell | raw PPL | cost | compute part | **ALLOCATION** |
+|---|---|---|---|---|
+| 4B t32      | -5.01% | +3.7% | -1.29% | **-3.29%** (2 runs) |
+| llama8B t32 | -2.18% | +0.4% | -0.12% | **-2.00%** (2 runs) |
+| llama8B t48 | -0.24% | -4.6% | +1.28% | **-1.51%** |
+| 4B t48      | -0.37% | -3.2% | +1.11% | **-1.48%** |
+| 14B t32     | -1.63% | +6.6% | -0.88% | -0.75% |
+| 14B t48     | -0.56% | +2.7% | -0.37% | -0.20% |
+
+**The t48 cells were misread in the OPPOSITE direction**: they ran 3-5% CHEAPER,
+so their raw -0.3% UNDERSTATES the allocation effect, which is ~-1.5%.
+
+### CROSS-VALIDATION — two runs ~10pp apart in compute AGREE
+  llama8B t32: -2.06% (at +0.4% cost) vs -1.93% (at -7.4% cost) — 0.13pp apart
+  4B t32:      -3.72% (at +3.7% cost) vs -2.87% (at -6.2% cost) — 0.85pp apart
+Not a single-point estimate that could be a compute artifact.
+
+### vs the ARCHIVE (mp_best_after_hpca) — WINS 3/5, TIES 1, LOSES 1
+| cell | archive | mine | |
+|---|---|---|---|
+| **14B t48** | 8.9072 (parent) | **8.8571** | **-0.56%, x_fp16 1.0253 — PASSES 1.05** |
+| 14B t32 | 9.3097 (parent) | 9.1581 | -1.63% |
+| 4B t32  | 11.4758 (qk+kband) | 11.3881 | -0.76% |
+| llama8B t48 | 7.9032 (qk) | 7.9011 | -0.03% (tie) |
+| 4B t48  | 10.3783 (qk+kband) | 10.6093 | +2.23% (archive wins — it has qk) |
+
+**14B t48 is the first cell under 1.05x fp16**, on the model where qk regressed
+(+0.91%) and K-bands regressed (+0.33%). Nothing else moved 14B.
+
+### IN FLIGHT: combined qk + per-(row,chunk)
+Disjoint operators (attention vs linears); qk+bands previously composed
+additively. 4B t48 is the likeliest next 1.05 pass (qk alone gave -2.10% on 4B,
+prc gives -1.48% => ~1.034x). Plus qk-only CONTROLS on 14B, where the archive
+has no qk data at all.
+
+## ══ FINAL 2026-08-04 — mp_best_after_hpca_2 SHIPPED ══
+
+7 of 8 cells come from this wave; only 4B t48 is kept from the predecessor.
+Archive: hpca_results/llm/ppl/mp_best_after_hpca_2/ (SUMMARY + manifest +
+HANDOFF + configs/prc_tables/qk_scales). Builder is idempotent:
+`python benchmark/ppl/kbands/build_mp_best_after_hpca_2.py`.
+
+### 30B was the last flip and the biggest
+Its prc-only cells LOST to the archive; the COMBINED arm won by a wide margin:
+  30B t32  archive 8.6255 -> 8.0212  (-7.01% vs archive, -15.25% vs per-row)
+  30B t48  archive 7.7217 -> 7.6394  (-1.07% vs archive,  -6.59% vs per-row)
+30B is a qk model AND has real per-(row,chunk) value; neither lever alone shows
+it. This is the clearest evidence the two compose on disjoint operators.
+
+### qk composition, measured WITH controls
+helps: 4B t32 (-2.97%), 4B t48 (-2.08%), llama8B t48 (-0.30%), 30B (large)
+hurts: 14B t32 (qk 9.3525 vs parent 9.3097), 14B t48 (prcqk 8.9423 vs prc
+       8.8571, qk-only 8.9879), llama8B t32 (+0.56%)
+=> per-cell lever selection, never uniform application.
+
+### Closest to the 1.05 goal
+30B t48 at 1.0521 (from 1.0634). Not a pass. No NEW cell crosses 1.05 — the
+predecessor already had 3 (30B t64, 14B t48, 4B t48) and this archive improves
+two of them without adding a fourth.
+
+## ══ 2026-08-04 — COVERAGE FIX + a REPRODUCIBILITY GAP in the v7 tables ══
+
+### Correction to the section above
+"this archive improves two of them" is WRONG — it improves ONE. Of the
+predecessor's three 1.05x passers: 14B t48 improved (8.9072 -> 8.8571, 1.0311
+-> 1.0253); **4B t48 is byte-identical and merely CARRIED** (delta_vs_prev
+exactly 0.00%, source `mp_best_after_hpca`); 30B t64 was never run in the wave.
+Also note "7 of 8" is the `source: this wave` count, NOT an improvement count —
+6 cells improved, 1 was carried, and llama8B t32 had no predecessor cell to
+improve on.
+
+### The t32/t48 grid silently DROPPED a passing cell
+The builder's `TARGETS = [32, 48]` meant the archive did not contain 30B t64
+(1.0224x, a PASS), 4B t40, or llama8B t96 at all. Quoting "2 passing" from this
+grid against the predecessor's "3 passing" from its own 10-cell grid reads as a
+regression that never happened. FIXED: `TARGETS = [32, 40, 48, 64, 96]`. Cells
+with no wave run and no predecessor entry fall out as `pending`; cells with only
+a predecessor entry are carried. Archive is now **11 cells, 3 passing 1.05x**
+(14B t48 1.0253, 30B t64 1.0224, 4B t48 1.0332), 7 from this wave, 4 carried.
+Sensitivities are anchored on (32,48) explicitly, so widening is inert for the
+cost model.
+
+### ⚠⚠ THE DEPLOYED v7 TABLES CANNOT BE REGENERATED FROM THIS REPO
+A reproduction control (recalibrate 4B t32 via `KB_JOB=prccalib`, diff against
+the archived table) FAILED to reproduce v7:
+
+  4B_t32_v5 == v6 == v7   sha256 09d6d6a5...   (the 8 deployed cells use this)
+  4B_t32_repro == iso2    sha256 dc3ce76c...   (what prccalib emits TODAY)
+  0 of 28 buckets match between them.
+
+`benchmark/ppl/mp_per_row_chunk_calib.py` is **UNTRACKED — not in git**, so the
+pre-iso2 solve has no history to recover. The current file also REFUSES by
+construction to emit a non-iso-cost table (the guards near lines 491/499/514),
+so it *structurally cannot* produce a v7-style table. The v7 tables on Turbo
+remain valid and verified; they are simply not reproducible from source.
+
+**iso2 is the LOSING variant, measured with controls** — cheaper but worse on
+both axes wherever both ran:
+
+| 4B t32 arm | PPL | cost | raw vs parent | cost-adjusted |
+|---|---|---|---|---|
+| v7 prc   | 11.3881 | 34.97 | -5.01% | **-3.72%** |
+| iso2 prc | 11.9019 | 31.64 | -0.72% | -2.87% |
+
+Also llama8B t32 (8.4864 v7 vs 8.6863 iso2) and 14B t32 (9.1581 vs 9.4675).
+So v7 does NOT win merely by overspending — it wins after the compute term is
+subtracted. Do not "fix" the archive by swapping in iso2 tables.
+
+### 4B t40 DROPPED from the wave (user decision)
+It could only be given an iso2-style table, which would be a method
+inconsistency inside a comparison. Coverage is already closed by the TARGETS fix
+(carried at 1.0801; it was never a passing cell). The mislabeled table this
+session emitted was renamed `4B_t40_iso2style_prc*.json` — it was written as
+`4B_t40_v7_prc.json`, and `run_prc_ppl.sbatch` defaults `KB_TBL=v7`, so any
+future 4B t40 run would have loaded the losing variant silently.
+
+### IN FLIGHT — 8 jobs, 56141489-56141497
+{30B t64, llama8B t96} x {parent, prc, qk, prcqk}, full protocol, v7 tables
+(pre-existing, wire-gated ALL PASS: 30B t64 92.0% of linear MACs at d_in=128
+traced 59.94; llama8B t96 96.1% traced 90.31). Both cells are `prev:qk` today,
+so the question is whether per-(row,chunk) beats qk-alone at the looser budgets.
+Rebuild with `build_mp_best_after_hpca_2.py` when they land.
+
+## ══ 2026-08-04 OVERNIGHT — P1 pooled loss-weighted objective QUEUED ══
+
+Pre-registration (written BEFORE launch, refutation criteria fixed):
+`benchmark/ppl/kbands/PREREG_LOSS_WEIGHTED_OBJECTIVE.md`. Launcher:
+`benchmark/ppl/kbands/run_lossw.sbatch`.
+
+### Why: the objective, not the allocation
+Allocation is ~96% exhausted (deployable tracks the per-group oracle within
+0.8-1.6pp) yet sigma converts to PPL at 0.33-0.36 %/% and at 0.00 past the knee.
+All 20 deployed mp_best cells run `cross_layer_weight: uniform` — an UNWEIGHTED
+sigma — while the knock-down probe measures attention as 6.39x more
+loss-sensitive than linears (forensics band 5-20x).
+
+### Two of my own hypotheses died first (do not re-derive)
+* A barrier/penalty term is the WRONG fix: sigma is ALREADY convex at the floor
+  (last step 2.3-2.7x the mean prior step, all 36 buckets of 4B t32).
+* The `measured` probe is NOT blind: it reports the 6.39x. The ESTIMATOR fails —
+  22% of raw dLoss entries are NEGATIVE (impossible in expectation).
+* NEW REFUTATION: `measured_marg` is dead. 69% sign violations, attention/linear
+  ratio -0.86x (wrong sign), operator ranking inverts. Never use it again.
+
+### The lever: pool before flooring
+`--measure-pool {none|operator|attn_linear}` added to
+`calibrate_mp_thresholds.py` (`_pool_group_weights`, pools RAW dLoss then hands
+the existing floor/normalize path a pooled dict; `none` is EXACT identity so no
+existing behaviour changes). Unit-tested offline against the stored 4B probe:
+pooling also recovers signal the floor was eating — normalized attention/linear
+is 5.21x at `none` but 6.39x at `operator`/`attn_linear`, i.e. flooring noisy
+negatives attenuates the signal ~18%.
+
+### Wave: 16 jobs 56164166-56164199, t32, 4 models x {control, p1}
+calib -> eval chained with `--dependency=afterok`, so a failed calibration
+cannot burn eval hours. Each calib passes a GATE that refuses to hand the eval a
+table whose weighting no-opped (asserts distinct-weight count 2/9/36 by arm and
+attention/linear > 1). control = `--cross-layer-weight uniform`, fresh from the
+same code path (the deployed mp_best tables went through v16/v20 search and are
+NOT a valid control).
+
+**FRONT-END: calibration SmoothQuant, eval AWQ.** `calibrate_mp_thresholds.py`
+has NO AWQ path at all (only `--calib-smoothquant`); the prc calibrator does.
+This split is not introduced here — every deployed cell is a SQ-calibrated table
+measured under AWQ. Both arms share it, so it cannot move the delta. Deliberately
+did NOT add AWQ calibration, as that would change a second variable.
+
+### Reading it in the morning
+Winner is the LOWER full-protocol PPL, judged COST-ADJUSTED (sensitivities 14B
+0.134, 30B 0.401, 4B 0.348, llama8B 0.279); noise floor sd 0.0069, |delta| <
+~0.014 is not a result. Check prediction 1 FIRST from the trace: if allocation
+does not shift from gate/up/q_proj toward qk/av, the mechanism is wrong
+regardless of PPL. Expect the largest gain on 30B (attention 22.4% of true MACs)
+and the smallest on 14B (6.0%) — 14B has regressed on every lever so far and is
+the likeliest way P1 fails the all-four-models bar.
+
+### Caveat
+These cells are NOT comparable to the archive: fresh plain calibration (no
+v16/v20 search), so absolute PPL will be worse than mp_best. Only the
+control-vs-p1 delta is meaningful.
+
+## ══ 2026-08-04 — P1 REFUTED; the PROBE is the constraint, not the objective ══
+
+Full results in `PREREG_LOSS_WEIGHTED_OBJECTIVE.md` (post-hoc section).
+
+* **P1 refuted by its pre-registered bar.** 4B cost-adjusted **+1.18%** (loses),
+  llama8B **-0.54%** (wins); both clear the 0.014 noise floor. 14B and 30B arms
+  are INVALID (see below), so P1 cannot reach the required 3-of-4.
+* **The knock-down probe does not scale.** Negative raw dLoss fraction — a
+  direct noise read-out, since cutting precision cannot reduce loss — rises
+  **8% / 31% / 39% / 56%** for 4B / llama8B / 14B / 30B. On 30B the pooled
+  LINEAR mean is negative, i.e. no signal at all.
+* **GATE BUG (mine), now fixed.** The gate judged the ratio AFTER
+  `_normalize_group_weights`, which floors at `0.1*mean_pos`. On 30B that turned
+  a raw **-22.68x** into a normalized **+45.00x** — the floor manufactured the
+  weight and the gate passed where it should have refused. `run_lossw.sbatch`
+  now judges the pooled RAW ratio, refuses a non-positive linear mean, and
+  refuses `raw_negative_frac > 35%`. Replayed against the emitted tables it
+  correctly passes 4B/llama8B and refuses 14B/30B.
+* **Do NOT run P2/P3 against this probe.** They differ from P1 only in
+  resolution; resolution is not what failed. Fix the estimator first (more
+  windows, paired/common-random-number probing, or a variance-reduced
+  sensitivity estimator).
+* 14B/30B p1 evals were left running: their arms are invalid as a test of P1,
+  but they still document what a noise-manufactured weight does. Cancel if the
+  GPUs are wanted.
+
+### P1 FINAL — all 16 jobs landed (2026-08-04)
+
+| model | control | p1 | COST-ADJ | arm valid? |
+|---|---|---|---|---|
+| 4B | 12.4549 @31.51 | 12.6051 @31.49 | **+1.18%** | yes (8% noise) |
+| llama8B | 8.9695 @32.86 | 8.9220 @32.85 | **-0.54%** | yes (31%) |
+| 14B | 9.4063 @31.85 | 9.4285 @31.86 | +0.24% | no (39%) |
+| 30B | 9.6473 @31.70 | 10.2434 @32.20 | **+6.81%** | no (56%) |
+
+**30B is a positive control for the gate bug**: its 45x attention weight was
+manufactured by the floor from a NEGATIVE pooled linear mean, and deploying it
+cost +6.18% raw PPL. The corrected gate refuses it — worth ~6.2 GPU-hours on
+this wave alone.
+
+**CAUTION — do not over-read "fix the probe".** 4B has the cleanest probe in the
+set (8% negatives, only single-digit one) and P1 lost there by the largest valid
+margin (+1.18%); the lone win was llama8B at 31%. If variance were the whole
+story 4B should have won. Two separable hypotheses remain: **H-probe**
+(variance alone) vs **H-sign** (cross-operator loss weighting has a
+model-dependent sign, like qk). Cheapest discriminator = re-probe 4B with
+paired / common-random-number draws + more windows; if the ratio stabilises and
+P1 STILL loses on 4B, H-sign wins and this whole direction is dead.

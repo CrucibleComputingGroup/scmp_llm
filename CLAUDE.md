@@ -1,7 +1,46 @@
 # scmp_llm — reproduction guide
 
 > ═══════════════════════════════════════════════════════════════════════════
-> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-07-25
+> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-08-04
+>
+> ### 2026-08-04 — per-(row,chunk) archive SHIPPED; P1 loss-weighting REFUTED
+> **Deployment archive is now `hpca_results/llm/ppl/mp_best_after_hpca_2/`**
+> (supersedes `mp_best_after_hpca`; `mp_best/` stays frozen for the paper).
+> Static K-bands replaced by **per-(row, chunk)** allocation — a stream length per
+> (row, 128-chunk) group instead of one assignment shared by every row. Quantization
+> was ALREADY per-(row,chunk); only dispatch was per-row, and closing that mismatch
+> is the lever. 11 cells over t{32,40,48,64,96}, **3 pass 1.05×** (14B t48 1.0253,
+> 30B t64 1.0162, 4B t48 1.0332). Rebuild: `python benchmark/ppl/kbands/
+> build_mp_best_after_hpca_2.py` (idempotent, login node).
+> **Levers are PER-CELL, never uniform.** qk helps 4B/llama8B t48/30B but REGRESSES
+> 14B at both budgets and llama8B t32. 30B needs BOTH levers — prc-only loses to
+> qk-only at t32/t48/t64, combined wins all three (cleanest evidence they compose
+> on disjoint operators). 14B had no working lever before; per-(row,chunk) moves it.
+> ⚠ **Read cost, not just PPL.** 30B t64's raw win (7.4241→7.3792) costs +2.5%
+> compute ⇒ cost-adjusted **+0.42% vs the incumbent qk cell**, i.e. bought not
+> earned. llama8B t96 is the mirror: PPL flat (20× below the noise floor) but
+> −7.6% compute ⇒ **−2.13%** cost-adjusted, a real win a strict iso-cost gate
+> would have hidden. Noise floor sd 0.0069; |Δ| < ~0.014 is not a result.
+> ⚠ **REPRODUCIBILITY GAP.** `benchmark/ppl/mp_per_row_chunk_calib.py` is
+> UNTRACKED, and `KB_JOB=prccalib` today emits the `iso2` variant, which was
+> measured and LOST to the deployed v7 (4B t32 cost-adjusted −2.87% vs −3.72%).
+> The 16 v7 tables on Turbo are valid and wire-gated but **cannot be regenerated
+> from source**. Never calibrate a new cell and label it `_v7` —
+> `run_prc_ppl.sbatch` defaults `KB_TBL=v7` and will load it silently.
+> **P1 (pooled loss-weighted σ) REFUTED** — pre-registration + full results in
+> `benchmark/ppl/kbands/PREREG_LOSS_WEIGHTED_OBJECTIVE.md`. Allocation is ~96%
+> exhausted (deployable tracks the per-group oracle within 0.8–1.6pp) yet σ
+> converts to PPL at only 0.33–0.36 %/% and at 0.00 past the knee. All 20 mp_best
+> cells run `cross_layer_weight: uniform`. Weighting attention by measured ΔLoss
+> gave 4B **+1.18%** (loses), llama8B −0.54%, and the 14B/30B arms are invalid.
+> Dead ends recorded so they are not redone: a barrier/penalty term (σ is ALREADY
+> 2.3–2.7× convex at the floor), `measured_marg` (69% sign violations, ratio
+> inverts), and P2/P3 against the current probe (resolution is not what failed).
+> The knock-down probe's noise scales with model size — negative ΔLoss entries
+> 8/31/39/56% for 4B/llama8B/14B/30B — but 4B has the CLEANEST probe and still
+> lost, so "fix the probe" is a hypothesis, not the conclusion. Open discriminator:
+> re-probe 4B with paired/common-random-number draws; if its ratio stabilises and
+> P1 still loses, cross-operator loss weighting is dead.
 >
 > ### 2026-07-25 — PTQ front-end ablation DONE → `hpca_results/llm/frontend_awq/`
 > Answers "is SC's quality tied to SmoothQuant specifically?" — **no.** Native
