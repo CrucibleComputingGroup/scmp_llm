@@ -2504,3 +2504,50 @@ to ~2%, and down_proj is exactly 0.00 on dense models / 0.47 on MoE, which is
 the residual-path identity showing up correctly) but reweighting sigma by it
 does NOT convert. Sixth instance of a proxy-axis gain failing to transfer.
 Do not revisit without a different consumption mechanism than reweighting.
+
+## ══ 2026-08-05 ★★★ POW2-RESTRICTED LADDER — the missing half-2 experiment ══
+
+**The thesis half "SC is finer-grained than fixed-point" finally has a direct
+measurement, and it is POSITIVE on all four models.**
+
+### Design
+Same allocator, same budget, same 20% mask, same protocol, same front-end.
+ONLY the ladder's rung PLACEMENT changes:
+  calibrated  96,64,48,32,24,16   (96/48/24 are NOT powers of two)
+  pow2-only  128,64,32,16         (the ONLY rungs in range a fixed-point
+                                   datapath can express)
+Controls are the in-wave `control` arms. Gate refuses the arm if any non-pow2
+rung survives. Emitted ladders verified `[128,64,32,16]` on all four models.
+
+| model | calibrated | pow2-only | penalty | cost | COST-ADJ |
+|---|---|---|---|---|---|
+| 4B | 12.4549@31.51 | 13.1061@31.32 | +5.23% | -0.60% | **+5.02%** |
+| 14B | 9.4063@31.85 | 9.6476@31.49 | +2.57% | -1.13% | **+2.41%** |
+| 30B | 9.6473@31.70 | 10.1227@31.56 | +4.93% | -0.44% | **+4.75%** |
+| llama8B | 8.9695@32.86 | 9.0421@32.98 | +0.81% | +0.37% | **+0.91%** |
+
+**Mean cost-adjusted penalty 3.27%, 4/4 models.** pow2-only ran CHEAPER on 3 of
+4 and still lost, so this is not a budget artifact. All deltas (0.65 / 0.24 /
+0.48 / 0.07 PPL) are far above the sd-0.0069 noise floor.
+
+### Why this is the right operationalization
+The old framing ("128 options vs BitMoD's 4") is undercut by our own ladder-size
+ablation (7 rungs ~ 95-99% of a 14-rung oracle). The correct claim is not how
+many options coexist but that **the ladder is CALIBRATED from a continuum**:
+`mp_best` uses **15 distinct ladders across 20 cells** and **43 distinct rung
+values, 39 of them non-powers-of-two** (97, 85, 74, 111, 117, 109, 66, 63, 61,
+49, 47, 45, 42, 39, 35, 33, 25, 19, 18 ...). The rungs cluster where a cell needs
+resolution -- 30B t48 packs four into 45-48, 4B t64 packs five into 60-64 --
+exactly where fixed-point's neighbours are 32 and 64, a 2x gap with nothing
+between. So 7 rungs suffice BECAUSE they are the right 7, and choosing them
+requires the continuum.
+
+NOTE the rung COUNT and PLACEMENT are confounded here (4 pow2 rungs vs 6
+calibrated) -- but that confound IS the finding: in the deployed range [16,128]
+there are exactly four powers of two, so a fixed-point ladder cannot have six.
+
+### ⚠ CORRECTS a standing claim
+Memory `project_scmp_mp_beat_actglobal_study` records "pow2 levels beat
+non-pow2". That does NOT hold for ladder rung placement at matched budget --
+here non-pow2 wins by 0.9-5.0% on every model. Whatever that earlier result
+compared, it must not be cited as evidence against fine rung spacing.
