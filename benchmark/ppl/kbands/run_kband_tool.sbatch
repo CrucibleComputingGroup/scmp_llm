@@ -7,7 +7,7 @@
 #SBATCH --account=nbleier_owned1
 #SBATCH --partition=gpu-rtx6000
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=180G
 #SBATCH --time=06:00:00
 #SBATCH --output=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/%x_%j.out
@@ -30,6 +30,38 @@ export SC_SCRAMBLE_MASKS=64
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
 OUT="$TURBO/kbands/kbands_20260801"
 mkdir -p "$OUT/alloc"
+
+if [[ "$KB_JOB" == "prcwire" ]]; then
+  : "${KB_PRC_JSON:?KB_PRC_JSON required}"
+  echo "[wire] per-(row,chunk) wiring check on $(hostname)"
+  export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
+  srun python -u -m benchmark.ppl.kbands.test_prc_wiring
+  exit $?
+fi
+
+if [[ "$KB_JOB" == "prccalib" ]]; then
+  : "${KB_MODEL:?}"; : "${KB_TARGET:?}"
+  PB=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}
+  HF=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['model_path'])" "$PB/table.json")
+  [[ -n "$HF" ]] || { echo "[prc] cannot read model_path" >&2; exit 2; }
+  export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
+  mkdir -p "$OUT/prc"
+  echo "[prc] calibrating ${KB_MODEL} t${KB_TARGET} from $PB"
+  srun python -u -m benchmark.ppl.mp_per_row_chunk_calib \
+    --parent "$PB" --model_path "$HF" \
+    --out "$OUT/prc/${KB_MODEL}_t${KB_TARGET}${KB_SUFFIX:-}_prc.json" \
+    --target "${KB_PRC_TARGET:-$KB_TARGET}" \
+    --windows "${KB_WINDOWS:-4}" --max-rows "${KB_MAXROWS:-256}" \
+    --frontend "${KB_FRONTEND:-awq}" \
+    ${KB_PARENT_TRACE:+--parent-trace "$KB_PARENT_TRACE"}
+  exit $?
+fi
+
+if [[ "$KB_JOB" == "perrowtest" ]]; then
+  echo "[kbands] per-(row,chunk) stream-length correctness on $(hostname)"
+  srun python -u -m benchmark.ppl.kbands.test_per_row_chunk_len
+  exit $?
+fi
 
 if [[ "$KB_JOB" == "equiv" ]]; then
   echo "[kbands] kernel equivalence test on $(hostname)"
@@ -57,7 +89,8 @@ if [[ "$KB_JOB" == "ceilingreal" ]]; then
   echo "[kbands] per-group ceiling on REAL activations: $KB_MODEL"
   export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
   srun python -u benchmark/ppl/kbands/t32_allocation_ceiling.py \
-    --target "${KB_TARGET:-32}" --real "$KB_MODEL" --op "${KB_OP:-down_proj}"
+    --target "${KB_TARGET:-32}" --real "$KB_MODEL" --op "${KB_OP:-down_proj}" \
+    --frontend "${KB_FRONTEND:-smoothquant}" ${KB_LADDER:+--ladder "$KB_LADDER"}
   exit $?
 fi
 

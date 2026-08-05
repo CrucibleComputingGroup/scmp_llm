@@ -28,7 +28,7 @@
 #SBATCH --account=nbleier_owned1
 #SBATCH --partition=gpu-rtx6000
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=180G
 #SBATCH --time=12:00:00
 #SBATCH --output=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/%x_%j.out

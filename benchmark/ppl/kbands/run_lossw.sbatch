@@ -21,7 +21,7 @@
 #SBATCH --account=nbleier_owned1
 #SBATCH --partition=gpu-rtx6000
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=180G
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/%x_%j.out
@@ -33,7 +33,7 @@ cd /home/allenjin/Projects/scmp_llm
 
 : "${KB_STAGE:?KB_STAGE required (calib|eval)}"
 : "${KB_MODEL:?KB_MODEL required}"
-: "${KB_ARM:?KB_ARM required (control|p1|p2|p3|b1|b2)}"
+: "${KB_ARM:?KB_ARM required (control|p1|p2|p3|b1|b2|pow2)}"
 KB_TARGET="${KB_TARGET:-32}"
 
 RES=/home/allenjin/Projects/hpca_results/llm
@@ -49,6 +49,7 @@ WRAPPER="$OUT/${TAG}_wrapper.json"
 HF=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['model_path'])" "$PARENT/table.json")
 [[ -n "$HF" ]] || { echo "[lossw] cannot read model_path" >&2; exit 2; }
 
+LADDER=""
 case "$KB_ARM" in
   control) WEIGHT_FLAGS="" ;;
   p1)      WEIGHT_FLAGS="--cross-layer-weight measured --measure-pool attn_linear" ;;
@@ -56,6 +57,7 @@ case "$KB_ARM" in
   p3)      WEIGHT_FLAGS="--cross-layer-weight measured --measure-pool none" ;;
   b1)      WEIGHT_FLAGS="--grad-source block" ;;
   b2)      WEIGHT_FLAGS="--grad-source block --grad-row-norm call --grad-g-pow 1 --grad-s-pow 1" ;;
+  pow2)    WEIGHT_FLAGS="" ; LADDER="128,64,32,16" ;;
   *) echo "[lossw] bad KB_ARM '$KB_ARM'" >&2; exit 2 ;;
 esac
 
@@ -74,7 +76,7 @@ if [[ "$KB_STAGE" == "calib" ]]; then
   echo "[lossw] weight flags: ${WEIGHT_FLAGS:-<none, uniform>}"
   srun python -u benchmark/ppl/calibrate_mp_thresholds.py \
     --model_path "$HF" \
-    --mp_levels 96,64,48,32,24,16 \
+    --mp_levels "${LADDER:-96,64,48,32,24,16}" \
     --budget_ratio 0.25 --budget_ref_stoc_len 128 \
     --sc_prec 8 --halve 1 --seed 0 --ctx_len 2048 \
     --budget-scope global --budget-weight macs --mac-weights-trace "$TRACE" \
@@ -109,6 +111,15 @@ if arm in ("b1", "b2"):
                  "CV-20 gain re-concentrates the budget")
     print(f"[gate] PASS {arm}: grad_source=block, row_norm={t.get('grad_row_norm')}, "
           f"pows={t.get('grad_g_pow')}/{t.get('grad_s_pow')}")
+    raise SystemExit(0)
+if arm == "pow2":
+    lv = t.get("stoc_len_levels") or []
+    bad = [v for v in lv if v & (v - 1)]
+    if bad:
+        sys.exit(f"[gate] pow2 arm emitted NON-power-of-two rungs {bad} -- the "
+                 "ladder override did not take, this would be the control")
+    print(f"[gate] PASS pow2: ladder {lv}, all powers of two "
+          f"(the only rungs fixed-point can express)")
     raise SystemExit(0)
 if arm == "control":
     if t.get("cross_layer_weight") != "uniform":
