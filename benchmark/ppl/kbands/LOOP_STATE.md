@@ -2447,3 +2447,60 @@ attribute rather than gate. Anyone quoting the raw `vs parent` column without
 the `value` column is over-claiming. If the archive needs to be defensible on a
 strict iso-cost basis for the paper, the prc cells must be recalibrated with
 `--parent-trace` and re-evaluated; expect the headline wins to SHRINK.
+
+## ══ 2026-08-05 ★ SC ENABLE-GRID MATCHING — a NEW 1.05x pass, runtime-free ══
+
+`sc_matmul` defaults `rng_levels = 2**(sc_prec-1) = 128` for EVERY `stoc_len`,
+and `model/sc_common.py` never overrode it. A group at the ladder floor was
+therefore representing a 128-level grid with ~18 stochastic samples: a stream of
+L cycles resolves ~L magnitudes, so everything finer is SAMPLING NOISE, not
+quantization error. On 4B t32, 44.1% of all MACs sit at that floor.
+
+### The grid must be a POWER OF TWO
+First sweep (grid=L): mean rel-L2 change at L<=32 only **-2.34%**, and it won
+ONLY at L in {16,32,64} -- exactly the powers of two -- doing nothing at
+18/24/48/96. The Owen/bit-reversal scramble is a pow2 construction
+(mask = bit_reverse(d mod M)), so a non-pow2 grid breaks its structure.
+Second sweep (grid = largest pow2 <= L): **-4.21%**, winning at every rung
+through 64, and largest on q/k/v -- the attention feeders sigma misprices.
+Probe: `benchmark/ppl/kbands/probe_rng_grid.py`.
+
+### Deployed as `SC_RNG_GRID=pow2` (OFF by default, byte-identical when unset)
+`model/sc_common.py` wraps `_sc_matmul` and injects
+`rng_levels = 1 << (L.bit_length()-1)` for 2 <= L < 96 (128 measured better at
+L>=96). Same cycle count, same 20% mask, same budget -- NO new hardware.
+
+### PPL, 11 cells, identity control EXACT
+`gridctl_30B_t48_prcqk` with the flag UNSET reproduced the archived 7.6394
+EXACTLY, so every delta below is the grid and not code drift.
+
+| cell | archive | grid | delta | cost | x_fp16 |
+|---|---|---|---|---|---|
+| **30B t48** | 7.6394 | **7.5663** | **-0.96%** | 53.60 (was 53.82) | **1.0420** <- 1.0521 **NEW PASS** |
+| **30B t32** | 8.0212 | **7.9073** | **-1.42%** | 40.10 (was 40.4) | 1.0890 <- 1.1047 |
+| 4B t40 | 10.8491 | 10.8099 | -0.36% | 41.49 | 1.0762 <- 1.0801 |
+| llama8B t96/t48/t32, 30B t64 | — | — | +0.03..+0.12% | — | BELOW noise floor, not results |
+| 14B t32 / 4B t32 / 4B t48 | — | — | +0.51/+0.37/+0.53% | — | small REAL regressions |
+
+Both 30B wins are cheaper AND better, so neither is purchased. Archive is now
+**4 of 11 passing 1.05x** (was 3) and 30B's passing rung drops **t64 -> t48**.
+Per-cell like qk: 30B gains most (largest attention MAC share, 22.4%), llama8B
+flat, 4B/14B t32 slightly worse. Builder folds it via `read_grid_result`.
+
+### Why this matters for the PAPER's weak half
+It gives "finer-grained than fixed-point" a MECHANISM instead of an option
+count: **SC decouples the quantization grid from the cost.** In fixed-point, b
+bits fixes both the 2^b grid AND the cost. SC runs a 16-level grid at 18, 24 or
+32 cycles -- same resolution, different variance, different cost. That is a
+2-D per-group precision space; fixed-point has 1-D. It also survives the ladder
+ablation (7 rungs ~ 95-99% of a 14-rung oracle) that undercuts "128 options".
+
+### DEAD: the loss-weighting family (P1 / B1 / B2)
+B2 (normalized block-local Jacobian) lost on 4/4: +0.50 / +1.33 / +0.93 / +2.55%.
+B1 (raw per-row multiply) was catastrophic: 4B +123%, llama8B +489% -- the
+documented `grad` cliff blowup, since Gauss-Newton squares a CV-9..26 tail.
+Per-row loss-relevance structure is REAL (CV 9-26 within k_proj/v_proj, stable
+to ~2%, and down_proj is exactly 0.00 on dense models / 0.47 on MoE, which is
+the residual-path identity showing up correctly) but reweighting sigma by it
+does NOT convert. Sixth instance of a proxy-axis gain failing to transfer.
+Do not revisit without a different consumption mechanism than reweighting.

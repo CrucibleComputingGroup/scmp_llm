@@ -25,17 +25,58 @@ Knobs read from ``model.config``:
 """
 from __future__ import annotations
 
+import os
 from typing import Iterable, Optional
 
 import torch
 from torch import nn
 
 try:
-    from scmp_kernels import sc_matmul as _sc_matmul
+    from scmp_kernels import sc_matmul as _sc_matmul_raw
     _HAS_SC = True
 except ImportError:
-    _sc_matmul = None
+    _sc_matmul_raw = None
     _HAS_SC = False
+
+# --- SC_RNG_GRID: match the enable-grid to the stream length -----------------
+# sc_matmul defaults rng_levels = 2**(sc_prec-1) = 128 for EVERY stoc_len, and
+# this file never overrode it. A group at the ladder floor therefore represents
+# a 128-level grid with ~18 stochastic samples: a stream of L cycles can only
+# resolve ~L magnitudes, so everything finer is pure SAMPLING NOISE, not
+# quantization error. On 4B t32, 44.1% of all MACs sit at that floor.
+#
+# Measured on real 4B activations (benchmark/ppl/kbands/probe_rng_grid.py):
+# matching the grid wins ONLY when the grid is a power of two -- the Owen /
+# bit-reversal scramble is a pow2 construction (mask = bit_reverse(d mod M)),
+# so a non-pow2 grid breaks its structure. grid=L helped at L in {16,32,64}
+# and did nothing at 18/24/48/96; grid = largest pow2 <= L helps at every rung
+# through 64. Mean relative-L2 change at L<=32: -2.34% for grid=L vs -4.21%
+# for pow2 -- largest on q/k/v, the attention feeders.
+#
+# At L>=96 the pow2 floor (64) is COARSER than the stream can resolve and 128
+# still wins, so it is left alone.
+#
+# Runtime-free: same cycle count, different enable grid. rng_levels is already
+# a per-call kernel argument, so this adds no hardware.
+# OFF by default (SC_RNG_GRID unset) => byte-identical to the deployed path.
+_SC_RNG_GRID = os.environ.get("SC_RNG_GRID", "").strip().lower()
+
+
+def _grid_for(stoc_len):
+    if _SC_RNG_GRID != "pow2" or stoc_len is None:
+        return None
+    L = int(stoc_len)
+    if L < 2 or L >= 96:
+        return None                       # 128 measured better at L>=96
+    return 1 << (L.bit_length() - 1)      # largest power of two <= L
+
+
+def _sc_matmul(*args, **kwargs):
+    if _SC_RNG_GRID == "pow2" and kwargs.get("rng_levels") is None:
+        g = _grid_for(kwargs.get("stoc_len"))
+        if g is not None:
+            kwargs["rng_levels"] = g
+    return _sc_matmul_raw(*args, **kwargs)
 
 try:
     # Precision-trace context (energy/latency simulator log). Tagging is
@@ -300,6 +341,100 @@ def _record_assignment(assignment, op=None, mac_scale: float = 1.0) -> None:
     for sl, idxs in assignment.level_row_indices.items():
         n = int(idxs.numel())
         _record_stoc_len(int(sl), n, op=op, mac_scale=mac_scale)
+
+
+def per_row_chunk_rungs(
+    x: "torch.Tensor",
+    chunk_d: int,
+    levels,
+    thresholds=None,
+    target: float = 0.0,
+):
+    """Per-(row, chunk) rung assignment from the per-chunk absmax.
+
+    Returns an ``(N, n_chunks)`` int32 table indexing ``levels``.
+
+    WHY THIS GRANULARITY. Quantization is already per-(row, 128-chunk) -- each
+    chunk carries its own scale -- but dispatch has only ever been per ROW, so
+    every chunk in a row shares one stream length. Measured on real activations
+    at equal mean cost, that mismatch is most of the available allocation gain:
+    per-row buys -0.7% to -7.2% squared error while per-(row, chunk) buys
+    -28.5% to -74.5%, on every linear operator of every model.
+
+    THE STATISTIC IS FREE. ``m`` below is the per-(row, chunk) absmax, which is
+    exactly the group quantization scale the kernel computes anyway
+    (``fused_quantize_bipolar_perrow`` returns it as ``scale_a``). Unlike the
+    l2 norm or crest factor it needs no additional group reduction.
+
+    NORMALIZATION IS PER CALL, not per group, mirroring the per-row dispatch: a
+    group's length depends on the other groups in the same call. Do not
+    describe it as coming from the group's own input alone.
+
+    ``thresholds`` (ascending, len == len(levels) - 1) on the normalized metric
+    is the deployable path. ``target`` selects a per-call quantile rule instead,
+    which is for ORACLE studies only -- it needs a sort per call.
+    """
+    if x.dim() != 2:
+        raise ValueError(f"per_row_chunk_rungs expects 2D x, got {tuple(x.shape)}")
+    n_levels = len(levels)
+    if n_levels < 2:
+        raise ValueError("per-(row, chunk) dispatch needs >= 2 levels")
+    N, D = x.shape
+    if N == 0:
+        # MoE: under sparse top-k routing an expert can receive ZERO tokens in
+        # a forward, so its projections get an empty (0, D) input. min()/max()
+        # over an empty dim raises, which is how the same routing case broke
+        # the per-row calibrator before. There is nothing to dispatch.
+        nch = (D + chunk_d - 1) // chunk_d
+        return torch.zeros((0, nch), dtype=torch.int32, device=x.device)
+    n_chunks = (D + chunk_d - 1) // chunk_d
+    pad = n_chunks * chunk_d - D
+    xa = x.abs()
+    if pad:
+        xa = torch.nn.functional.pad(xa, (0, pad))
+    m = xa.view(N, n_chunks, chunk_d).amax(-1)
+
+    lo = m.min()
+    hi = m.max()
+    mn = (m - lo) / (hi - lo).clamp_min(1e-8)
+
+    if thresholds is not None:
+        th = torch.as_tensor(list(thresholds), dtype=mn.dtype, device=mn.device)
+        if th.numel() != n_levels - 1:
+            raise ValueError(
+                f"per-(row, chunk) dispatch needs {n_levels - 1} thresholds "
+                f"for {n_levels} levels, got {th.numel()}")
+        return torch.bucketize(mn, th).to(torch.int32)
+
+    # Oracle path: rank all pairs and give the longest streams to the largest
+    # metric, with the split point solved so the MAC-weighted mean length hits
+    # `target` exactly. Ladder values are assumed ascending.
+    lv = torch.as_tensor([float(v) for v in levels], dtype=torch.float32,
+                         device=mn.device)
+    flat = mn.reshape(-1)
+    order = torch.argsort(flat, descending=True)
+    n = flat.numel()
+    # Fraction at each rung solved greedily from the top of the ladder down.
+    rung = torch.zeros(n, dtype=torch.int32, device=mn.device)
+    budget = float(target) * n
+    remaining = n
+    spent = 0.0
+    pos = 0
+    for r in range(n_levels - 1, 0, -1):
+        # Give rung r to as many top-ranked pairs as the budget allows while
+        # still affording the cheapest rung for everyone left.
+        lo_cost = float(lv[0])
+        afford = (budget - spent - lo_cost * remaining) / max(
+            float(lv[r]) - lo_cost, 1e-9)
+        take = int(max(0, min(remaining, afford)))
+        if take <= 0:
+            continue
+        rung[order[pos:pos + take]] = r
+        pos += take
+        spent += float(lv[r]) * take
+        remaining -= take
+    spent += float(lv[0]) * remaining
+    return rung.view(N, n_chunks)
 
 
 def apply_sc_config_defaults(config) -> None:
@@ -619,11 +754,58 @@ class SCLinear(nn.Linear):
                 w_dispatch = w_fp32
                 smooth_dispatch = smooth
             k_bands = None
+            prc = None
             if AdaptiveMPConfig is not None and isinstance(mp_config, AdaptiveMPConfig):
                 k_bands = mp_config.get_k_bands(
                     op_name, block_idx,
                     getattr(config, "_sc_total_blocks", None))
-            if k_bands is not None and residual_scale > 0.0:
+                get_prc = getattr(mp_config, "get_per_row_chunk", None)
+                if get_prc is not None:
+                    prc = get_prc(op_name, block_idx,
+                                  getattr(config, "_sc_total_blocks", None))
+            if prc is not None and residual_scale > 0.0:
+                # ---- per-(row, chunk) stream lengths -----------------------
+                # Every (row, 128-chunk) group gets its own length, which is
+                # the granularity quantization already uses. Dispatches in ONE
+                # kernel call carrying a rung table, so it issues FEWER
+                # launches than the per-row loop below (which gathers rows and
+                # calls once per rung).
+                if k_bands is not None:
+                    raise ValueError(
+                        f"{op_name} block {block_idx} enables BOTH k_bands and "
+                        "per_row_chunk. They both partition the residual "
+                        "contraction axis and would double-allocate it; "
+                        "per_row_chunk subsumes k_bands (a band is a set of "
+                        "chunks forced to share a rung).")
+                prc_levels, prc_thresholds = prc
+                rung_table = per_row_chunk_rungs(
+                    x_dispatch, sc_chunk_d, prc_levels,
+                    thresholds=prc_thresholds)
+                out_sub = _sc_matmul(
+                    x_dispatch, w_dispatch,
+                    granularity=sc_gran, mode=sc_mode,
+                    sc_prec=sc_prec, chunk_d=sc_chunk_d,
+                    stoc_len=int(max(prc_levels)),
+                    halve_bipolar_stoc_len=sc_halve,
+                    smooth_scales=smooth_dispatch,
+                    rung_table=rung_table, level_lens=list(prc_levels),
+                )
+                if protected_idx.numel() > 0:
+                    out_flat += out_sub
+                else:
+                    out_flat = out_sub
+                # Cost accounting must price the (row, chunk) pairs, not rows:
+                # a row no longer HAS one length. Each pair carries
+                # 1/n_chunks of the row's MACs.
+                _n_ch = rung_table.shape[1]
+                _cnt = torch.bincount(rung_table.reshape(-1).to(torch.int64),
+                                      minlength=len(prc_levels))
+                for _r, _L in enumerate(prc_levels):
+                    _n = int(_cnt[_r])
+                    if _n:
+                        _record_stoc_len(int(_L), _n / _n_ch, op=op_name,
+                                         mac_scale=residual_scale)
+            elif k_bands is not None and residual_scale > 0.0:
                 # ---- Phase 3: per-group (K-band) stream lengths ------------
                 # Same rung index per row as the per-row parent; band b runs
                 # that rung at its own length. Bands partition the residual

@@ -110,6 +110,10 @@ HF_CACHE=/nfs/turbo/coe-nbleier/allenjin/hf_cache
 export HF_HOME="$HF_CACHE" TRANSFORMERS_CACHE="$HF_CACHE"
 export HF_DATASETS_CACHE="$HF_CACHE/datasets" HF_HUB_CACHE="$HF_CACHE/hub"
 export SC_OWEN_MODE=bitrev SC_SCRAMBLE_MASKS=64
+# SC_RNG_GRID=pow2 matches the enable-grid to the stream length (largest
+# pow2 <= L, 128 kept at L>=96). Same cycles, different grid -- runtime-free.
+export SC_RNG_GRID="${SC_RNG_GRID:-}"
+echo "[prc-ppl] SC_RNG_GRID=${SC_RNG_GRID:-<unset, deployed 128>}"
 export QUANT_CONFIG=mp
 export MP_CONFIG_JSON="$CFG"
 export SC_HYBRID_CONFIG_JSON="${KB_HYBRID:-$PARENT/hybrid_config.json}"

@@ -676,6 +676,25 @@ class ThresholdCalibrator:
                 lb_g = _bucket_index(block_idx, self.total_blocks, self.layer_buckets)
                 self._grad_group_sum[(operator, lb_g)] += float(gp.sum())
                 self._grad_group_cnt[(operator, lb_g)] += int(gp.size)
+            elif getattr(self, "grad_row_norm", "none") == "call":
+                # B2. The raw per-row gain is EXTREMELY heavy-tailed (block-local
+                # Jacobian CV 9-26 within k_proj/v_proj), so a bare g·σ multiply
+                # lets a handful of rows capture the whole budget and floors the
+                # rest: measured 4B 12.45 -> 27.80 and llama8B 8.97 -> 52.82.
+                #
+                # What we actually want is the WITHIN-group ordering -- that is
+                # the structure a per-operator scalar (P1) cannot represent. So
+                # winsorize the tail, then normalize to mean 1 PER CALL. Relative
+                # row ordering inside the call is preserved exactly; the absolute
+                # scale, which is what hijacks the cross-group budget, is removed.
+                # With mean(g)=1 the group's total cost is unchanged, so this is
+                # a reallocation WITHIN the group rather than a budget grab.
+                gw = g.copy()
+                if 0.0 < self.grad_group_clip < 100.0 and gw.size:
+                    gw = np.minimum(gw, float(np.percentile(gw, self.grad_group_clip)))
+                mu = float(gw.mean())
+                gw = gw / mu if mu > 0 else np.ones_like(gw)
+                errors = (gw[:, None] ** self.grad_g_pow) * (errors ** self.grad_s_pow)
             else:
                 # Objective term per (row, level): g_row^gp · σ_row(level)^sp.
                 # Defaults (gp=sp=2) give the Gauss-Newton Σ g²σ² objective.
@@ -1354,12 +1373,151 @@ class PendingMerger:
             "alts": ({name: a.detach() for name, a in metric_alts.items()}
                      if metric_alts else None),
             "n_rows": int(metric_norm.reshape(-1).shape[0]),
+            # Block-local Jacobian mode needs the output tensor itself as an
+            # autograd input; the loss path never touches this and stays None.
+            "out": (output if getattr(self.calibrator, "grad_source", "loss")
+                    == "block" else None),
+            # Same reduce the loss-path backward hook uses, so g_row stays
+            # aligned with the metric rows (attention overrides it per-head /
+            # per-(B*H*N)-row).
+            "reduce": grad_reduce,
         }
         if output.requires_grad:
             def _grad_hook(grad_y, cid=cid, reduce=grad_reduce):
                 self._pending[cid]["grad"] = reduce(grad_y)
                 return None
             output.register_hook(_grad_hook)
+
+    def block_jacobian_one(self, block_idx: int, h, seed: int = 0):
+        """Differentiate ONE block's output the moment that block finishes.
+
+        Called from the block's own forward hook, so only a single block's
+        autograd graph is alive at a time. Doing this after the full forward
+        instead (retain_graph=True across 36-48 blocks, every op output pinned)
+        OOMs at 95 GiB on every model -- measured, not predicted.
+
+        `retain_graph=False` is safe and is the point: block mode never runs a
+        full backward, and the traversal stops at `inputs`, which all live
+        inside this block, so nothing another block needs is freed.
+        """
+        cids = [c for c, r in self._pending.items()
+                if int(r["block_idx"]) == int(block_idx)
+                and r.get("out") is not None and r["out"].requires_grad
+                and r.get("grad") is None]
+        if not cids:
+            return
+        gen = torch.Generator(device="cpu").manual_seed(int(seed) + int(block_idx))
+        u = torch.randn(h.shape[-1], generator=gen, dtype=torch.float32)
+        u = (u / u.norm()).to(device=h.device, dtype=h.dtype)
+        outs = [self._pending[c]["out"] for c in cids]
+        grads = torch.autograd.grad((h.float() * u.float()).sum(), outs,
+                                    retain_graph=False, allow_unused=True)
+        for c, g in zip(cids, grads):
+            if g is None:
+                raise RuntimeError(
+                    f"[blockjac] block {block_idx} output does not depend on "
+                    f"operator={self._pending[c]['operator']} -- graph is wrong, "
+                    "refusing to record a zero weight")
+            self._pending[c]["grad"] = self._pending[c]["reduce"](g).detach()
+            # Drop the graph reference immediately; this is what keeps memory flat.
+            self._pending[c]["out"] = None
+
+    def block_jacobian_report(self):
+        """Per-row gain spread, for refutation criterion 2 (see prereg).
+
+        If gains are near-constant within an operator, B1 degenerates to a
+        per-operator rescale -- i.e. P1 -- and inherits P1's verdict.
+        """
+        stats: dict = {}
+        for _cid, rec in self._pending.items():
+            g = rec.get("grad")
+            if g is None:
+                continue
+            v = g.reshape(-1).float()
+            s = stats.setdefault(rec["operator"], [0.0, 0.0, 0])
+            s[0] += float(v.sum()); s[1] += float((v * v).sum()); s[2] += v.numel()
+        self._jac_stats = {}
+        for op, (s1, s2, n) in sorted(stats.items()):
+            if n < 2:
+                continue
+            mu = s1 / n
+            var = max(s2 / n - mu * mu, 0.0)
+            self._jac_stats[op] = {"mean": mu, "cv": ((var ** 0.5) / mu
+                                                      if mu > 0 else float("nan")),
+                                   "n": n}
+        line = "  ".join(f"{op}:cv={d['cv']:.2f}" for op, d in self._jac_stats.items())
+        print(f"[blockjac] per-row gain spread (CV within operator) — {line}")
+
+    def _block_jacobian_grads_unused(self, block_outputs: dict, seed: int = 0):
+        """Populate each pending record's g_row from a BLOCK-LOCAL Jacobian.
+
+        For every transformer block b we differentiate a fixed random projection
+        of that block's output, ``(h_b * u_b).sum()``, with respect to the SC
+        matmul outputs recorded INSIDE block b. Because each ``y_row`` lies
+        inside b and ``h_b`` is b's own output, the chain-rule path is confined
+        to block b BY CONSTRUCTION -- there is no contamination from other
+        blocks and nothing has to be masked out.
+
+        This is the whole point of B1: it replaces an END-TO-END dLoss probe,
+        whose noise made 22-56% of its entries sign-violating and which was
+        unusable above ~8B, with a one-block-deep Jacobian. The result is a
+        NORM, hence non-negative by construction, so that failure mode cannot
+        recur. See kbands/PREREG_BLOCK_JACOBIAN.md.
+
+        ``block_outputs`` maps block_idx -> the block's output tensor.
+        """
+        gen = torch.Generator(device="cpu").manual_seed(int(seed))
+        by_block: dict = {}
+        for cid, rec in self._pending.items():
+            if rec.get("out") is not None and rec["out"].requires_grad:
+                by_block.setdefault(int(rec["block_idx"]), []).append(cid)
+        if not by_block:
+            raise RuntimeError("[blockjac] no pending records carry a "
+                               "differentiable output; the graph was not kept")
+        missing = sorted(set(by_block) - set(block_outputs))
+        if missing:
+            raise RuntimeError(f"[blockjac] no captured block output for blocks "
+                               f"{missing[:6]} -- refusing to weight on partial "
+                               "coverage")
+        for b, cids in by_block.items():
+            h = block_outputs[b]
+            # Fixed probe per block: deterministic across draws and windows so
+            # the weighting is reproducible, and independent of the loss.
+            u = torch.randn(h.shape[-1], generator=gen, dtype=torch.float32)
+            u = (u / u.norm()).to(device=h.device, dtype=h.dtype)
+            outs = [self._pending[c]["out"] for c in cids]
+            grads = torch.autograd.grad(
+                (h.float() * u.float()).sum(), outs,
+                retain_graph=True, allow_unused=True)
+            for c, g in zip(cids, grads):
+                if g is None:
+                    raise RuntimeError(
+                        f"[blockjac] block {b} output does not depend on "
+                        f"operator={self._pending[c]['operator']} -- the graph "
+                        "is wrong, refusing to record a zero weight")
+                self._pending[c]["grad"] = self._pending[c]["reduce"](g)
+        # Refutation criterion 2: if the per-row gains are near-constant within
+        # an operator then B1 collapses to a per-operator rescale, i.e. P1 in
+        # disguise, and inherits P1's verdict. Report the spread so that is
+        # checkable from the log rather than assumed.
+        stats: dict = {}
+        for cid, rec in self._pending.items():
+            g = rec.get("grad")
+            if g is None:
+                continue
+            v = g.reshape(-1).float()
+            s = stats.setdefault(rec["operator"], [0.0, 0.0, 0])
+            s[0] += float(v.sum()); s[1] += float((v * v).sum()); s[2] += v.numel()
+        self._jac_stats = {}
+        for op, (s1, s2, n) in sorted(stats.items()):
+            if n < 2:
+                continue
+            mu = s1 / n
+            var = max(s2 / n - mu * mu, 0.0)
+            cv = (var ** 0.5) / mu if mu > 0 else float("nan")
+            self._jac_stats[op] = {"mean": mu, "cv": cv, "n": n}
+        line = "  ".join(f"{op}:cv={d['cv']:.2f}" for op, d in self._jac_stats.items())
+        print(f"[blockjac] per-row gain spread (CV within operator) — {line}")
 
     def flush(self):
         """Drain one draw's pending records into the per-window accumulator.
@@ -2699,6 +2857,24 @@ def _build_parser():
                         "each normalized in their OWN pool (never a shared "
                         "attention weight). Off (default) = linear-only, "
                         "byte-identical to shipped fisher.")
+    p.add_argument("--grad-row-norm", dest="grad_row_norm",
+                   choices=["none", "call"], default="none",
+                   help="How the per-row weight is consumed. 'none' (default, "
+                        "unchanged) multiplies raw g into sigma -- with a "
+                        "heavy-tailed g this hands the budget to a few rows and "
+                        "blows up (measured 4B +123%%, llama8B +489%%). 'call' "
+                        "winsorizes at --grad-group-clip then normalizes to mean 1 "
+                        "per call, keeping the WITHIN-group ordering while "
+                        "removing the cross-group scale grab.")
+    p.add_argument("--grad-source", dest="grad_source",
+                   choices=["loss", "block"], default="loss",
+                   help="Where the per-row weight g_row comes from. 'loss' "
+                        "(default, unchanged) = end-to-end dL/dy. 'block' = the "
+                        "BLOCK-LOCAL Jacobian ||d(h_block.u)/dy_row||, one block "
+                        "deep instead of the whole network + loss, so it is far "
+                        "lower variance and non-negative by construction. Fixes "
+                        "sigma being a purely LOCAL per-operator reconstruction "
+                        "error. See kbands/PREREG_BLOCK_JACOBIAN.md.")
     p.add_argument("--measure-pool", dest="measure_pool",
                    choices=["none", "operator", "attn_linear"], default="none",
                    help="Pool the raw per-(op,bucket) ΔLoss before flooring and "
@@ -3216,6 +3392,14 @@ def main():
         )
 
     grad_weight = bool(args.loss_weight_by_grad)
+    if getattr(args, "grad_source", "loss") == "block":
+        # B1: the block-local Jacobian IS the per-row weight, so it implies
+        # per-row grad weighting even if --loss-weight-by-grad was not passed.
+        args.loss_weight_by_grad = True
+        grad_weight = True
+        print("[calib] --grad-source block: per-row weight = "
+              "||d(h_block.u)/dy_row|| (block-local Jacobian, NOT end-to-end "
+              "dL/dy). Non-negative by construction.")
     grad_on_sc = bool(args.grad_on_sc)
     protect_needs_grad = (
         float(args.protect_channel_frac) > 0.0
@@ -3492,6 +3676,10 @@ def main():
     )
     calibrator.calib_smoothquant = calib_smoothquant
     calibrator.fisher_group = (cross_layer_weight == "fisher")
+    # Read by PendingMerger.record to decide whether to retain the output tensor
+    # as an autograd input. Must be set BEFORE the first forward.
+    calibrator.grad_source = getattr(args, "grad_source", "loss")
+    calibrator.grad_row_norm = getattr(args, "grad_row_norm", "none")
     calibrator.fisher_attn = bool(getattr(args, "fisher_attn", False)) and \
         (cross_layer_weight == "fisher")
     calibrator.objective = args.objective
@@ -3558,6 +3746,33 @@ def main():
         if isinstance(mod, SCLinear):
             hooks.append(mod.register_forward_hook(sclinear_hook))
 
+    # B1 (--grad-source block): capture each decoder block's OUTPUT so the
+    # per-row weight can be a block-local Jacobian instead of an end-to-end
+    # dL/dy. Registered only in that mode, so the default path is untouched.
+    _blk: dict = {}
+    if getattr(args, "grad_source", "loss") == "block":
+        try:
+            _layers = model.model.layers
+        except AttributeError as exc:                       # noqa: BLE001
+            raise SystemExit("[blockjac] cannot reach model.model.layers to "
+                             f"capture block outputs: {exc}")
+
+        def _mk_blk_hook(i):
+            def _h(_m, _inp, out):
+                # Decoder layers return a tuple (hidden_states, ...). Module
+                # forward hooks fire AFTER every submodule hook inside, so all of
+                # this block's SC records already exist. Differentiate NOW and
+                # free, so only one block's graph is ever alive (holding all of
+                # them OOMs at 95 GiB).
+                h = out[0] if isinstance(out, (tuple, list)) else out
+                _blk[i] = h
+                if h.requires_grad:
+                    merger.block_jacobian_one(i, h, seed=args.seed)
+            return _h
+        for i, lyr in enumerate(_layers):
+            hooks.append(lyr.register_forward_hook(_mk_blk_hook(i)))
+        print(f"[blockjac] capturing outputs of {len(_layers)} decoder blocks")
+
     restore_attn = _patch_attention_for_calibration(
         calibrator, merger, levels, sc_prec, halve,
         grad_on_sc=grad_on_sc, grad_sc_stoclen=grad_sc_stoclen,
@@ -3585,9 +3800,20 @@ def main():
                     if draws > 1:
                         _reseed_sc_for_draw(d, args.seed)
                     model.zero_grad(set_to_none=True)
-                    out = model(input_ids=ids, labels=ids)
-                    loss = out.loss
-                    loss.backward()
+                    if getattr(args, "grad_source", "loss") == "block":
+                        # B1: no loss, no end-to-end backward. One forward that
+                        # KEEPS the graph, then one autograd.grad per block from
+                        # a fixed probe on that block's own output.
+                        # Gains are computed inside the block forward hooks as
+                        # the forward proceeds (one block's graph alive at a
+                        # time); nothing to do after it returns but report.
+                        _blk.clear()
+                        out = model(input_ids=ids)
+                        merger.block_jacobian_report()
+                    else:
+                        out = model(input_ids=ids, labels=ids)
+                        loss = out.loss
+                        loss.backward()
                     merger.flush()
                 merger.finalize()
             else:
@@ -3826,6 +4052,10 @@ def main():
     payload["mp_levels"] = args.mp_levels
     payload["seed"] = int(args.seed)
     payload["budget_weight"] = args.budget_weight
+    payload["grad_source"] = getattr(args, "grad_source", "loss")
+    payload["grad_row_norm"] = getattr(args, "grad_row_norm", "none")
+    payload["grad_g_pow"] = float(args.grad_g_pow)
+    payload["grad_s_pow"] = float(args.grad_s_pow)
     if args.budget_weight == "macs":
         payload["mac_per_row"] = calibrator.mac_per_row
     if (args.protect_channel_metric == "act_grad_weight"

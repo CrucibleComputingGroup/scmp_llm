@@ -54,6 +54,30 @@ TARGETS = [32, 40, 48, 64, 96]
 ARMS = ["prcqk", "prc", "qk", "parent"]
 
 
+def read_grid_result(model: str, target: int, arm: str):
+    """PPL for the SC_RNG_GRID=pow2 variant of an arm.
+
+    Grid runs are launched with a `grid_` job-name prefix precisely so this
+    builder's `prcppl_` glob cannot pick them up by accident; they are opted in
+    HERE, explicitly. Same table, same 20% mask, same budget -- only the SC
+    enable-grid differs (largest pow2 <= stoc_len), which is runtime-free.
+    An identity control with the flag unset reproduced the archived 30B t48
+    number EXACTLY (7.6394), so any delta is the grid and not code drift.
+    """
+    name = f"{model}_t{target}_{arm}"
+    for f in sorted([q for q in LOGS.glob(f"grid_{name}_*.out")
+                     if re.fullmatch(rf"grid_{re.escape(name)}_\d+\.out", q.name)],
+                    key=lambda q: q.stat().st_mtime, reverse=True):
+        for line in reversed(f.read_text(errors="ignore").splitlines()):
+            if "[RESULT]" in line and "metric=ppl" in line:
+                kv = dict(t.split("=", 1) for t in line.split() if "=" in t)
+                try:
+                    return float(kv["value"]), float(kv["realized_flop_avg_sl"])
+                except Exception:                            # noqa: BLE001
+                    pass
+    return None, None
+
+
 def read_result(tag: str):
     """(ppl, realized_flop_avg_sl) from the eval's own [RESULT] line."""
     # The suffix must be a JOB ID. A bare `{tag}_*` also matches longer arm
@@ -119,6 +143,9 @@ def main() -> int:
                 v = read_result(f"{m}_t{t}_{arm}")
                 if v[0] is not None:
                     mine[arm] = v
+                gv = read_grid_result(m, t, arm)
+                if gv[0] is not None:
+                    mine[arm + "+grid"] = gv
             pv = prev.get(f"{m}/target{t}")
             if not mine and not pv:
                 pending.append(f"{m} t{t}")

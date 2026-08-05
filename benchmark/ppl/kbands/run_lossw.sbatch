@@ -33,7 +33,7 @@ cd /home/allenjin/Projects/scmp_llm
 
 : "${KB_STAGE:?KB_STAGE required (calib|eval)}"
 : "${KB_MODEL:?KB_MODEL required}"
-: "${KB_ARM:?KB_ARM required (control|p1|p2|p3)}"
+: "${KB_ARM:?KB_ARM required (control|p1|p2|p3|b1|b2)}"
 KB_TARGET="${KB_TARGET:-32}"
 
 RES=/home/allenjin/Projects/hpca_results/llm
@@ -54,6 +54,8 @@ case "$KB_ARM" in
   p1)      WEIGHT_FLAGS="--cross-layer-weight measured --measure-pool attn_linear" ;;
   p2)      WEIGHT_FLAGS="--cross-layer-weight measured --measure-pool operator" ;;
   p3)      WEIGHT_FLAGS="--cross-layer-weight measured --measure-pool none" ;;
+  b1)      WEIGHT_FLAGS="--grad-source block" ;;
+  b2)      WEIGHT_FLAGS="--grad-source block --grad-row-norm call --grad-g-pow 1 --grad-s-pow 1" ;;
   *) echo "[lossw] bad KB_ARM '$KB_ARM'" >&2; exit 2 ;;
 esac
 
@@ -61,6 +63,9 @@ HF_CACHE=/nfs/turbo/coe-nbleier/allenjin/hf_cache
 export HF_HOME="$HF_CACHE" TRANSFORMERS_CACHE="$HF_CACHE"
 export HF_DATASETS_CACHE="$HF_CACHE/datasets" HF_HUB_CACHE="$HF_CACHE/hub"
 export SC_OWEN_MODE=bitrev SC_SCRAMBLE_MASKS=64
+# b1 holds one block's autograd graph at a time; fragmentation is the
+# difference between fitting and not on the 95 GiB card.
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 export ACT_SCALES_DIR="$RES/ppl/mp_best/act_scales"
 
 # ----------------------------------------------------------------- calibrate
@@ -90,6 +95,21 @@ import json, sys
 t, arm = json.load(open(sys.argv[1])), sys.argv[2]
 m = t.get("measured") or {}
 w = m.get("normalized_weights") or {}
+if arm in ("b1", "b2"):
+    if t.get("grad_source") != "block":
+        sys.exit(f"[gate] b1 expected grad_source=block, got {t.get('grad_source')!r} "
+                 "-- the flag no-opped and this would be an unweighted control")
+    if arm == "b2" and t.get("grad_row_norm") != "call":
+        sys.exit(f"[gate] b2 expected grad_row_norm=call, got "
+                 f"{t.get('grad_row_norm')!r} -- unnormalized g blows up "
+                 "(4B +123%, llama8B +489%)")
+    if arm == "b2" and (t.get("grad_g_pow"), t.get("grad_s_pow")) != (1.0, 1.0):
+        sys.exit(f"[gate] b2 expected g_pow=s_pow=1, got "
+                 f"{t.get('grad_g_pow')}/{t.get('grad_s_pow')} -- squaring a "
+                 "CV-20 gain re-concentrates the budget")
+    print(f"[gate] PASS {arm}: grad_source=block, row_norm={t.get('grad_row_norm')}, "
+          f"pows={t.get('grad_g_pow')}/{t.get('grad_s_pow')}")
+    raise SystemExit(0)
 if arm == "control":
     if t.get("cross_layer_weight") != "uniform":
         sys.exit(f"[gate] control must be uniform, got {t.get('cross_layer_weight')!r}")
