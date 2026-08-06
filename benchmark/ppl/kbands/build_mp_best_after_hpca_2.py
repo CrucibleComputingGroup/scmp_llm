@@ -49,7 +49,7 @@ MODELS = ["4B", "llama8B", "14B", "30B"]
 # cells with only a predecessor entry are carried at `source: mp_best_after_hpca`.
 # Sensitivities are anchored on (32, 48) explicitly, so widening this is inert
 # for the cost model.
-TARGETS = [32, 40, 48, 64, 96]
+TARGETS = [32, 40, 48, 64, 96, 128]
 # arms measured in this wave, in preference order for tie-breaks
 ARMS = ["prcqk", "prc", "qk", "parent"]
 
@@ -128,10 +128,10 @@ def main() -> int:
     S = sensitivities(parents)
 
     OUT.mkdir(parents=True, exist_ok=True)
-    for sub in ("configs", "prc_tables", "qk_scales"):
+    for sub in ("configs", "prc_tables", "qk_scales", "traces"):
         (OUT / sub).mkdir(exist_ok=True)
 
-    manifest, rows, pending = {}, [], []
+    manifest, rows, pending, manifest_trace = {}, [], [], {}
     for m in MODELS:
         for t in TARGETS:
             par = parents.get((m, t))
@@ -192,12 +192,15 @@ def main() -> int:
                 for f in srcb.iterdir():
                     if f.is_file():
                         shutil.copy2(f, dst / f.name)
-            if lab in ("prc", "prcqk"):
+            # "prcqk+grid" must still pull its prc table / qk scales -- matching
+            # the raw label would silently ship a grid winner with no table.
+            base_lab = lab.replace("+grid", "").replace("prev:", "")
+            if base_lab in ("prc", "prcqk"):
                 for pat in (f"{m}_t{t}_v7_prc.json", f"{m}_t{t}_v7_prc_table.json"):
                     src_f = PRCDIR / pat
                     if src_f.is_file():
                         shutil.copy2(src_f, OUT / "prc_tables" / pat)
-            if lab in ("qk", "prcqk") or (pv and "qk" in (pv.get("winner") or "")):
+            if base_lab in ("qk", "prcqk") or (pv and "qk" in (pv.get("winner") or "")):
                 for cand in (PREV / "qk_scales" / f"{m}_t{t}_qk_alpha1.0.json",
                              Path("/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/"
                                   f"kbands_20260801/qk/{m}_t{t}_qk_alpha1.0.json")):
@@ -205,6 +208,26 @@ def main() -> int:
                         shutil.copy2(cand, OUT / "qk_scales" / cand.name)
                         break
 
+            # The winner's TRACE. The energy model is driven from traces, not
+            # from nominal budgets, so an archive without them is not usable for
+            # the energy numbers. Grid runs carry a `_grid` tag; plain runs may
+            # or may not carry `_v7`, so match on the arm prefix.
+            if not lab.startswith("prev:"):
+                arm_only = lab.replace("+grid", "")
+                want_grid = lab.endswith("+grid")
+                best_tr = None
+                for cand in sorted(PPLDIR.glob(f"{m}_t{t}_{arm_only}*_trace.json"),
+                                   key=lambda q: q.stat().st_mtime, reverse=True):
+                    is_grid = "_grid" in cand.name
+                    if is_grid == want_grid:
+                        best_tr = cand
+                        break
+                if best_tr is not None:
+                    shutil.copy2(best_tr, OUT / "traces" / best_tr.name)
+                    manifest_trace[key] = best_tr.name
+
+    for k, v in manifest_trace.items():
+        manifest[k]["trace"] = v
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=1))
 
     def fmt(v, spec, dash="—"):
