@@ -104,12 +104,12 @@ def sbatch(script: str, env: dict, name: str, dep: str | None = None) -> str | N
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--submit", action="store_true")
-    ap.add_argument("--max-inflight", type=int, default=10,
+    ap.add_argument("--max-inflight", type=int, default=10**6,
                     help="stop submitting once this many of our jobs are queued "
                          "or running; the account CPU cap makes over-submitting "
                          "pointless and it starves the rest of the lab")
-    ap.add_argument("--grid-policy", choices=["winner", "all", "none"],
-                    default="winner",
+    ap.add_argument("--grid-policy", choices=["main", "winner", "all", "none"],
+                    default="main",
                     help="Which arms get the SC_RNG_GRID=pow2 variant. 'winner' "
                          "(default) runs it only on the cell's currently-best "
                          "measured arm, so grid FOLLOWS measurement instead of "
@@ -180,6 +180,14 @@ def main() -> int:
                 needs_qk = arm in ("qk", "prcqk")
                 grids = (False,)
                 if a.grid_policy == "all":
+                    grids = (False, True)
+                elif a.grid_policy == "main" and arm in ("prc", "prcqk"):
+                    # Submit the grid variant NOW, with no dependency on the base
+                    # arm's result. "winner" policy could only submit grid after
+                    # its base arm finished, which forced the wave to trickle and
+                    # left GPUs idle between top-ups -- the scheduler should be
+                    # doing the sequencing, not us. prc/prcqk are the only arms
+                    # that ever win a cell, so parent+grid / qk+grid are dropped.
                     grids = (False, True)
                 elif a.grid_policy == "winner" and arm == best_arm:
                     grids = (False, True)
