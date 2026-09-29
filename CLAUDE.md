@@ -1,5 +1,467 @@
 # scmp_llm — reproduction guide
 
+> ═══════════════════════════════════════════════════════════════════════════
+> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-09-29
+>
+> ### 2026-09-29 — tile-max avg_sl (hardware tiles run at their longest row)
+> User hardware model: the systolic array fetches an A tile of 32 rows × 8 K; the tile runs at its
+> LONGEST row's stream length. Computed on all 20 best(all) cells (array 62287797, FP-matmul
+> trajectory with the deployed dispatch; flat avg_sl within −1.09…+0.04% of the archived trace
+> cost; llama8B t32's Slurm FAILED is only that 1% check at −1.09%). 32-row tiles: t32–t48
+> +32…+57%, t64 +26…+42%, t96 +20…+26% (mean +38%; 8-row +23%, 64-row +44%). Linears carry it
+> (+25…+64%, down_proj ≈2×); attention 0–16%. Uniform SC pays no tile penalty. Counting attention
+> CAUSALLY (row i needs i+1 keys; estimate assuming length is position-independent) halves its MAC
+> share, lowers flat avg_sl 1–11% (4B t32 33.5→29.9) and raises the 32-row penalty to mean +42%
+> (+22…+61%). avg_sl in traces/archives still counts attention dense. Results: Turbo
+> `hpca/kbands/tile_cost_20260928/fp/<cell>/tile.json`; tool `benchmark/ppl/tile_cost.py`
+> (+ `test_tile_cost.py`), launcher `kbands/run_tile_cost_20260928.sbatch` (TILE_MODE=exact|fp).
+> **Round 7 is BLOCKED:** all three 30B captures (62263344_0-2) failed the identity check
+> `own_tables_rescored_equal_capture_diag` — a checker bug, not a mismatch: calib10_r7 fills
+> `diag["tables"]` (l.755–785) before creating gfisla (l.883), so `tables.gfisla` is always null;
+> every other value matches exactly. Fix check (7) in `prc_r7_solve.py`, then re-run `identity`
+> on CPU (needs user OK — hashed round-7 source).
+>
+> ### 2026-09-28 — T1 stall investigated; round 6 SUBMITTED
+> **Round 6 submitted 2026-09-28 (user OK):** attention diagnostic array **62208439** (0-2%2: 30B_t40, 30B_t32,
+> 4B_dense) and 14B t32 re-target **62208440** (`--array=0` only — 30B t64 re-target DROPPED per critic: −0.64%
+> under-spend, predicted not to flip). ≤3 GPUs. Outputs: Turbo `kbands/prc_r6_20260928/`, `prc_r6_retarget_20260928/`.
+> **ROUND 7 SUBMITTED 2026-09-28 (user OK; user says do not re-ask for rounds 6–8 stages):** step 0 array
+> **62263343** (`0-2%1`: 30B t40→t32→t48, c17 vs c17_s80 linear marginal → κ decision) + captures **62263344**
+> (`0-2%3`: 30B t32/t40/t48, attention rungs to 128, att-rows 512). ≤4 GPUs. Prereg `kbands/PRC_R7_PREREG_20260928.md`
+> + `prc_r7_prereg_20260928.json`; submission records `prc_{step0_r7,r7_capture}_20260928_submission.json`.
+> Step 0 done (30B linear marginal: cut 12.1%→+2.02% PPL at t40, cut 10.5%→+6.07% at t32). All 3 captures
+> FAILED exit 3 ONLY on a checker bug (pinned check 7 demands diag.tables.gfisla, never written); CPU re-check
+> `identity_check7fix.json` = exact; **user approved** accepting it (2026-09-28) → chain flag
+> `--accept-identity-recheck` (note `kbands/PRC_R7_CAPTURE_IDENTITY_NOTE_20260928.md`). Stage-2 CPU chain job
+> 62293499 OK: κ keep_0.42; all 3 cells enabled, primary UK, secondary U, K refused (<MDE). ⚠ 30B t32 UK/U
+> pred −0.51 nats = Fisher extrapolation anomaly (K +0.001) — screen NLL decides. **Screen array 62295294**
+> (`0-2%2`; tilecost array holds 2 GPUs). Record `kbands/prc_screen_r7_20260928_submission.json`.
+> **ROUND-6 RESULTS (all jobs COMPLETED; record `kbands/PRC_R6_RESULTS_20260928.md`):**
+> - Attention diag (TRAIN, over-budget, not citable): pinned qk/av → 128 = **30B t32 −1.98% @+7.0% cyc
+>   (z −5.2), 30B t40 −2.36% @+8.7% (z −7.2)** ⇒ gate PASS (≈1.2–1.85× the budget chord; ~9× linears'
+>   per-cycle value). 4B t40 −0.60% @+9.0% FAIL; 4B t64 −0.44% @+4.3% marginal PASS. ⇒ Round 7 = 30B t32/t40/t48.
+> - 14B t32 re-target to parent cost: full test **9.0845 (+0.089% vs incumbent 9.0764), no ≤1.05× flip** ⇒
+>   re-targeting refuted; best(all) unchanged; no further re-targets.
+> **Round-4 results exist** — the "No round-4 PPL results yet" line in the 09-27 entry below is stale.
+> All 4 tasks finished 09-27 15:20–17:36; best(all) is unchanged. 4B t32, 30B t32 and 30B t40
+> retained their incumbents. llama8B t32 confirmed (z −1.98) but lost on test, 8.285860 vs 8.279485
+> (+0.077%). Record: `benchmark/ppl/kbands/PRC_ADJACENT_RESULTS_20260927.md`.
+> **Why rounds 3–5 added ~0:** proposals carried no loss signal, and moves were too small (R4/R5) or
+> rung-skipping (R3). Read-only investigation: `kbands/investigations/T1_STALL_INVESTIGATION_20260928.md`.
+> Mapper reports and the round-6 critic are in `investigations/t1_stall_20260928/`.
+> **Plan:** `kbands/ROUNDS_6_8_PLAN_20260928.md`. It covers the pre-registered gates, the ≤4-GPU plan, and
+> honest expectations (20-cell mean −0.05…−0.35 pp; 14B t32 likely flips to ≤1.05×).
+> Round 6 is two arrays, each `%2`, so ≤4 GPUs in total:
+> - (a) attention diagnostic on 30B t32/t40 and 4B t40/t64 (gross, TRAIN-only, not citable; gates round 7).
+>   Launcher `kbands/run_prc_r6_attn_diag_20260928.sbatch`, manifest `prc_r6_attn_diag_20260928.json`.
+>   Out: Turbo `hpca/kbands/prc_r6_20260928/`.
+> - (b) budget re-target to parent cost of 14B t32 (`c7gfisla`) and 30B t64 (`c7gfis`) through the new
+>   `mp_per_row_chunk_calib9_r6.py`. Launcher `kbands/run_prc_r6_retarget_20260928.sbatch`, manifest
+>   `prc_r6_retarget_20260928.json`. Out: Turbo `hpca/kbands/prc_r6_retarget_20260928/`.
+>   Report as a budget correction, not as T1.
+> **ROUND 7 BUILT, NOT SUBMITTED (needs user OK):** 30B t32/t40/t48, all with primary UK (family-κ joint λ, qk/av ladders up to 128,
+> parent cost via one fixed point). Prereg and exact commands in `kbands/PRC_R7_PREREG_20260928.md`; records `prc_r7_prereg_20260928.json`
+> (c7fcfaec…), step 0 `prc_step0_r7_20260928.json` (cdbfdbad…), capture `prc_r7_capture_20260928.json` (7a7d8121…). Step 0 (1 GPU) plus captures (3 GPUs)
+> run first; the screen manifest can only be built after the CPU chain. 4B t64 is off by default. Open (prereg §10): the one-sided κ rule and
+> 0.83/0.83 revert pins, MDE 0.9–1.3% above the expected gain (refusal plausible), and the ±0.10 new-rung audit, registered but not implemented.
+> Do not edit hashed round-4/6/7 sources. Round 8 is not built.
+>
+> ### 2026-09-27 — round-4 adjacent-rung allocation pilot queued
+> User authorized implementation and queueing, then increased the cap to
+> **four GPUs total**. Original Slurm array
+> **62104342**, tasks 0/1 = `4B_t32` / `llama8B_t32`, one GPU each, throttle 2,
+> account `nbleier_owned1`, RTX6000 reservation. Companion array **62105189**
+> adds `30B_t32` / `30B_t40`, also one GPU each and throttle 2. Together these
+> arrays occupy at most four GPUs; all four initially pending for resources.
+> Exact current best(all) incumbents: dense `c6_gfis`, 30B t32 `c7_gfisla`,
+> 30B t40 round-3 `candidate07_mlp_from_projections`. Change one threshold in each of two buckets,
+> with at most one-rung displacement and bounded group/MAC/operator changes.
+> Six fresh TRAIN search windows and 16 disjoint confirmation windows; full TEST
+> only after lower paired NLL with `z < -1.5` and cost/locality checks. Final
+> reporting remains best(full-test PPL) across all comparable rounds. No RNG,
+> QK transform, frontend, mask, protected-channel, ladder, or runtime changes.
+> Protocol: `benchmark/ppl/kbands/PRC_ADJACENT_20260927.md`; frozen manifest and
+> submission record: `prc_adjacent_20260927{,_submission}.json` in that directory;
+> 30B companion: `prc_adjacent_30b_20260927{,_submission}.json`.
+> Driver/proposals: `benchmark/ppl/prc_adjacent_{refine,proposals}.py`.
+> Outputs: `/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/`.
+> All 32 CPU tests and both job preflights passed. Do not edit frozen source
+> files while these jobs run. No round-4 PPL results yet.
+>
+> ### 2026-09-23 — per-GROUP allocation redone right: archive `llm/ppl/prc2/`
+> **Rebuttal T1/T2 evidence lives in `hpca_results/llm/ppl/prc2/`** (README,
+> SUMMARY, manifest; rebuild `python benchmark/ppl/kbands/build_prc2_archive.py`).
+> Pure allocation vs the submitted per-row `parent` (same wrapper / INT mask / AWQ;
+> attention keeps the parent's per-row thresholds + μ+2τ escape; on the 7 linears the
+> per-(row,chunk) table replaces the per-row statistic/ladder/escape; cost from each
+> run's TRACE — the [RESULT] tracker reads per-group arms ≤0.4% cheap). Iso-cost ΔPPL
+> (SUMMARY.md authoritative): 4B −5.49/−2.40/−1.37/−0.63/−0.23% (t32…t96), llama8B
+> −3.30/−1.51/−1.32/−0.68/−0.21%, 14B −1.53% (t32) / −1.04% (t48); every finished cell
+> improves, trace cost within 1.1% of the parent. Identically calibrated per-ROW
+> control (4B t32) −1.12% ⇒ **granularity alone −4.42%** raw (one cell). Compute
+> (secondary): 4B t32 at 0.8× linear budget = parent PPL at −12.0% SC cycles.
+> User rule: ~1% cost doesn't matter, 1% PPL does — headline ΔPPL per budget.
+> **Calibrator:** `benchmark/ppl/mp_per_row_chunk_calib2.py` (UNTRACKED) — fixes 8
+> defects of the v7 calibrator (`mp_per_row_chunk_calib.py`): full-call min-max
+> normalization, all blocks, SC-only modules, AWQ smooth_scales in the error
+> curves, tail chunk, dense ladder [8..128], exact monotone-staircase DP, budgets =
+> parent's own L on the same stratified TRAIN windows. Pre-registered held-out
+> gate (L within [−3%,+2%], error < parent) before every eval. Analysis copy
+> `mp_per_row_chunk_calib3.py` (+ `--row-shared` control). Runtime edit:
+> `model/sc_common.per_row_chunk_rungs` honours `SC_PRC_ROWSHARED=1` (default off,
+> byte-identical) for the per-row control only. Launchers:
+> `kbands/run_prc2_calib.sbatch` (calib→gate→eval), `run_prc3_calib.sbatch`,
+> `run_prc2_scaled.sbatch`, `launch_prc2_ppl.sh`. Narrative/run log:
+> `kbands/PRC2_OVERNIGHT.md`.
+> ⚠ **ENV:** the editable `scmp_kernels` install points at the pre-move path; every
+> eval must export `PYTHONPATH=/home/allenjin/Projects/SCMP/scmp_llm/kernels`.
+> ⚠ The v7 tables inside `mp_best_after_hpca_{2,3,4}` are mis-calibrated; the
+> "granularity ≈ −1.04%" figure below/elsewhere is SUPERSEDED by prc2.
+>
+> ### 2026-08-04 — per-(row,chunk) archive SHIPPED; P1 loss-weighting REFUTED
+> **Deployment archive is now `hpca_results/llm/ppl/mp_best_after_hpca_2/`**
+> (supersedes `mp_best_after_hpca`; `mp_best/` stays frozen for the paper).
+> Static K-bands replaced by **per-(row, chunk)** allocation — a stream length per
+> (row, 128-chunk) group instead of one assignment shared by every row. Quantization
+> was ALREADY per-(row,chunk); only dispatch was per-row, and closing that mismatch
+> is the lever. 11 cells over t{32,40,48,64,96}, **3 pass 1.05×** (14B t48 1.0253,
+> 30B t64 1.0162, 4B t48 1.0332). Rebuild: `python benchmark/ppl/kbands/
+> build_mp_best_after_hpca_2.py` (idempotent, login node).
+> **Levers are PER-CELL, never uniform.** qk helps 4B/llama8B t48/30B but REGRESSES
+> 14B at both budgets and llama8B t32. 30B needs BOTH levers — prc-only loses to
+> qk-only at t32/t48/t64, combined wins all three (cleanest evidence they compose
+> on disjoint operators). 14B had no working lever before; per-(row,chunk) moves it.
+> ⚠ **Read cost, not just PPL.** 30B t64's raw win (7.4241→7.3792) costs +2.5%
+> compute ⇒ cost-adjusted **+0.42% vs the incumbent qk cell**, i.e. bought not
+> earned. llama8B t96 is the mirror: PPL flat (20× below the noise floor) but
+> −7.6% compute ⇒ **−2.13%** cost-adjusted, a real win a strict iso-cost gate
+> would have hidden. Noise floor sd 0.0069; |Δ| < ~0.014 is not a result.
+> ⚠ **v7 vs iso2 = BUDGET SOURCE, not solver quality** (corrected 2026-08-04; an
+> earlier note in this block calling it a "reproducibility gap / blocker" was
+> WRONG). Without `--parent-trace` the prc calibrator falls back to the 256-row
+> calibration sample, which OVERESTIMATES the parent budget by 9–23% — that is
+> how the v7 tables were made, so v7 children overspend and partly BUY their
+> wins. `--parent-trace` (= `iso2`) is the FIX, and loses raw PPL only because it
+> stops buying compute. v7 is reproducible (omit the flag) but should not be.
+> **Consequence:** the deployed per-(row,chunk) cells are sample-budgeted and
+> overspend (4B t32 34.97 vs parent 33.72); this is disclosed in the manifest's
+> `realized_flop_avg_sl` / `cost_adjusted_value_pct`. Read the value column, not
+> the raw delta. Never label a new calibration `_v7` — `run_prc_ppl.sbatch`
+> defaults `KB_TBL=v7` and would load it silently.
+> Separate real gap: `benchmark/ppl/mp_per_row_chunk_calib.py` is UNTRACKED.
+> **P1 (pooled loss-weighted σ) REFUTED** — pre-registration + full results in
+> `benchmark/ppl/kbands/PREREG_LOSS_WEIGHTED_OBJECTIVE.md`. Allocation is ~96%
+> exhausted (deployable tracks the per-group oracle within 0.8–1.6pp) yet σ
+> converts to PPL at only 0.33–0.36 %/% and at 0.00 past the knee. All 20 mp_best
+> cells run `cross_layer_weight: uniform`. Weighting attention by measured ΔLoss
+> gave 4B **+1.18%** (loses), llama8B −0.54%, and the 14B/30B arms are invalid.
+> Dead ends recorded so they are not redone: a barrier/penalty term (σ is ALREADY
+> 2.3–2.7× convex at the floor), `measured_marg` (69% sign violations, ratio
+> inverts), and P2/P3 against the current probe (resolution is not what failed).
+> The knock-down probe's noise scales with model size — negative ΔLoss entries
+> 8/31/39/56% for 4B/llama8B/14B/30B — but 4B has the CLEANEST probe and still
+> lost, so "fix the probe" is a hypothesis, not the conclusion. Open discriminator:
+> re-probe 4B with paired/common-random-number draws; if its ratio stabilises and
+> P1 still loses, cross-operator loss weighting is dead.
+>
+> ### 2026-07-25 — PTQ front-end ablation DONE → `hpca_results/llm/frontend_awq/`
+> Answers "is SC's quality tied to SmoothQuant specifically?" — **no.** Native
+> AWQ (INT-objective scale search, `FRONTEND=awq` → `model/awq_apply.py`) swapped
+> in on UNIFORM PURE SC (allocator OFF, no hybrid mask), everything else fixed;
+> both front-ends fold through the same `smooth_scales` buffer so only the scale
+> VALUE differs. 12 cells (4 models × nominal 128/192/256), tag
+> `frontend_awq_20260724`, jobs 54738856/57/58/60, all COMPLETED, full protocol
+> (tokens 298,862 Qwen / 288,627 Llama, ctx 2048, `PPL_MAX_TOKENS=0`).
+> **AWQ wins 12/12, mean −1.93%** — and the margin grows monotonically as the SC
+> budget tightens (4B −6.25/−3.14/−1.57% at 128/192/256; 30B only −1.18/−0.56/
+> −0.32%), i.e. the front-end and the SC budget fight the SAME outlier problem,
+> so a better front-end buys budget. Small/fragile models gain most. No uniform
+> cell is promoted across 1.1×fp16 — margin win, not a budget unlock (that stays
+> the allocator's job). ⚠ Two hard caveats: (1) the SmoothQuant column is
+> `../uniform/` (pure SC) — these deltas do NOT compose with `mp_final`/
+> `ppl/mp_best`, the allocator + mask may already capture the same gain;
+> (2) an AWQ-fed SC cell is **no longer front-end-matched to the INT baselines**
+> (the whole point of using SmoothQuant), so **never table these against INT**
+> without re-running INT on AWQ. `AWQ_OBJ_BITS=4` (the search finds nothing at 8)
+> and 30B ran `AWQ_TOK_CAP=128` over 17,598 expert-linears — its small margin may
+> be partly calibration starvation. Full caveats in that dir's `README.md`.
+> **COVERAGE (both arms): the front-end reaches `SCLinear` ONLY.** `qk`/`av` are
+> A×A, so neither SmoothQuant nor AWQ touches them — they run on DYNAMIC per-row
+> (SC) / per-128-chunk (INT) symmetric absmax with zero calibrated component.
+> Upstream SmoothQuant is the same (it quantizes the BMMs, never smooths them:
+> `smooth_ln_fcs` covers LN→qkv and LN→fc1 only, not `o_proj`/`down_proj`). So the
+> −1.93% is entirely from the projections, the ablation cannot be
+> attention-confounded, and the fragile ~90%-of-rows attention path has never had
+> a front-end at all. **Open lead:** `qk` DOES admit an exact static equivalent
+> transform via UPSTREAM weights — scale `W_q` out-channels by `s`, `W_k` by
+> `1/s` (Q·Kᵀ contracts over `head_dim` ⇒ score-invariant, folds into existing
+> weights, runtime-free); needs `s` constant within each RoPE pair; `av` has no
+> analog (contracts over seq positions ⇒ length-dependent). NOT covered by the
+> rotation refutation — that killed ORTHOGONAL maps, this is diagonal.
+>
+> ### 2026-07-25 — INT-mask DOSE ablation promoted → `hpca_results/llm/int_ablation/`
+> The 10% hybrid-mask fraction that every `mp_final`/`ppl/mp_best` cell inherits
+> was never justified. It is now swept: k ∈ {0,5,10,20}% × {nominal 256, 192,
+> 128} × 4 models = 48 cells, uniform SC (allocator OFF) so it isolates the
+> mask. Sources: `../uniform/` (0%), NEW `int_abl_5pct_20260724` (jobs
+> 54688418/58/59/60), `../uniform_hybrid/` (10%), `uni_hyb20_20260724` (20%,
+> previously unpromoted) + NEW `int_abl_96i8_20260724` (jobs 54686166–69, the
+> INT8 gap-fill so the 192 row is width-consistent). All 36 promoted traces
+> re-verified full-protocol by `rebuild.py`, which RAISES rather than emit an
+> unverified number. **Masks are strictly nested (5% ⊂ 10% ⊂ 20%) off an
+> identical sensitivity source** ⇒ the columns are a genuine dose curve.
+> Findings: (1) **sharply diminishing returns** — 5% of the mask captures 64%
+> of the whole 0→20% gain, 10% captures 85% (53%/77% over the 10 monotone
+> cells); this is the first direct evidence the sensitivity RANKING orders
+> correctly, not just that masking helps. (2) **llama8B inverts it** — ~linear
+> dose response (5% captures only 12–24%), because its 5% mask selects NO `qk`
+> at all while 4B already spends 5/17 there. (3) **14B saturates at 10% and
+> mildly regresses at 20%** (+1.0% @256, +0.4% @192) — "20% everywhere" is not
+> free; monotone at the aggressive 128. (4) **mask width is ~free at 20% dose**
+> — INT7 vs INT8 masked cells differ −0.23%…+0.13%, so `../energy/` may price
+> the mask at INT7. ⚠ Dose is priced on the ENERGY axis, NOT iso-total-compute
+> (higher k = more INT MACs outside the SC budget) — never quote the PPL column
+> alone as "20% beats 10%". This is the UNIFORM ladder and says nothing about
+> the best dose UNDER MP (that is `mp_v9_hybdose/`, which need not agree).
+> Gap: `sc_avg96`/`sc_int6` have 0/10/20% but no 5% cell (8 more cells if the
+> collapse budgets need a curve).
+>
+> ### Frozen deployment archive = `hpca_results/llm/ppl/mp_best/`
+> The citable per-cell best MP deployment. 4 models × targets
+> {32,40,48,64,96,128}; each cell is a self-contained bundle (wrapper / table /
+> hybrid_config / trace / runtime + SHA256SUMS + act_scales). `rebuild.py`
+> re-selects the LOWEST full-protocol WikiText-2 test PPL per (model,target)
+> across ALL experiment generations (v9 / v11 / v17 / v20 / mp_final / uniform)
+> — a deliberate MIX of versions; the winning label + source path per cell is in
+> `manifest.json` / `mp_best_all.csv`, human table in `SUMMARY.md`. Selection
+> IGNORES cost, so a gated winner can overshoot its nominal target (e.g. 30B t48
+> realizes 51.1 cyc); the `realized_flop_avg_sl` column is honest about it. To
+> regenerate: `python rebuild.py` (login node, reads Turbo, no GPU). fp16 refs:
+> 4B 10.0445 / llama8B 7.2130 / 14B 8.6383 / 30B 7.2613; quality boundary =
+> 1.1×fp16.
+>
+> ### 2026-07-24 — V20 structural search folded into mp_best
+> V20 = a fresh fixed-target GLOBAL structural search (`benchmark/ppl/
+> wave_v20_staged/run_target.sbatch` → `final_mp_lane.sh`; ≤3 sweeps, k=2 escape
+> gate, min level 16) starting each cell from its V18-clean incumbent. 4B/8B/14B
+> ran the `structured` lane (tag `mp_v20_structured_{model}_t{t}_20260721`); 30B
+> ran the `direct-final hyb20` lane (tag `mp_v20_final_hyb20_30B_t{t}_20260722`;
+> B=8 MoE window-batching for the SEARCH only — both citable evals are B=1). All
+> 16 cells finished; full-protocol test PPLs live in each branch's `eval_test/`
+> (ungated) and `eval_gate2.0/` (k=2) subdirs. **GOTCHA: the `final_test_ppl`
+> FIELD in each search `summary.json` is null — the real numbers are in those
+> eval subdirs, tokens 298,862 (Qwen) / 288,627 (Llama), ctx 2048, max_tokens 0.**
+> Verdict: small wins at mid budgets on the big models, regressions at the
+> aggressive t32 everywhere (validation→test overfit — the search compresses the
+> ladder to win validation windows and it doesn't transfer), ~neutral on 4B/8B.
+> Folded into mp_best 2026-07-24 — 5 improved cells: 14B t40 9.2753→9.2314,
+> 14B t48 9.0973→9.0174, 30B t40 8.6856→8.5611, 30B t48 8.4093→8.2245,
+> 30B t64 7.8738→7.7372. V20 LOST → incumbent kept: 14B t32/t64, 30B t32.
+> 4B/llama8B were already V20 in mp_best. Caveat: 30B t40/48/64 winners use a
+> 20% INT mask (was 10% at t48/64) — more INT7 compute, priced on the energy
+> axis, NOT iso-total-compute; the ungated variants sit at ~same PPL and closer
+> to the nominal budget if a strict iso-budget table is wanted.
+>
+> ### 2026-07-24 — new int_swap hybrid-mask sweep = NEGATIVE at 20% / t32
+> `mp_v20_intswap_mask_eval_20260721` re-evaluated frozen MP+gate wrappers with
+> the int_swap-RANKED mask (rank by measured ΔL(INT7)−ΔL(SC) swap gain, instead
+> of the current SC-fragility proxy `top_fraction_by_bucket_worst_delta_loss`).
+> It does NOT beat the current measured_curve mask: 4B 12.781 vs 12.572 (+1.7%),
+> 14B 9.614 vs 9.551 (+0.66%), llama8B 9.1577 identical. Caveat: masks came from
+> the INITIAL low-window int_swap sensitivity (`hybrid_configs/
+> _hpca_mp_v18_intswap_sens_20260720`); a robust 24-window / stratified / 4-fold
+> version (`benchmark/ppl/v19_launch/intswap_robust_30B.sbatch` +
+> `verify_30b_intswap_batching.py`) is staged UNCOMMITTED and NOT launched —
+> needs approval before it runs. Memory: [[project_scmp_int_swap_mask_ranking]],
+> [[project_scmp_hybrid_mask_dose]], [[project_scmp_group_ladders_v19]].
+>
+> ### Paper story (user-approved, unchanged)
+> ONE algorithm vs INT — no variant history in the paper. Two-stage calibration:
+> σ for dispatch/init (zero evals) + measured NLL for allocation (small eval
+> budget). Uniform comparator for ANY MP claim = `hpca_results/llm/
+> uniform_hybrid/` (uniform SC + the SAME hybrid INT mask every mp cell runs),
+> NOT pure `uniform/`. Weight-only BitMoD rows labeled separately. Still-open
+> half of the thesis: "SC finer-grained than fixed-point" has no dedicated
+> experiment yet.
+> ### What we're doing (the thesis)
+> Argue that **stochastic computing (SC) enables finer-grained mixed precision
+> than fixed-point, and that finer MP beats uniform precision at the same
+> compute budget.** SC precision = `stoc_len` (stream cycle count), a *per-call
+> runtime knob* — any integer cycle count works (incl. non-pow2 like 96/48) via
+> early termination of one `sc_prec=8` Sobol stream, no datapath change. Compute
+> budget = average `stoc_len` (cycles); iso-budget = MP@avg_sl N vs uniform@N.
+> Target venue: HPCA. The claim has **two halves** — track both:
+>   1. **"MP beats uniform @ iso budget"** — partially tested (see gaps).
+>   2. **"SC is finer-grained than fixed-point"** — **NO experiment yet.**
+>
+> ### Units convention — DISCUSS BUDGETS IN NOMINAL (before-halving) CYCLES
+> `halve_bipolar_stoc_len=1` runs bipolar streams at HALF the nominal length
+> (uSystolic/HUB sign-magnitude trick, no accuracy loss), so every budget has two
+> numbers that differ by 2×: **nominal** (before halving = the config name = the
+> 2^prec "int-N" stream / the `avgN` name) and **halved** (after halving = the
+> actual kernel cycle count). **Convention: in conversation, notes, plots, and the
+> paper we quote the NOMINAL number** (it matches the config names + the E(stoc_len)
+> energy/compute-budget story). CODE ARTIFACTS STAY HALVED — `--mp_levels`,
+> `--budget_ref_stoc_len`, `stoc_len` in JSON tables, `trace.py`, and the
+> `cycles`/`realized_avg_sl` columns in `hpca_results/*.csv` are all halved.
+> Convert with `nominal = 2 × halved`.
+>
+> | config | nominal (TALK IN THIS) | halved (code/CSV/JSON) |
+> |---|---|---|
+> | int8   | 256 | 128 |
+> | avg192 | 192 | 96  |
+> | int7   | 128 | 64  |
+> | avg96  | 96  | 48  |
+> | int6   | 64  | 32  |
+>
+> So "run MP at 128 and 96" (nominal) = the int7 and avg96 budgets = halved 64/48.
+> The `hpca_results/mp/` cells (halved `budget`/`realized_avg_sl` ≈ 96) are the
+> **nominal-192 (avg192)** budget — the mildest MP point; the untested aggressive
+> budgets are **nominal 128 and 96**.
+>
+> ### Status of the algorithm — iso-FLOP (MAC-weighted budget) is the fix
+> Per-row stream-length MP. Offline calibration (FP teacher over a few wikitext2
+> windows) measures each row's activation metric `|x|.amax(-1)` + per-level SC
+> reconstruction error σ; a cross-layer Lagrangian (one shared λ over 9-op × 4-layer
+> groups) picks each row's level; counts → metric thresholds → JSON table → runtime
+> per-row dispatch (`model/sc_common.py`).
+>
+> **ROOT-CAUSE FIX (2026-07-05): the budget must be FLOP-weighted, not row-weighted.**
+> `_global_lambda` priced cost as `Σ R_g·L_g` (rows). But attention (av+qk) is ~90%
+> of ROWS yet only ~7-14% of FLOPs (MACs/row varies ~100-290× av-vs-linear). The
+> row-budget therefore (a) made "iso-budget" NOT iso-compute (act_global@row-64 =
+> FLOP-118 ≈ 1.85× uniform's compute) and (b) STARVED qk despite qk having the
+> HIGHEST σ (0.58 vs linears 0.08-0.23) — its 90%-of-rows made it "expensive".
+> FIX: `--budget-weight macs --mac-weights-trace <sc_int7 trace>` prices cost by
+> MACs (per-op MACs/row read from a trace) → iso-budget = iso-compute (linears
+> expensive, attention cheap). Table `method` gets a `_fw` tag. Row-avg and FLOP-avg
+> now swap roles: a FLOP-64 allocation reads row-avg ≈ 116 in `realized_avg_sl`.
+>
+> **iso-FLOP takeaways (2026-07-05 `fw_summary` era — superseded by `ppl/mp_best/`
+> for citable numbers, but the lessons hold):** (1) iso-compute MP beats uniform
+> EVERYWHERE (−8 to −39% then), including "robust" llama8B that *lost* under
+> row-weighting → the model-dependent-loss story was a budget artifact. (2) Simple
+> `act_global` (recon-σ) ≈ `measured` / `measured_curve` at true iso-FLOP → the
+> expensive ΔLoss probing was only compensating for the budget bug (llama8B keeps a
+> small ~−1.5% `measured` edge). The old absolute PPL table lived in
+> `hpca_results/llm/mp/fw_summary.tsv` (halved-cycle FLOP-avg 64=int7 / 48=len96);
+> current per-(model×target) citable results are the `ppl/mp_best/` bundles.
+>
+> ### ONE PPL protocol (arch_impl `ppl.py` REMOVED 2026-07-04)
+> Everything — INT baselines, SC uniform, AND per-row MP — now runs through the
+> **HPCA protocol**: `benchmark/quant/eval_quant.py` (full wikitext-2 ~298k tok,
+> ctx 2048, SmoothQuant α=0.5), driven by `./hpca`. fp16 14B = 8.64.
+> For paper/citable PPL rows, keep `PPL_MAX_TOKENS=0` (or unset). Any
+> `PPL_MAX_TOKENS>0` run is a smoke/screening run only and must be labeled
+> non-citable; do not compare truncated rows against INT/uniform CSVs.
+> **MP in the HPCA protocol:** set `QUANT_CONFIG=mp` + `MP_CONFIG_JSON=<wrapper.json>`
+> (a calibrate_mp_thresholds.py table) — eval_quant loads it into `cfg.sc_mp_config`
+> and dispatches per-row MP through the SAME path as the uniform `sc_*` cells, so
+> MP is finally apples-to-apples with uniform + INT. The old `benchmark/ppl/ppl.py`
+> (65k tok, ctx 1024) + `tests/run_mp_sweep.sh` + `summarize_mp_results.py` are
+> DELETED — they were a second incompatible PPL scale that only polluted
+> comparisons. **All pre-2026-07-04 arch_impl PPL numbers below (Findings tables,
+> the 15.49/17.10 4B int7 figures, etc.) are in the removed protocol — do NOT cite
+> them; re-run in the HPCA protocol.** Calibration still uses
+> `calibrate_mp_thresholds.py` (now `--ctx_len 2048` to match deploy).
+>
+> ### Experiments so far — see the mp_best archive
+> The citable MP results are the `hpca_results/llm/ppl/mp_best/` bundles (per
+> model × target, best-of across generations; see the status block above). Other
+> canonical result trees under `hpca_results/llm/`: `int/` (INT W8..W4 baselines,
+> from `results_bitmod_protocol.tsv`), `uniform_hybrid/` (**THE** uniform
+> comparator — uniform SC + the same hybrid INT mask), `uniform/` (pure-SC mask
+> ablation only), `mp_final/`, `mp_v9_hybdose/` (mask dose-response),
+> `wonly_bitmod/` (weight-only BitMoD, label separately), `energy/`, `ruler/`.
+> **SUPERSEDED — do NOT cite:** every `_mp_overnight_*` arch_impl run and the
+> §Findings tables lower in THIS file (65k-token / ctx-1024 removed protocol +
+> row-weighted budget bug). Their rankings are artifacts of the row→MAC budget
+> fix; the iso-FLOP result inverts them (act_global ≈ measured; MP wins).
+>
+> ### What's citable
+> Only FULL-protocol runs (full wikitext-2 ~298k tok, ctx 2048, `PPL_MAX_TOKENS=0`,
+> SmoothQuant α=0.5). No truncated evals ever — smokes included. Nothing before
+> 2026-07-02 (pre-06-03 used SC_SCRAMBLE_MASKS=256; masks now fixed at 64).
+>
+> ### HPCA plan
+> - **Phase 1 — INT baselines:** DONE (`results_bitmod_protocol.tsv`, all 4
+>   models, fp16 + {W8..W4}×{symm,asymm}). asymm beats symm below W6A6.
+> - **Phase 2 — SC uniform + uniform_hybrid baselines:** DONE — per-cycle uniform
+>   curves + the hybrid-masked comparator in `hpca_results/llm/uniform_hybrid/`.
+>   (LongBench/RULER silently never record via `./hpca` — known harness gap;
+>   RULER lives in `hpca_results/llm/ruler/` and cannot carry an MP claim.)
+>
+> ### Open issues / immediate next actions
+> 1. **"SC finer-grained than fixed-point" still has NO dedicated experiment.**
+>    The ladders exercise many non-pow2 rungs, but there is no pow2-restricted vs
+>    fine-level MP ablation at matched avg_sl and no fixed-point-MP baseline. This
+>    is the open half of the thesis (`scmp_kernels/trace.py` supplies the
+>    E(stoc_len) energy model; GPU wall-clock does NOT track stoc_len).
+> 2. **int_swap robust mask** (24-window/stratified/4-fold) is staged but
+>    unlaunched — decide whether the negative quick result (status block) is worth
+>    chasing; needs approval to run.
+> 3. **Energy-axis pricing of the hybrid INT mask:** 20%-mask cells do more INT7
+>    work than 10%-mask cells at the same SC budget, so mp_best's mixed mask
+>    fractions are NOT iso-total-compute — the energy table must price the INT
+>    layers so cells compare fairly.
+>
+> **2026-07-24 — 20% waves DONE** (launchers `benchmark/ppl/avg96_hyb20/`).
+> (1) **avg96 @ 20%** (tag `mp_avg96_hyb20_20260724`; single-pass act_global_v3,
+> only `--hybrid-int-frac 0.10→0.20`, INT7 legacy): 20% BEAT the 10% cell on 3/4 —
+> 4B 10.2986→10.2084, llama8B 7.7270→7.6510, 30B 7.6510→7.6117; 14B ~tie
+> (8.6789, kept at 10%). The three winners are folded into `ppl/mp_best/`
+> (`avg96_hyb20_top20`; `rebuild.py` now has `avg96_hyb20_candidate`).
+> (2) **uniform SC + 20% mask** comparator (tag `uni_hyb20_20260724`;
+> sc_int6/avg96/int7/avg192 at INT7 + sc_int8 at INT8): **MP @20% beats uniform
+> @20% at EVERY budget × model** — −1.1 to −2.8% at t96 (pure allocator, both
+> single-pass V3) up to −56% at t32 (llama8B). Caveat: the t32–t64 MP margins
+> also include the V20 search; only t96 is search-free. Results:
+> `$TURBO/results/results_{mp_avg96_hyb20,uni_hyb20}_20260724.tsv`.
+> No long-running jobs after this; verify with `squeue`. Scheduler ops must run
+> OUTSIDE the Codex sandbox (Slurm rules below); new waves/deletions need approval.
+>
+> ### Key parameters (canonical operating point)
+> `sc_prec=8`, `halve_bipolar_stoc_len=1` (cap = 128; a level value **is** the
+> halved cycle count), `SC_OWEN_MODE=bitrev`, `SC_SCRAMBLE_MASKS=64`,
+> SmoothQuant α=0.5, budget_ratio=0.5, 36 groups (9 ops × 4 layer buckets, 1
+> timestep bucket). MP levels: int8=[128] (uniform ceiling), len192=[128,96,64]
+> (avg 91), int7=[128,64,32] (avg 64), len96=[64,48,32] (avg 48). Generation
+> cliff ≈ stoc_len 48 (level 32 is sub-cliff). Env: conda `annstention`,
+> `HF_HOME=/nfs/turbo/coe-nbleier/allenjin/hf_cache`.
+>
+> ### Commands (ONE protocol — HPCA/eval_quant.py)
+> ```bash
+> # 1) Calibrate an MP table (ctx 2048 to match deploy; produces <table>.json).
+> #    Near-lossless WF-RQ = --objective sigma2; act_global baseline omits it.
+> python benchmark/ppl/calibrate_mp_thresholds.py --model_path <hf> \
+>   --mp_levels 128,96,64 --budget_ratio 0.67 --budget_ref_stoc_len 128 \
+>   --sc_prec 8 --halve 1 --ctx_len 2048 --budget-scope global \
+>   --objective sigma2 --output_json benchmark/ppl/mp_calib/<safe>__wfrq.json
+> #    then write <safe>__wfrq_wrapper.json = {"type":"AdaptiveMPConfig",
+> #    "stoc_len_levels":[128,96,64],"threshold_table_path":"<safe>__wfrq.json"}
+>
+> # 2) Evaluate MP in the HPCA protocol (same driver as INT + SC-uniform):
+> MODEL_PATH=<hf> QUANT_CONFIG=mp CTX=2048 SQ_ALPHA=0.5 \
+>   MP_CONFIG_JSON=benchmark/ppl/mp_calib/<safe>__wfrq_wrapper.json \
+>   ACT_SCALES_DIR=benchmark/ppl python -u benchmark/quant/eval_quant.py
+>
+> # INT baselines / SC uniform baselines (unchanged):
+> bash hpca --metrics ppl                                    # INT baselines
+> bash hpca --tag sc_uniform --configs sc_int8,sc_avg192,sc_int7,sc_avg96,sc_int6 \
+>   --metrics ppl --models 14B                               # SC uniform
+> ```
+>
+> ### Repo state
+> Branch `feat/mp-config-wiring` (prior V20 checkpoint `1731c9c`). Latest commit
+> adds: this CLAUDE.md refresh through V20, the int_swap Phase-0 calibrator
+> changes (`benchmark/ppl/calibrate_mp_thresholds.py`, `test_int_swap.py` +
+> `v19_launch/intswap_robust_30B` / `verify_30b_intswap_batching` scripts), the
+> V20 14B final-eval script (`wave_v20_staged/eval_14b_final.sbatch`), and the
+> 2026-07-24 20% launch scripts (`benchmark/ppl/avg96_hyb20/`). Local-only
+> (untracked): `hpca.pre_isoprec_20260721.bak` (hpca driver backup). Per-session
+> memory index: `~/.claude/projects/-home-allenjin-Projects/memory/MEMORY.md`.
+> ═══════════════════════════════════════════════════════════════════════════
+
 This repo swaps every `torch.matmul` / `nn.Linear` inside Llama-3.1-8B with
 stochastic-computing (SC) kernels from `scmp_kernels`. The goal is to measure
 quality and speed of an LLM running entirely on SC matmul, and to localize
@@ -25,6 +487,53 @@ fallback. Don't rename it back.
 
 Tested on Great Lakes node `gl1802` (NVIDIA RTX PRO 6000 Blackwell, 98 GB).
 Conda env name in our setup: `annstention`.
+
+### Great Lakes GPU / Slurm rules — persistent reference
+
+Use Slurm, not local `python`, for GPU work. The login/Codex shell has no GPU and
+often no `annstention` Python packages. Always activate conda inside the Slurm
+payload.
+
+When running Slurm CLI commands from Codex tools, request unsandboxed/escalated
+execution. On 2026-07-08, the same `gl-login6` shell could run `squeue` normally,
+but sandboxed Codex commands could not contact `glctld` (`Slurmctld(primary) at
+glctld is DOWN`, or `squeue` hung until timeout). The same commands worked
+immediately with escalation:
+
+```bash
+squeue -u allenjin
+scontrol ping
+```
+
+For persistent experiments launched from Codex, prefer **`sbatch`**. Background
+`nohup srun ... &` children from Codex can be reaped before they open stdout. Use
+one GPU per job for independent cells; this lets Slurm start as many as the
+account cap allows. The known-good resource shape is:
+
+```bash
+sbatch --job-name=<name> \
+  --account=nbleier_owned1 --reservation=rtx6000_arph_nodes \
+  --partition=gpu-rtx6000 --gres=gpu:1 --cpus-per-task=12 --mem=180G \
+  --time=24:00:00 \
+  --output=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/<name>_%j.out \
+  --wrap='source ~/.bashrc; conda activate annstention; cd /home/allenjin/Projects/SCMP/scmp_llm; <command>'
+```
+
+For interactive diagnostics inside an already-running allocation, use `srun
+--jobid=<jobid> --gres=gpu:0 bash -lc '...'` only for CPU-side checks such as
+`ps`, `tail`, or reading logs. Do **not** expect it to see a GPU unless requesting
+a GPU step or running inside the original batch payload. For GPU Python checks,
+submit a small `sbatch` smoke instead.
+
+The older interactive pattern still works from a normal login shell, but is not
+the default from Codex:
+
+```bash
+nohup srun --account=nbleier_owned1 --reservation=rtx6000_arph_nodes \
+  --partition=gpu-rtx6000 --gres=gpu:1 --cpus-per-task=12 --mem=120G \
+  --time=40:00 bash -lc 'source ~/.bashrc; conda activate annstention; cd ...;
+  python -u ...' > /scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/<run>.out 2>&1 &
+```
 
 ```bash
 conda create -n annstention python=3.10 -y
@@ -257,6 +766,231 @@ From `check_gen.py` with `NEW_TOKENS=64`:
 - `stoc_len ≤ 32` — token salad / mojibake.
 
 MSE alone is misleading: MSE 2.4 at `stoc_len=48` looks comparable to MSE 2.8 at `stoc_len=32`, but autoregressive feedback turns the former from one-bad-token-recoverable into total collapse.
+
+## Mixed-precision (MP) calibration — per-token-row SC stream length
+
+> **⚠ BUDGET FIX 2026-07-05 — read the ⚑ STATUS block first.** The mechanics below
+> (per-row dispatch, calibrator flags, pipeline) are current, but the budget was
+> **row-weighted** (`Σ R_g·L_g`) which is NOT iso-compute. Always pass
+> **`--budget-weight macs --mac-weights-trace <sc_int7 trace>`** (FLOP/energy budget,
+> iso-compute). The **§Findings (iso-budget…)** and **§Why measured/gradient lose**
+> subsections below are **SUPERSEDED row-weighted artifacts** — under the MAC budget
+> `act_global ≈ measured` and MP beats uniform everywhere; ignore their rankings.
+
+Instead of one global `stoc_len`, MP assigns each **token row** (for linears /
+softmax·V) or **query row** (for Q·Kᵀ) its own `stoc_len` from a small set of
+levels, based on a calibrated **threshold on the row's activation magnitude**
+(`abs().amax(-1)`, normalized to [0,1] per call). Rows that matter get longer
+SC streams; the rest get shorter ones, at a fixed average-`stoc_len` budget.
+
+Pipeline:
+
+```
+calibrate_mp_thresholds.py   →  <table>.json (per-(operator,layer-bucket) thresholds)
+        ↓ wrapped by
+<table>_wrapper.json (MP_CONFIG_JSON)  →  AdaptiveMPConfig.load_threshold_table
+        ↓ dispatched at runtime by
+model/sc_common.py (SCLinear / sc_eager_attention_forward, per-row level dispatch)
+```
+
+Calibration runs an FP teacher forward over a few wikitext2 windows, measures
+each row's **per-level SC reconstruction error** σ (relative L2 vs the FP
+output) at every `stoc_len` level, then solves a budget-constrained allocation
+(Lagrangian on σ) and converts the per-level row counts into thresholds on the
+sorted activation metric. Operators calibrated: `q/k/v/o/gate/up/down_proj`,
+`qk` (Q·Kᵀ), `av` (softmax·V).
+
+### Importance signals (`--method` in the sweep) — what each is for
+
+All share the same runtime mechanism (threshold on the activation metric); they
+differ only in **what objective sets the thresholds**:
+
+| method | objective | what it's testing |
+|---|---|---|
+| `act` | minimize Σσ (reconstruction error), **per-(op,layer) budget** | baseline — every layer pinned to the same avg stoc_len |
+| `grad` | weight each row's σ by its loss sensitivity `‖∂L/∂y_row‖` (one extra backward) | does clean-forward loss-gradient importance help? |
+| `grad_sc` | same, but `g` measured on the **SC-noisy** trajectory via a straight-through estimator (`--grad-on-sc`) | does noisy-trajectory gradient help where clean grad fails (high noise)? |
+| `act_global` | minimize Σσ with **ONE global budget** (`--budget-scope global`) | cross-layer: let budget flow from insensitive to sensitive layers |
+| `grad_global` | gradient-weighted σ, global budget | cross-layer with a gradient signal |
+| `measured` | global budget, each (op,layer) group weighted by **measured ΔLoss** from a knock-down probe **to the floor**, `act` quantile within (`--cross-layer-weight measured`) | cross-layer with a ground-truth loss-sensitivity signal |
+| `measured_marg` | **FIX 1** for `measured`: probe knocks each group down a *small step* from baseline (`--measure-marg-frac`, not to the floor), so ΔL ≈ ∂L/∂budget stays in the locally-linear regime at every precision (`--cross-layer-weight measured_marg`) | does a *marginal* (non-cliff) probe fix measured's int7/len96 inconsistency? |
+| `grad_group` | **FIX 2** for `grad`: aggregate g to ONE per-group `W_g=mean\|∂L/∂y\|` (winsorized), `act` σ within group — no per-row g·σ multiply (`--cross-layer-weight grad_group`) | does using gradient only as a coarse cross-layer weight (averaging out per-row noise) beat act_global without the cliff blowup? |
+
+### Precision configs (`--prec`)
+
+Levels and budgets are in **halved space** (`halve_bipolar_stoc_len=1`, so the
+cap is `2**(sc_prec-1)=128`; a level value *is* the cycle count). `int8` is the
+uniform no-MP ceiling.
+
+| prec | levels | target avg stoc_len |
+|---|---|---|
+| `int8` | uniform 128 | 128 |
+| `len192` | 128,96,64 | 91 |
+| `int7` | 128,64,32 | 64 |
+| `len96` | 64,48,32 | 48 |
+
+### How to run
+
+> ⚠ **DEPRECATED (2026-07-04): `run_mp_sweep.sh` / `reproduce_crosslayer.sh` /
+> `ppl.py` were DELETED** (they were the arch_impl 65k/ctx-1024 protocol that
+> polluted comparisons). Calibrate with `calibrate_mp_thresholds.py --ctx_len
+> 2048` then evaluate via `QUANT_CONFIG=mp MP_CONFIG_JSON=<wrapper>
+> benchmark/quant/eval_quant.py` (see the ⚑ STATUS "Commands" block). The block
+> below is retained only for the calibrator flag reference.
+
+```bash
+# DELETED 2026-07-04 (arch_impl 65k/ctx-1024 protocol) — kept for flag reference
+# only; do NOT run, the files are gone. Evaluate via QUANT_CONFIG=mp
+# MP_CONFIG_JSON=<wrapper> benchmark/quant/eval_quant.py (see ⚑ STATUS Commands).
+# bash tests/reproduce_crosslayer.sh
+# bash tests/reproduce_crosslayer.sh --max-tokens 4096          # quick smoke
+# bash tests/run_mp_sweep.sh --models 4B,8B,14B \
+#   --prec int8,int7,len96,len192 --method act,act_global,grad_global,measured
+# python benchmark/ppl/summarize_mp_results.py benchmark/ppl/_mp_overnight_<tag>
+
+# Calibrate a single table by hand (STILL VALID — this is the flag reference):
+python benchmark/ppl/calibrate_mp_thresholds.py --model_path <hf> \
+  --mp_levels 128,64,32 --budget_ratio 0.5 --budget_ref_stoc_len 128 \
+  --sc_prec 8 --halve 1 --budget-scope global \
+  --output_json benchmark/ppl/mp_calib/<safe>__int7_act_global.json
+```
+
+The sweep sets `SC_OWEN_MODE=bitrev` (Owen scramble ON, deterministic) and
+`SC_SCRAMBLE_MASKS=64`. Calibration and PPL inherit the same Owen mode AND mask
+count — they MUST match or thresholds won't transfer. `--recalibrate` forces
+fresh tables (needed after changing Owen mode, mask count, or the calibrator).
+
+**Scramble knobs (consolidated 2026-06-03):** valid `SC_OWEN_MODE` values are
+`bitrev` (default) / `random` / `off`. Bitrev's mask for dim `d` is
+`bit_reverse(d mod M)` with `M = min(SC_SCRAMBLE_MASKS, 2^sc_prec)`; the kernel
+default is **64** (6-bit mask pattern). Removed knobs — all fail loudly if set:
+`SC_OWEN_MODE=counter`, `SC_DISABLE_OWEN=1` (use `SC_OWEN_MODE=off`), and
+`SC_SCRAMBLE_RESCALE` (scramble-before-rescale is now always on; the `=0`
+legacy path shared one Sobol trajectory across dims and was known-catastrophic
+at short stoc_len). **Comparability warning:** every table produced before
+2026-06-03 — including `_mp_overnight_xlayer_fix` — ran at `M=256`; to
+reproduce or patch those cells, `export SC_SCRAMBLE_MASKS=256`. PPL at `M=64`
+is a different operating point and needs a fresh int8/FP16-relative baseline.
+
+### Historical method comparison (REMOVED protocol — not citable)
+
+The Jun-2 `_mp_overnight_*` cross-layer sweeps once tabled here (65k-token /
+ctx-1024 arch_impl protocol, M=256) are superseded and non-citable. Their one
+durable takeaway: **reconstruction-error `act_global` was the most consistent MP
+importance signal** — beating `measured` (inconsistent at the collapse cliff)
+and every gradient variant (worst) — which is why the shipped algorithm
+allocates on σ / reconstruction error, not gradient. Current citable results:
+`hpca_results/llm/ppl/mp_best/` (see the ⚑ STATUS block).
+
+
+### Two bugs that gated cross-layer (fixed — don't reintroduce)
+
+Cross-layer only works because of two fixes in the **global** solve (per-bucket
+`act`/`grad` are unaffected):
+
+1. **rep_g cost pricing.** The global Lagrangian must price each row's cost by
+   `rep_g = R_g / n_g` (true per-forward row count / stored subsampled count).
+   Without it, attention (many rows) dominates the budget and a single shared λ
+   craters the cheap, few-row linear layers — landing *worse than uniform on its
+   own objective*. (`_global_lambda` / `_fit_group(rep=...)`.)
+2. **qk calibrated per-row, not per-head.** Q·Kᵀ runs **per query row**
+   (B·H·N) at runtime, so it must be calibrated per-row too. The old per-head
+   metric (H units) under-counted qk ~1000× in the budget, so cross-layer
+   over-spent and realized avg_sl drifted far past target (int7 64→92). The
+   `qk` branch in `calib_eager` now mirrors the `av` (per-row) branch.
+
+Each calibration table records `expected_avg_stoc_len` (predicted row-weighted
+budget) and `global_lambda` — use them to confirm a global table actually holds
+budget before trusting its PPL.
+
+### MoE empty-expert calibration bug (fixed — don't reintroduce)
+
+Calibrating a **MoE** model (Qwen3-30B-A3B) was never actually run before — the
+findings above are dense-only (4B/8B/14B). The first 30B-A3B calibration crashed in
+`_normalize_metric` with `min(): Expected reduction dim ... numel() == 0`: under
+sparse top-k routing an expert can receive **zero tokens** in a forward, so its
+`gate/up/down_proj` gets an empty `(0, D)` input and `abs().amax(-1).min()` reduces
+over an empty dim. Fixed by skipping the SCLinear calibration hook when
+`x_flat.shape[0] == 0` and hardening `_normalize_metric` for empty input
+(`calibrate_mp_thresholds.py`). This affects **all** methods on MoE, not just the
+new ones.
+
+A **second** MoE bug surfaced in the gradient path: `PendingMerger` keyed its
+per-row g accumulator by `(operator, block_idx)`, but MoE experts share both the
+op-name and the layer index while receiving **different token counts**, so
+`g_sum + g` crashed on a size mismatch (e.g. 41 vs 8 rows). Fixed by keying the
+accumulator on **call position** (`cid`) — unique per matmul call within a forward
+and stable across SC draws (routing is deterministic; the gate is FP/excluded), so
+it is byte-identical for dense models and disambiguates MoE experts. This affects
+**all** gradient methods on MoE (`grad`/`grad_global`/`grad_sc`/`grad_group`).
+
+### Large-model grad backward
+
+`grad`/`grad_group`/`grad_sc` need a backward pass. Gradient checkpointing now fires
+for 14B/30B/32B (was MoE-only) so the backward fits in 98 GB; force with
+`CALIB_GRAD_CKPT=1`. Lower `--grad-ctx` (e.g. 512) for extra headroom. SmoothQuant
+`act_scales_*.pt` for 30B-A3B and 32B are already calibrated; MP calibration + PPL
+for them are wired but only first run in the `xlayer_fix` overnight sweep.
+
+## Precision trace (energy/latency simulator input)
+
+`scmp_kernels/trace.py` logs, for **every `sc_matmul` call** (MP and uniform),
+the effective precision (`stoc_len` = true cycle count, post-halving) plus
+shape and identity. Zero overhead when off (one bool read); records only
+host-side shape metadata — never tensor values, so no device sync.
+
+```bash
+# Trace is wired through the CURRENT driver (eval_quant.py) + check_mse.py /
+# check_gen.py. The old benchmark/ppl/ppl.py driver was REMOVED 2026-07-04.
+SC_MP_TRACE=out.json          ... python benchmark/quant/eval_quant.py  # summary (default)
+SC_MP_TRACE=out.json SC_MP_TRACE_MODE=trace ...                        # per-call JSONL
+```
+
+- **summary** (`scmp-trace-summary-v1`): per-(block, op, unit, stoc_len,
+  rng_levels, smoothed) groups with `calls / rows / macs / row_cycles`;
+  **`d_in`/`d_out` ARE part of the key (fixed 2026-07-29)**, so
+  `rows × d_in × d_out == macs` holds per group. Bounded memory comes from a
+  per-base-key shape cap (`SC_MP_TRACE_MAX_SHAPES`, default 32) — shapes past
+  it fold into one `dims_vary: true` catch-all with representative dims, the
+  only place the identity may fail; macs/rows/row_cycles stay exact there too.
+  ⚠ Traces written BEFORE that fix keyed without dims and silently merged two
+  *static* shapes whenever they shared a `stoc_len` — notably an op's
+  protected-channel slice colliding with its main slice at high budgets (9/24
+  `ppl/mp_best` traces hit this; 10–34% of their MACs). Repair offline with
+  `hpca_results/llm/ppl/mp_best/repair_traces.py`; never read operand shapes
+  out of an unrepaired pre-fix trace.
+  Energy = Σ macs × E(stoc_len). `rng_levels` is the RESOLVED
+  enable-grid size (never null). A few hundred KB for PPL runs.
+- **trace** (`scmp-trace-v1` JSONL): one ordered record per call (`seq`) —
+  latency timeline replay. Spills to disk every 100k records (bounded RAM
+  on long decodes); after a spill the flush-path override is ignored.
+- `unit` = MoE expert index (from digit-named ModuleList ancestors at
+  `replace_linears_with_sc` time) or attention head index in the per-(B,H)
+  MP dispatch (uniform attention records are one 3D call, `batch=B*H`,
+  `unit=null` — consumers must accept both flavors). The MoE router `gate`
+  never appears. **Coverage is SC matmuls only** — lm_head, embeddings,
+  norms, softmax run FP16 and are absent (header carries a `coverage` note);
+  level-0 (drop) rows issue no matmul and are not recorded.
+- `eval_quant.py` (and `check_mse.py`/`check_gen.py`) writes one file per sweep
+  config (`<base>_sl<N>.json`) with model/config/ppl **and join metadata**
+  (MP_CONFIG_JSON path, total_blocks, SmoothQuant setting) in the header. An
+  `atexit` hook flushes for apps that never call
+  `flush()` (header marked `"atexit": true` — may span multiple configs).
+  `calibrate_mp_thresholds.py` **disables** tracing (probe workloads are not
+  simulator input). Context is thread-local; accumulation is locked.
+- Identity comes from `trace.set_context(...)` — scmp_llm sets it in
+  `SCLinear.forward` and every SC attention path (incl. the STE and
+  knock-down-probe helpers); other apps (diffusion/ViT) need only that one
+  call to adopt.
+- Validated: 4B MP run — rows conserve exactly (Σ per-op rows = tokens;
+  qk = H×tokens), trace avg_sl == mp_tracker avg_sl, and
+  `macs == rows·d_in·d_out` **per group post-fix** (that validation was run on
+  a config where no static shapes collided, which is why the pre-fix collapse
+  above went unnoticed — it needs the protected slice to share a rung);
+  30B MoE — per-expert rows sum to tokens×top_k (2048 = 256×8), load
+  imbalance visible (0–89 rows/expert). Tracing does not change PPL
+  (bit-identical reruns). Reviewed by a 3-lens adversarial pass; all
+  confirmed findings fixed.
 
 ## Common failure modes
 

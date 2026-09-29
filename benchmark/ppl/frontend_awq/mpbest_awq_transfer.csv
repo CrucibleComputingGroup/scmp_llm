@@ -1,0 +1,9 @@
+model,target,fp16_ppl,ppl_smoothquant,ppl_awq,delta_ppl_pct,flop_avg_sl_smoothquant,flop_avg_sl_awq,delta_cost_pct,iso_compute,x_fp16_awq,config_source,eval_tokens,log
+4B,32,10.0445,12.5715,11.9886,-4.64,33.731,33.720,-0.03,yes,1.1935,mp_best (deployed),298862,mba_4B_t32_54972408.out
+4B,96,10.0445,10.2084,10.2225,+0.14,95.958,95.970,+0.01,yes,1.0177,mp_best (deployed),298862,mba_4B_t96_54972610.out
+llama8B,32,7.213,9.1577,8.6758,-5.26,34.001,34.030,+0.08,yes,1.2028,mp_best (deployed),288627,mba_llama8B_t32_54972410.out
+llama8B,96,7.213,7.6510,7.6145,-0.48,95.305,95.290,-0.02,yes,1.0557,mp_best (deployed),288627,mba_llama8B_t96_54972411.out
+14B,32,8.6383,9.5508,9.3097,-2.52,33.610,33.560,-0.15,yes,1.0777,mp_best (deployed),298862,mba_14B_t32_54972412.out
+14B,96,8.6383,8.6848,8.6418,-0.50,96.160,96.140,-0.02,yes,1.0004,mp_avg96_hyb20_20260724 (20% mask),298862,mba_14B_t96_54972413.out
+30B,32,7.2613,9.6241,9.4647,-1.66,34.095,34.120,+0.07,yes,1.3034,mp_best (deployed),298862,mba_30B_t32_54972414.out
+30B,96,7.2613,7.6117,7.5985,-0.17,95.578,95.580,+0.00,yes,1.0464,mp_best (deployed),298862,mba_30B_t96_54972415.out

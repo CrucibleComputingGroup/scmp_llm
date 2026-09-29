@@ -1,0 +1,137 @@
+{
+  "submitted_at": "2026-09-26T15:47:41.874658-04:00",
+  "array_job_id": 61982983,
+  "gpus_per_task": 1,
+  "max_concurrent_tasks": 4,
+  "full_test_every_candidate": true,
+  "final_selection": "Best full-test PPL across all comparable allocation rounds; keep provenance and costs.",
+  "scope": "Allocation / mixed precision only; fixed RNG, no QK rebalance, fixed per-cell parent/mask/frontend; 14B t64/t96 use h20 parents.",
+  "next_step": "After round 2 completes, prepare first rebuttal response before considering further round 3.",
+  "cells": [
+    {
+      "array_task": "61982983_0",
+      "mode": "eval",
+      "model": "30B",
+      "target_deployed_cycles": 96,
+      "nominal_cycles": 192,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_1",
+      "mode": "eval",
+      "model": "30B",
+      "target_deployed_cycles": 64,
+      "nominal_cycles": 128,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_2",
+      "mode": "calib",
+      "model": "14B",
+      "target_deployed_cycles": 96,
+      "nominal_cycles": 192,
+      "tag": "c7h20"
+    },
+    {
+      "array_task": "61982983_3",
+      "mode": "calib",
+      "model": "14B",
+      "target_deployed_cycles": 64,
+      "nominal_cycles": 128,
+      "tag": "c7h20"
+    },
+    {
+      "array_task": "61982983_4",
+      "mode": "calib",
+      "model": "14B",
+      "target_deployed_cycles": 32,
+      "nominal_cycles": 64,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_5",
+      "mode": "eval",
+      "model": "14B",
+      "target_deployed_cycles": 48,
+      "nominal_cycles": 96,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_6",
+      "mode": "eval",
+      "model": "14B",
+      "target_deployed_cycles": 40,
+      "nominal_cycles": 80,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_7",
+      "mode": "calib",
+      "model": "llama8B",
+      "target_deployed_cycles": 96,
+      "nominal_cycles": 192,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_8",
+      "mode": "calib",
+      "model": "llama8B",
+      "target_deployed_cycles": 64,
+      "nominal_cycles": 128,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_9",
+      "mode": "calib",
+      "model": "llama8B",
+      "target_deployed_cycles": 48,
+      "nominal_cycles": 96,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_10",
+      "mode": "calib",
+      "model": "llama8B",
+      "target_deployed_cycles": 40,
+      "nominal_cycles": 80,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_11",
+      "mode": "calib",
+      "model": "4B",
+      "target_deployed_cycles": 96,
+      "nominal_cycles": 192,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_12",
+      "mode": "calib",
+      "model": "4B",
+      "target_deployed_cycles": 64,
+      "nominal_cycles": 128,
+      "tag": "c7"
+    },
+    {
+      "array_task": "61982983_13",
+      "mode": "calib",
+      "model": "4B",
+      "target_deployed_cycles": 40,
+      "nominal_cycles": 80,
+      "tag": "c7"
+    }
+  ],
+  "sha256": {
+    "run_prc7_finish_20260926.sbatch": "214965d906e5123e3fb3e784f8c0ad5919c53318270b5563e9c819f938d7b0d3",
+    "prc7_finish_20260926.tsv": "8f1946da0d1e5cb418277d4d04560383ed7348a21a8ce490e66f5ec5cfe09eab",
+    "run_prc7.sbatch": "8f79987c0e952010633bd16690f5584b3e9e401380935974732070587c6968c8",
+    "run_prc_ppl.sbatch": "cf341d3ce960f303d683d112b24064af7d78525bed559f9f7ee5832d3e75e037"
+  },
+  "updates": [
+    {
+      "time": "2026-09-26T17:15:55.871170-04:00",
+      "action": "Added ReservationName=rtx6000_arph_nodes to all pending array tasks using scontrol update JobId=61982983. Verified ArrayTaskThrottle=4 remains. Launcher now includes reservation directive.",
+      "launcher_sha256": "392dfc0038bc3116d71252045578d0eba513e530e3573fe63c3e2f0e35d0a1ea"
+    }
+  ]
+}

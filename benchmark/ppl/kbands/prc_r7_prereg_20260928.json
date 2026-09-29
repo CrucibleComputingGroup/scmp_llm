@@ -1,0 +1,226 @@
+{
+ "schema": "prc-r7-prereg-v1",
+ "units": "MDE in nats (natural-log PPL units, %PPL ~ 100 x nats)",
+ "mde": {
+  "rule": "MDE80 = (2 + z_0.80)/sqrt(32) * sigma_w = 0.50233 * sigma_w (the confirmation test: 32 paired TRAIN windows, one-sided z < -2, power 0.80). sigma_w = the LARGEST paired per-window SD among the pre-existing 16-window allocation pairs of the cell: prc2/<cell>_c7_heldout_nll.json pairs gfisla-gfis, gfisla-parent, gfis-parent, c17-parent, and the round-6 arm A - INC on the diag windows where it exists (the attribution-only oracles ATT128/LIN128 are excluded). Rounded UP to 1e-4 nats. Conservative by construction (the largest SD of any comparable move); it is the upper end of the scout's MDE80 ranges (30B t32 0.010-0.013, t40 0.006-0.009, t48 0.007-0.009).",
+  "factor": 0.5023324109557724,
+  "nats": {
+   "30B_t32": 0.0129,
+   "30B_t40": 0.0092,
+   "30B_t48": 0.0091,
+   "4B_t40": 0.0148,
+   "4B_t64": 0.0073
+  }
+ },
+ "kappa": {
+  "authority": "ONE kappa rule for round 7: kappa_att 0.83 +- 0.07, pooled over 30B t32 + t40, keep ratio 0.42 only if the step-0 budget-shift kappa_lin exceeds kappa_att by more than sqrt(SE_bs^2 + 0.07^2), otherwise (inside the band, below it, or undefined) revert to kappa = 1 (one-sided; prc_eval_r7_20260928.KAPPA_RULE == prc_r7_solve.KAPPA_RULE id prc-r7-kappa-rule-v2-20260928). The eval-side kappa_decision.json written by prc_step0_r7_20260928.py kappa (schema prc-step0-r7-v1-kappa) is the decision RECORD the screen builder requires; the calib-side solver re-derives the same branch from its statistic and refuses pins that disagree. The calib-side v1 constants (prc_r7_capture v1 text and scout_calib section 3: 0.82 +- 0.073, two-sided) are superseded and never read.",
+  "pins": {
+   "keep_0.42": {
+    "kappa_lin": 1.96,
+    "kappa_att": 0.83
+   },
+   "revert_to_kappa_1": {
+    "kappa_lin": 0.83,
+    "kappa_att": 0.83
+   },
+   "dense": {
+    "kappa_lin": 1.0,
+    "kappa_att": 1.0
+   }
+  },
+  "decision_ratio": {
+   "keep_0.42": 0.42,
+   "revert_to_kappa_1": 1.0
+  },
+  "ratio_tolerance": 0.005,
+  "rule": "Solve summaries must carry exactly (kappa_lin, kappa_att) = KAPPA_PINS[branch] (30B: the branch of the authoritative kappa_decision.json; dense 4B: 'dense'). UK and K arms use r = kappa_att/kappa_lin from those pins, U uses r = 1. pred_true = kappa_lin*dL + kappa_att*dA with the SAME pins for every arm of a cell."
+ },
+ "target_scale": {
+  "s0": {
+   "30B_t32": 1.0037,
+   "30B_t40": 1.0043,
+   "30B_t48": 1.011,
+   "4B_t40": 1.001,
+   "4B_t64": 1.0015
+  },
+  "s0_source": "scout_calib section 4c s_pop (30B: held-out, trace-equivalent INC re-target to the parent's cost); 4B: 1 + (1 - r_test)/0.95 (approximate). Adopted verbatim as prc_r7_capture_20260928.json cells[].prereg.s0.",
+  "rounding": 0.0001,
+  "band": [
+   0.97,
+   1.05
+  ],
+  "replay_flag_tolerance": 0.0025,
+  "rule": "s0 = S0[cell]. Each registered arm (30B: UK, K, U, with U omitted whenever the kappa ratio is 1 because it then equals UK; dense: U; never the CPU control J) is solved ONCE at s0 with the pinned kappa and MDE (prc_r7_solve.py solve). C(s0) = CPU replay of the arm's s0 table on the step-0 INC16 profile of the cell (INC's deployed trajectory on the cell's 16 screen windows; every profiled row re-dispatched through the arm's OWN ladders and thresholds; escaped attention rows and the protected slice stay fixed; an L7 psl arm moves the protected slice by psl_arm/psl_INC). P = the step-0 PARENT16 exact trace cost on the same windows (parent_reference.json). U = the protected-slice cycles per SC MAC of the step-0 INC16 trace (analyze_trace U_prot; escaped rows are inside the solve's target and scale with s). s1 = round(s0 (P - U)/(C(s0) - U), 1e-4), refused outside [0.97, 1.05]. Each arm is re-solved ONCE at its own s1 and only that table is screened (the builder refuses any other target_scale). No iteration, no second re-solve, no re-screen. The screen's measured |C/P - 1| <= 1% gate is unchanged; the replayed C(s1)/P is recorded (non-binding, flagged when |C(s1)/P - 1| > 0.25%). A cell without a complete, non-simulated step-0 reference (INC16 profile + PARENT16) is disabled."
+ },
+ "ladder_policy_primary": "up",
+ "arms": [
+  "UK",
+  "K",
+  "U"
+ ],
+ "best_all": {
+  "test_cost_bound": 0.015,
+  "rule": "The full-test PPL of a confirmed primary enters best(all) whatever its sign, provided every protocol check passed and its full-test cost is within +-1.5% of the parent's full-test cost (the user's ~1% cost-drift rule, with 0.5 pp slack for test-vs-held-out shift); outside that bound it is recorded but not entered, and flagged for the user. |C_test/P_test - 1| > 1% is flagged either way."
+ },
+ "mde_derivation": {
+  "30B_t32": {
+   "pairs": [
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_heldout_nll.json:gfisla-gfis",
+     "n": 16,
+     "sd_w": 0.02066799803187375
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_heldout_nll.json:gfisla-parent",
+     "n": 16,
+     "sd_w": 0.024399671102581583
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_heldout_nll.json:gfis-parent",
+     "n": 16,
+     "sd_w": 0.022975309616712666
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_heldout_nll.json:c17-parent",
+     "n": 16,
+     "sd_w": 0.025647177833214345
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t32/A_nll.json - INC_nll.json",
+     "n": 16,
+     "sd_w": 0.015314562240914707
+    }
+   ],
+   "sigma_w": 0.025647177833214345,
+   "mde_raw": 0.012883408675170006,
+   "mde_nats": 0.0129
+  },
+  "30B_t40": {
+   "pairs": [
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_heldout_nll.json:gfisla-gfis",
+     "n": 16,
+     "sd_w": 0.01580782803559865
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_heldout_nll.json:gfisla-parent",
+     "n": 16,
+     "sd_w": 0.01820446396259683
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_heldout_nll.json:gfis-parent",
+     "n": 16,
+     "sd_w": 0.01630287968572388
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_heldout_nll.json:c17-parent",
+     "n": 16,
+     "sd_w": 0.01562529300836494
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/A_nll.json - INC_nll.json",
+     "n": 16,
+     "sd_w": 0.01328017598122259
+    }
+   ],
+   "sigma_w": 0.01820446396259683,
+   "mde_raw": 0.00914469227248874,
+   "mde_nats": 0.0092
+  },
+  "30B_t48": {
+   "pairs": [
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:gfisla-gfis",
+     "n": 16,
+     "sd_w": 0.013545566709092358
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:gfisla-parent",
+     "n": 16,
+     "sd_w": 0.01583010092752358
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:gfis-parent",
+     "n": 16,
+     "sd_w": 0.014290528824119905
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:c17-parent",
+     "n": 16,
+     "sd_w": 0.018044466502463514
+    }
+   ],
+   "sigma_w": 0.018044466502463514,
+   "mde_raw": 0.009064320362593171,
+   "mde_nats": 0.0091
+  },
+  "4B_t40": {
+   "pairs": [
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_heldout_nll.json:gfisla-gfis",
+     "n": 16,
+     "sd_w": 0.020880329277909535
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_heldout_nll.json:gfisla-parent",
+     "n": 16,
+     "sd_w": 0.025954588791803814
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_heldout_nll.json:gfis-parent",
+     "n": 16,
+     "sd_w": 0.029311645792559574
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_heldout_nll.json:c17-parent",
+     "n": 16,
+     "sd_w": 0.02803728518636508
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t40/A_nll.json - INC_nll.json",
+     "n": 16,
+     "sd_w": 0.012131121972757892
+    }
+   ],
+   "sigma_w": 0.029311645792559574,
+   "mde_raw": 0.014724189700058073,
+   "mde_nats": 0.0148
+  },
+  "4B_t64": {
+   "pairs": [
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_heldout_nll.json:gfisla-gfis",
+     "n": 16,
+     "sd_w": 0.01351887562097311
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_heldout_nll.json:gfisla-parent",
+     "n": 16,
+     "sd_w": 0.014414299963329383
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_heldout_nll.json:gfis-parent",
+     "n": 16,
+     "sd_w": 0.013628403223961423
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_heldout_nll.json:c17-parent",
+     "n": 16,
+     "sd_w": 0.010950911711516733
+    },
+    {
+     "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t64/A_nll.json - INC_nll.json",
+     "n": 16,
+     "sd_w": 0.009504068071682355
+    }
+   ],
+   "sigma_w": 0.014414299963329383,
+   "mde_raw": 0.007240770052818951,
+   "mde_nats": 0.0073
+  }
+ },
+ "frozen_utc": "2026-09-28T19:40:51.347060+00:00",
+ "frozen_before": "any round-7 capture, solve, fixed point, kappa decision or step-0 result (none existed at freeze time: see existing_outputs_at_freeze)",
+ "outputs_root_scanned": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928",
+ "existing_outputs_at_freeze": []
+}

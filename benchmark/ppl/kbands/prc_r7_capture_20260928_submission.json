@@ -1,0 +1,21 @@
+{
+ "submitted": "2026-09-28",
+ "user_ok": "agree on submit (2026-09-28)",
+ "step0_job": "62263343",
+ "step0_array": "0-2%1",
+ "step0_tasks": [
+  "30B_t40",
+  "30B_t32",
+  "30B_t48"
+ ],
+ "step0_manifest_sha256": "cdbfdbad5e3f168cd3ce8192c0af2b1c1e10e3c589f4edce9ee8373698495d68",
+ "capture_job": "62263344",
+ "capture_array": "0-2%3",
+ "capture_tasks": [
+  "30B_t32",
+  "30B_t40",
+  "30B_t48"
+ ],
+ "capture_manifest_sha256": "7a7d8121ffee45947ee24528fd30c5e9a7c29fd2b5c8f1913a3d092f009a9dac",
+ "gpu_total_max": 4
+}

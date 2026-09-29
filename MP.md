@@ -1,15 +1,14 @@
 # Per-row mixed-precision (MP) in scmp_llm
 
-Wires `scmp_kernels.mp.MPConfig` (fixed-fraction quantile dispatch) into the
-SC core. Each token row in a Linear forward — and each query row in
-attention QK / softmax-V — is classified by its `abs().amax(-1)` and routed
-to one of the configured `stoc_len` levels. The classification uses
-`scmp_kernels.mp.classify_rows_by_metric`.
+Wires SC mixed precision into the shared SC core. Two MP modes are supported:
 
-The full per-(operator, layer) `AdaptiveMPConfig` path with calibrated
-thresholds is *not* wired yet — only the fixed-fraction `MPConfig`. The
-overnight 2026-05-26 MP sweep used this path with the level/fraction
-triples agreed with the AdaptiveMPConfig calibration goal.
+- `MPConfig`: fixed-fraction quantile dispatch.
+- `AdaptiveMPConfig`: calibrated per-operator/layer threshold tables from
+  `benchmark/ppl/calibrate_mp_thresholds.py`.
+
+Each token row in a Linear forward — and each query row in attention QK /
+softmax-V — is classified by its row metric and routed to one of the configured
+`stoc_len` levels.
 
 ## Invocation
 
@@ -27,11 +26,20 @@ SMOOTHQUANT_SCALES=benchmark/ppl/act_scales_<safe-model>.pt \
 python benchmark/ppl/ppl.py
 ```
 
-`STOC_LENS` still drives the outer sweep loop in `ppl.py`, but with MP the
-per-row stoc_len comes from the JSON; the env value only seeds
-`sc_stoc_len` as a fallback for any path that has not been wired.
+Current HPCA runs use `benchmark/quant/eval_quant.py`:
+
+```bash
+QUANT_CONFIG=mp \
+MP_CONFIG_JSON=benchmark/ppl/mp_calib/<safe>__int7_act_global_wrapper.json \
+python benchmark/quant/eval_quant.py
+```
+
+With MP enabled, the per-row stoc_len comes from the JSON; the global
+`sc_stoc_len` only seeds fallback paths.
 
 ## JSON schema
+
+Legacy fixed-fraction MP:
 
 ```jsonc
 {
@@ -40,6 +48,64 @@ per-row stoc_len comes from the JSON; the env value only seeds
   "level_fractions": [0.2, 0.5, 0.3]   // sums to 1; omit for equal split
 }
 ```
+
+Calibrated adaptive MP:
+
+```jsonc
+{
+  "type": "AdaptiveMPConfig",
+  "stoc_len_levels": [128, 64, 32],
+  "threshold_table_path": "Qwen_Qwen3-4B-Instruct-2507__int7_act_global.json"
+}
+```
+
+## Hybrid SC/INT schedule
+
+Set `SC_HYBRID_CONFIG_JSON=<path>` (or `HYBRID_CONFIG_JSON=<path>`) alongside
+an `sc_*` or `mp` run to route selected `(operator, block)` groups through INT
+fake-quant instead of SC. The format intentionally mirrors `scmp_vit`: one row
+per operator and one entry per decoder block.
+
+```jsonc
+{
+  "format": "scmp_llm_hybrid_v1",
+  "default": "sc",
+  "int_bits": 7,
+  "int_sym": true,
+  "chunk_size": 128,
+  "schedule": {
+    "q_proj":    ["sc", "sc", "int7"],
+    "down_proj": ["sc", "int7", "int7"],
+    "qk":        ["sc", "int7", "sc"],
+    "av":        ["sc", "sc", "int7"]
+  }
+}
+```
+
+Entries may be `sc`, `fp`, or `int<N>`; ViT-style `0/1/2` entries are also
+accepted as `fp/sc/int<int_bits>`. The INT path reuses the baseline PTQ
+fake-quant helpers: linears apply SmoothQuant-compatible chunked weight and
+activation RTN, while `qk` and `av` quantize both operands over the reduction
+dimension before the fp matmul.
+
+HPCA launcher examples:
+
+```bash
+# Sensitivity JSON for later schedule construction.
+bash hpca --sensitivity --models 4B --configs sc_avg192 --tag sens_avg192
+
+# Evaluate a hybrid schedule. hpca forces the INT bit-width from the SC budget:
+# sc_avg192 -> INT8, sc_avg96 -> INT7.
+bash hpca --models 4B --configs sc_avg192 --metrics ppl \
+  --sc-backend hybrid \
+  --hybrid-config benchmark/ppl/hybrid_schedules/skip_worst_k16.json
+```
+
+When launched through `hpca`, `--hybrid-int-bits N` overrides the automatic
+budget mapping. The launcher sets `SC_HYBRID_FORCE_INT_BITS=1`, so the chosen
+budget bit-width applies even if the schedule entries say `int7`; use plain
+`SC_HYBRID_CONFIG_JSON=... python benchmark/quant/eval_quant.py` for fully
+literal schedule entries.
 
 The sweep ships three references:
 
@@ -73,10 +139,9 @@ The sweep ships three references:
 
 ## Known limitations
 
-- `AdaptiveMPConfig` (timestep-adaptive, per-operator, per-layer
-  calibrated thresholds) is recognised in `scmp_kernels.mp` but the
-  loader rejects `"type": "AdaptiveMPConfig"` until the threshold-table
-  calibration pipeline lands in scmp_llm.
+- Hybrid INT linears currently fake-quantize the scheduled module's weight at
+  forward time rather than prepacking a `QuantLinear` buffer. This is acceptable
+  for sparse worst-group sweeps but can be optimized if many groups go INT.
 - Attention MP loops over `BH`, which scales with `(batch · num_heads)`.
   For large heads (Qwen3-32B, 30B-A3B-MoE) the per-forward overhead is
   measurable; see `_mp_overnight_<ts>/SUMMARY.txt` for the ratio vs the

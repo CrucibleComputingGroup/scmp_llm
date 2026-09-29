@@ -1,0 +1,1334 @@
+{
+ "schema": "prc-r7-capture-v1",
+ "run_id": "prc_r7_capture_20260928",
+ "created_utc": "2026-09-28T19:46:07.036273+00:00",
+ "purpose": "Round 7 (T1 per-group allocation, ROUNDS_6_8_PLAN_20260928 section 4) capture: one calib10_r7 run per cell measuring what the offline family-kappa joint solve over per-bucket attention ladders up to 128 needs, plus the incumbent-identity reproduction before any extension.",
+ "units": "HALVED code lengths (nominal = 2x); code cap 128",
+ "max_total_gpus": 4,
+ "array_gpu_cap": 2,
+ "gpus_per_task": 1,
+ "concurrency_note": "Round 6: 62208439 finished (14:18 EDT 2026-09-28); 62208440 (14B t32 re-target, 1 GPU, full test in-job) may still run. Step 0 (prc_step0_r7, %1) = 1 GPU. Submit (A) tasks 0-1 %2 now and (B) task 2 after 62208440: worst case 62208440 + step 0 + A = 4, then step 0 + A + B = 4. No round-7 screen job while captures run. The sbatch header default is %1; always pass --array explicitly. 4B tasks 3-4 are disabled (not run).",
+ "output_root": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928",
+ "protocol": {
+  "frontend": "awq",
+  "awq_obj_bits": 4,
+  "owen_mode": "bitrev",
+  "scramble_masks": 64,
+  "sc_prec": 8,
+  "sc_halve": true,
+  "rng_grid": "fixed128",
+  "qk_rebalance": false,
+  "ctx": 2048,
+  "escape": "mu+2tau at 128, unchanged",
+  "int_mask": "parent hybrid_config (h20)"
+ },
+ "preregistered_rules": {
+  "version": "v2-20260928 (frozen before any round-7 capture, step-0 measurement or solve)",
+  "capture": "The capture is the incumbent's exact calib7 recipe (recorded prc6_calib args, seed 0, same windows) run through calib10_r7, whose main() equals calib9_r6's except '# r7'-tagged measurement/dump lines; attention sampling 512 rows/call with the rank<128 prefix measured as calib7's own batches.",
+  "identity": "Before any extended solve: (1) in-process gfis == c7_gfis (all non-provenance fields) and the state re-solve reproduces it; (2) dump bins == in-process bins; (3) the 128-row prefix view (rep x4) re-solved jointly at scale 1.0 == c7_gfisla thresholds (28 linear + 8 attention keys); (4) held-out Fisher predictions on the prefix view == the c7 diag (joint gfis, gfisla; linear gfis, c17); (5) parent attention replay 1.0; (6) INC lineage (identical to c7_gfisla, or t40 candidate07 = c7_gfisla + per_row_chunk thresholds only); (7) the capture's OWN gfis/gfisla/c17/c17_s80/inc tables re-scored from its dumps (all 512 rows) == its own diag (joint.*.pred_dnll, tables.*.pred_dnll_fis) bit for bit. identity.json is always written.",
+  "identity_allow_near": false,
+  "identity_near_rule": "Bit identity is required (user rule). identity_level 'near' (every CPU-deterministic check exact incl. (7), calib7 log lines reproduced, predictions within 2e-5 nats) is recorded but is STOP-AND-REPORT: identity_ok = false, exit 3, no solve without a user decision.",
+  "fail_closed": "prc_r7_solve solve refuses unless the cell's identity.json has identity_ok = true for the same capture files (sha256). Exit 4 (pipeline check failed, identity ok) keeps the capture valid; identity is re-run with --tag after a solver fix, never by deleting.",
+  "pipeline_check": "After identity: one extended-ladder table (arm U, kappa 1, scale 1.0) is emitted and validated (lineage + runtime resolver sweep incl. escape folding). It is never a candidate.",
+  "ladder_policy": "Measured per bucket: parent ladder + 128 + ATT_SUPERSET. Candidate UK/U ladders = parent + {112 if 112 >= 1.1*top} + {128} ('up'), enforced by prc_r7_solve.check_prereg; 'dense'/'full' exist only as in-memory CPU sensitivity entries (never emitted, never candidates).",
+  "kappa_rule": {
+   "id": "prc-r7-kappa-rule-v2-20260928",
+   "kappa_att": 0.83,
+   "kappa_att_se": 0.07,
+   "kappa_att_source": "CRIT section 1 / scout_calib section 3 (r7_kappa_se.json _pooled): pooled held-out 30B kappa_att 0.8305 +- 0.0728 (p = 2; p = 1.5: 0.806 +- 0.074), rounded as in the plan and the step-0 manifest (0.83 +- 0.07)",
+   "kappa_lin_heldout": 1.96,
+   "kappa_lin_heldout_source": "CRIT section 1: pooled 30B held-out REALLOCATION kappa_lin, sum measured / sum predicted over t32..t96 = 0.1631/0.0834",
+   "step0_cells": [
+    "30B_t32",
+    "30B_t40"
+   ],
+   "applies_to": [
+    "30B_t32",
+    "30B_t40",
+    "30B_t48"
+   ],
+   "t48": "30B t48 has no step-0 measurement and takes the pooled decision (one 30B currency; per-cell held-out ratios are consistent with one value, chi2 3.6 on 2 df)",
+   "pred_key": "pred_dnll_fis",
+   "score_names": {
+    "c17": "c17",
+    "s80": "c17_s80"
+   },
+   "statistic": "kappa_lin_bs = sum_c m_c / sum_c p_c over step0_cells; m_c = mean over the 16 paired round-6 diag TRAIN windows of NLL(c17_s80) - NLL(c17) (step-0 step0_measured.json pair.window_dnll, ok, not simulated); p_c = tables.c17_s80.pred_dnll_fis - tables.c17.pred_dnll_fis from cell c's round-7 capture diag (capture identity ok; the step-0 c17/c17_s80 tables byte-identical to the capture's score tables). Identical to the step-0 manifest's statistic.",
+   "se": "SE_bs = sd_w(sum_c d_cw) / sqrt(n_w) / sum_c p_c (the cells share one window list, so the per-window sum carries their covariance); prediction noise excluded (disclosed). Different window lists -> undefined.",
+   "decision": "keep_0.42 iff kappa_lin_bs - kappa_att > band, band = sqrt(SE_bs^2 + kappa_att_se^2) (ONE-SIDED: the step-0 check must CONFIRM kappa_lin > kappa_att). Otherwise revert_to_kappa_1: inside the band, below it (direction contradicted) or undefined.",
+   "undefined": "a step-0 cell missing / not ok / simulated, a capture diag or identity missing or not ok, different window lists, n_w < 2, or sum_c p_c <= 0 -> revert_to_kappa_1 and requires_user_review = true",
+   "pins": {
+    "keep_0.42": {
+     "kappa_lin": 1.96,
+     "kappa_att": 0.83
+    },
+    "revert_to_kappa_1": {
+     "kappa_lin": 0.83,
+     "kappa_att": 0.83
+    },
+    "dense": {
+     "kappa_lin": 1.0,
+     "kappa_att": 1.0
+    }
+   },
+   "decision_ratio": {
+    "keep_0.42": 0.42,
+    "revert_to_kappa_1": 1.0
+   },
+   "currency": "UK and K solve with r = kappa_att/kappa_lin of the branch pins (keep: 0.83/1.96 = 0.4235, the nominal 0.42; revert: 1); U always r = 1. Under revert UK == U, so U is not solved separately; K at r = 1 equals the J control at the same scale (disclosed). Dense cells: pins 'dense' (kappa = 1).",
+   "prediction": "pred_true(table vs INC) = kappa_lin * dL + kappa_att * dA with the branch pins (keep: 1.96 / 0.83; revert: 0.83 / 0.83 = both families at kappa_att, since the step-0 check did not confirm kappa_lin > kappa_att; dense: 1 / 1), the SAME pair for every arm of a cell; dL / dA = MC-Fisher held-out dNLL vs INC on the capture's hold windows, full table (prc_r7_solve score_tables). kappa_lin_bs never enters pred_true (reported only; gap_case flag).",
+   "authority": "The branch is a function of the pooled (kappa_lin_bs, SE_bs, undefined) statistic only. Either side may compute the statistic (prc_step0_r7_20260928 kappa -> kappa_decision.json, or prc_r7_solve kappa-decision); prc_r7_solve re-derives the branch with THIS one-sided rule from the record's kappa_lin_bs / se_kappa_lin_bs and refuses pins that disagree with it. It supersedes the two-sided v1 text of this manifest and of the step-0 manifest / prc_eval_r7_20260928.KAPPA_RULE (|kappa_lin_bs - kappa_att| <= band; undefined -> keep), which must be aligned.",
+   "flags_nonbinding": "gap_case: keep with kappa_att / kappa_lin_bs > 0.55 (0.42 may over-correct); direction_contradicted: kappa_lin_bs < kappa_att - band. Reported only."
+  },
+  "arms": "Per cell `prereg.arms`; the primary is `prereg.primary`. 30B: UK primary (round-6 gate passed on t32 and t40; t48 follows t40), K and U secondary. Under REVERT U is not solved (== UK at kappa 1) and K runs at kappa 1 (== the J control at s0, disclosed). J is a CPU control, never an arm.",
+  "mde": "Per cell `prereg.mde_nats` (numeric, frozen here; = the frozen registration record kbands/prc_r7_prereg_20260928.json mde.nats): MDE80 = (2 + z_0.80)/sqrt(32) * sigma_w = 0.50233 * sigma_w (the confirmation test: 32 paired TRAIN windows, one-sided z < -2, power 0.80). sigma_w = the LARGEST paired per-window SD among the pre-existing 16-window allocation pairs of the cell: prc2/<cell>_c7_heldout_nll.json pairs gfisla-gfis, gfisla-parent, gfis-parent, c17-parent, and the round-6 arm A - INC on the diag windows where it exists (the attribution-only oracles ATT128/LIN128 are excluded). Rounded UP to 1e-4 nats. Conservative by construction (the largest SD of any comparable move); it is the upper end of the scout's MDE80 ranges (30B t32 0.010-0.013, t40 0.006-0.009, t48 0.007-0.009).",
+  "refusal": "An arm is screened only if its pred_true (KAPPA_RULE prediction: branch pins, vs INC, held-out Fisher on the capture) <= -MDE of its cell. A refused primary ends the cell for round 7 (no confirmation, no full test); secondaries are screened for information only.",
+  "target_scale": "= kbands/prc_r7_prereg_20260928.json target_scale.rule (shared registration): s0 = S0[cell]. Each registered arm (30B: UK, K, U, with U omitted whenever the kappa ratio is 1 because it then equals UK; dense: U; never the CPU control J) is solved ONCE at s0 with the pinned kappa and MDE (prc_r7_solve.py solve). C(s0) = CPU replay of the arm's s0 table on the step-0 INC16 profile of the cell (INC's deployed trajectory on the cell's 16 screen windows; every profiled row re-dispatched through the arm's OWN ladders and thresholds; escaped attention rows and the protected slice stay fixed; an L7 psl arm moves the protected slice by psl_arm/psl_INC). P = the step-0 PARENT16 exact trace cost on the same windows (parent_reference.json). U = the protected-slice cycles per SC MAC of the step-0 INC16 trace (analyze_trace U_prot; escaped rows are inside the solve's target and scale with s). s1 = round(s0 (P - U)/(C(s0) - U), 1e-4), refused outside [0.97, 1.05]. Each arm is re-solved ONCE at its own s1 and only that table is screened (the builder refuses any other target_scale). No iteration, no second re-solve, no re-screen. The screen's measured |C/P - 1| <= 1% gate is unchanged; the replayed C(s1)/P is recorded (non-binding, flagged when |C(s1)/P - 1| > 0.25%). A cell without a complete, non-simulated step-0 reference (INC16 profile + PARENT16) is disabled. prc_r7_solve solve accepts only s0 or an arm's own s1 from that fixed-point record. The table screened is therefore the table confirmed and full-tested (same sha256); the screen's |C/P - 1| <= 1% gate applies to it.",
+  "one_full_test_per_cell": "Only the registered primary, only after the screen gate (identity/audits ok, cost gate) and confirmation z < -2 on 32 fresh disjoint windows; the full-protocol full test enters best(all) whatever its sign. Secondaries are never confirmed or full-tested.",
+  "realized_length_audit": "Before any screen NLL is read: GPU trace histograms per (op, bucket) resolved through get_levels; realized lengths within the table's bucket ladder (+128 escape), none above 128; every new rung (112/128) realized where the solve's hold-window att_mac_hist_hold predicts it, MAC share within +-0.10 absolute of that prediction; any failure stops the cell (resolver bug family).",
+  "non_candidates": "Never screened, confirmed or full-tested: the capture's in-process tables (<cell>_r7_{wfis,gfis,gfisla}, the 512-row J at scale 1.0), the pipeline-check table, the J controls and every sensitivity_not_preregistered entry of a solve.",
+  "kappa_att_A": "Descriptive only: kappa_att(A) = round-6 measured dNLL(A) / the capture's Fisher prediction of the round-6 A table vs INC (prc_r7_solve solve records it). It changes neither the currency, the refusal nor the primary; qk_raise_underpriced (kappa_att(A) - 2 SE > 0.83) is reported to the user.",
+  "disclosure": "UK/U buckets carry up to 8-9 rungs vs the parent's 6-7 (more threshold compares per row; existing bucket_stoc_len_levels support). Where 128 is a bucket rung the mu+2tau escape is a no-op there. On av buckets with a 128 rung and th[0] = 1.0 each call's max-metric row (mn = 1.0) runs at 128 (pre-existing deploy semantics, 1 row per call; scorer == runtime). Attention cost stays dense (mac = K*M). Round-7 gains are per-row attention reallocation / calibration objective (+ the s0 budget correction), not T1 granularity.",
+  "4B": "Not run: 4B t40 round-6 gate failed; 4B t64 is a known-outcome trial (plausible dense upside 0-0.3% below its MDE). Enabling needs a user decision and a separate manifest.",
+  "not_citable": "Capture/solve/screen numbers are TRAIN or held-out; only full tests are citable.",
+  "no_new_runtime": "Tables change only per_row_chunk thresholds, attention thresholds and attention bucket stoc_len_levels (existing runtime support, max 128). RNG, QK transform, smooth scales, escape mu/tau, INT mask, psl, global ladder unchanged (validate_lineage)."
+ },
+ "shared_registration": {
+  "record": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json",
+  "sha256": "c7fcfaec091ce01a2d06808f36d12ca617b3306d5f8388ca05b2165cfab4b6f2",
+  "frozen_utc": "2026-09-28T19:40:51.347060+00:00",
+  "note": "MDE, s0, arms, ladder policy, kappa pins and the target-scale rule come from the eval side's frozen record (written once); the preflight re-checks its sha256 (frozen_manifests)"
+ },
+ "gpu_plan": {
+  "per_cell_estimate_h": {
+   "30B": "2.0-2.6 (calib7 1.4-1.8 h + 512 rows x ~18 columns x prefix split + dumps)",
+   "4B": "0.4-0.6 (not run)"
+  },
+  "wall_time_request": "12:00:00",
+  "pin_first": "cd /home/allenjin/Projects/SCMP/scmp_llm && PYTHONPATH=$PWD/kernels /nfs/turbo/coe-nbleier/allenjin/conda-envs/annstention/bin/python benchmark/ppl/prc_r7_capture_20260928.py pin --manifest benchmark/ppl/kbands/prc_r7_capture_20260928.json",
+  "submit": [
+   "cd /home/allenjin/Projects/SCMP/scmp_llm && R7C_MANIFEST_SHA256=<SHA> sbatch --parsable --array=0-1%2 benchmark/ppl/kbands/run_prc_r7_capture_20260928.sbatch",
+   "cd /home/allenjin/Projects/SCMP/scmp_llm && R7C_MANIFEST_SHA256=<SHA> sbatch --parsable --array=2 --dependency=afterany:62208440 benchmark/ppl/kbands/run_prc_r7_capture_20260928.sbatch"
+  ],
+  "conservative_alternative": "cd /home/allenjin/Projects/SCMP/scmp_llm && R7C_MANIFEST_SHA256=<SHA> sbatch --parsable --array=0-2%1 benchmark/ppl/kbands/run_prc_r7_capture_20260928.sbatch",
+  "check_first": "squeue -u allenjin: anything else of ours holding a GPU counts toward the 4"
+ },
+ "cells": [
+  {
+   "index": 0,
+   "id": "30B_t32",
+   "model": "30B",
+   "target": 32,
+   "enabled": true,
+   "calib_args": {
+    "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32",
+    "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "ladder": "8,10,12,14,16,20,24,28,32,40,48,56,64,80,96,112,128",
+    "calib_windows": 6,
+    "holdout_windows": 2,
+    "rows_per_call": 64,
+    "expert_calls_per_block": 16,
+    "bins": 2048,
+    "seed": 0,
+    "frontend": "awq",
+    "currencies": "fis",
+    "grad_mode": "block",
+    "att_rows_per_call_incumbent": 128,
+    "score_tables_incumbent": "c17=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c17e32_table.json",
+    "dump_incumbent": ""
+   },
+   "r7": {
+    "att_rows_per_call": 512,
+    "att_prefix_split": 128,
+    "att_measure_extra": [
+     20,
+     28,
+     40,
+     56,
+     80,
+     112
+    ],
+    "prot_measure": [
+     48,
+     56,
+     64,
+     80,
+     96,
+     112,
+     128
+    ],
+    "measured_attention_superset": [
+     16,
+     20,
+     24,
+     28,
+     32,
+     40,
+     48,
+     56,
+     64,
+     80,
+     96,
+     112,
+     128
+    ],
+    "score_tables": {
+     "c17": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c17e32_table.json",
+     "c17_s80": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c17e32_s80_table.json",
+     "inc": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json"
+    }
+   },
+   "parent_ladder": [
+    16,
+    24,
+    32,
+    48,
+    64,
+    96
+   ],
+   "psl": 80,
+   "inputs": {
+    "parent_table": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/table.json",
+     "sha256": "40981e7b719cb22f42d121001526d898d370acaa1fb52fc22c68ff5cd36a3fd5"
+    },
+    "parent_wrapper": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/wrapper.json",
+     "sha256": "423243cbb5a184d9a03615e6cdf5d75aea054e3fa0f558c586911c5f237583b3"
+    },
+    "parent_hybrid": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/hybrid_config.json",
+     "sha256": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc"
+    },
+    "c7_gfis_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfis_table.json",
+     "sha256": "132cab091e21da697a4f1dd8cbad9105ba1f8d57ea52cc17d1d070ef58e01710"
+    },
+    "c7_gfisla_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json",
+     "sha256": "3dc3169e15f0f85499b6c5a1be4c44eb3c3a8025e7c28b45c24894633b1de4eb"
+    },
+    "c7_diag": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_diag.json",
+     "sha256": "80168ab7b53b096f67de970942d8494cf807dadfcfc2d81778bdf7e6c2483db6"
+    },
+    "c7_log": {
+     "path": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_30B_t32_c7_61848816.out",
+     "sha256": "10ce41868ea9d1a4c2bfbb10a18bf0742ac9d2ebb070edc19ff5694f71ddb3f6"
+    },
+    "inc_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json",
+     "sha256": "3dc3169e15f0f85499b6c5a1be4c44eb3c3a8025e7c28b45c24894633b1de4eb"
+    },
+    "c17_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c17e32_table.json",
+     "sha256": "ca63f81a33795bf6ed9fecd2f8afa49e7b38fb71e7a23a72e0953821a4491ca9"
+    },
+    "c17_s80_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c17e32_s80_table.json",
+     "sha256": "60c60addbb6af81ac607f9fe684524e277b34199f6d76d2ceae4826c237d2853"
+    },
+    "awq_cache": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt",
+     "size": 63671651
+    },
+    "round6_gate_summary": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t32/diag_summary.json",
+     "sha256": "e0e0d15df59dd1b6aede23c6f09fcfc3bc8950016cc9f1250eb63b5ea3aa588c"
+    },
+    "round6_arm_A_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/attn_diag_arms/30B_t32/A_table.json",
+     "sha256": "d2da8febf66ba1b9322b1fc152c0b2a6a22b687701ca24cb17d94453ba811c5a"
+    }
+   },
+   "refs": {
+    "c7_gfis_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfis_table.json",
+    "c7_gfisla_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json",
+    "c7_diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_diag.json",
+    "c7_log": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_30B_t32_c7_61848816.out",
+    "calib7_job": 61848816,
+    "expect_global_line": "[c6] global-fis: down_proj 32.9->27.4  gate_proj 21.7->19.4  k_proj 20.6->42.9  o_proj 20.1->27.0  q_proj 18.5->22.3  up_proj 24.2->20.2  v_proj 27.0->53.2",
+    "expect_joint_line": "[c7] JOINT lambda: linear L 23.93 -> 23.50; attention L 61.75 -> 62.85 (total cost held at the parent's)",
+    "inc_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json",
+    "inc_name": "c7gfisla",
+    "inc_relation": "identical"
+   },
+   "paths": {
+    "cell_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32",
+    "capture_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture",
+    "stem": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/30B_t32_r7.json",
+    "diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/30B_t32_r7_diag.json",
+    "state": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/30B_t32_r7_state.npz",
+    "att_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/30B_t32_r7_att.npz",
+    "hold_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/30B_t32_r7_hold.npz",
+    "job_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/job.log",
+    "calib_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/calib10.log",
+    "identity": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/identity.json",
+    "pipeline_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/pipeline_check"
+   },
+   "prereg": {
+    "primary": "UK",
+    "arms": [
+     "UK",
+     "K",
+     "U"
+    ],
+    "ladder_policy": "up",
+    "mde_nats": 0.0129,
+    "mde_derivation": {
+     "rule": "MDE80 = (2 + z_0.80)/sqrt(32) * sigma_w = 0.50233 * sigma_w (the confirmation test: 32 paired TRAIN windows, one-sided z < -2, power 0.80). sigma_w = the LARGEST paired per-window SD among the pre-existing 16-window allocation pairs of the cell: prc2/<cell>_c7_heldout_nll.json pairs gfisla-gfis, gfisla-parent, gfis-parent, c17-parent, and the round-6 arm A - INC on the diag windows where it exists (the attribution-only oracles ATT128/LIN128 are excluded). Rounded UP to 1e-4 nats. Conservative by construction (the largest SD of any comparable move); it is the upper end of the scout's MDE80 ranges (30B t32 0.010-0.013, t40 0.006-0.009, t48 0.007-0.009).",
+     "sigma_w": 0.025647177833214345,
+     "pairs": [
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_heldout_nll.json:gfisla-gfis",
+       "n": 16,
+       "sd_w": 0.02066799803187375
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_heldout_nll.json:gfisla-parent",
+       "n": 16,
+       "sd_w": 0.024399671102581583
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_heldout_nll.json:gfis-parent",
+       "n": 16,
+       "sd_w": 0.022975309616712666
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_heldout_nll.json:c17-parent",
+       "n": 16,
+       "sd_w": 0.025647177833214345
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t32/A_nll.json - INC_nll.json",
+       "n": 16,
+       "sd_w": 0.015314562240914707
+      }
+     ],
+     "source": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json"
+    },
+    "s0": 1.0037,
+    "s0_source": "scout_calib section 4c s_pop (held-out, trace-equivalent): the INC's controlled-cycle shortfall vs the parent on held-out windows; = prc_r7_prereg_20260928.S0",
+    "family_kappa": true,
+    "round6_gate": {
+     "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t32/diag_summary.json",
+     "diag_summary_sha256": "e0e0d15df59dd1b6aede23c6f09fcfc3bc8950016cc9f1250eb63b5ea3aa588c",
+     "passed": true,
+     "dppl_pct_A": -1.9811013701980178,
+     "threshold_dppl_pct": -1.5260363328425706,
+     "dnll_A": -0.020009882748126984,
+     "se_dnll_A": 0.0038286405602286767,
+     "n_windows": 16,
+     "sigma_w_A": 0.015314562240914707,
+     "cell": "30B_t32",
+     "follows": null
+    },
+    "primary_rule": "30B cell whose round-6 gate passed -> UK (30B t48 follows 30B t40)",
+    "r6_arm_A": {
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/attn_diag_arms/30B_t32/A_table.json",
+     "sha256": "d2da8febf66ba1b9322b1fc152c0b2a6a22b687701ca24cb17d94453ba811c5a",
+     "measured_dnll": -0.020009882748126984,
+     "measured_se": 0.0038286405602286767,
+     "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t32/diag_summary.json"
+    }
+   },
+   "solve_defaults_informational": {
+    "initial_target_scale": 1.0037,
+    "note": "kept for references by name (prc_r7_prereg S0_SOURCE); the registered value is prereg.s0"
+   }
+  },
+  {
+   "index": 1,
+   "id": "30B_t40",
+   "model": "30B",
+   "target": 40,
+   "enabled": true,
+   "calib_args": {
+    "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40",
+    "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "ladder": "8,10,12,14,16,20,24,28,32,40,48,56,64,80,96,112,128",
+    "calib_windows": 6,
+    "holdout_windows": 2,
+    "rows_per_call": 64,
+    "expert_calls_per_block": 16,
+    "bins": 2048,
+    "seed": 0,
+    "frontend": "awq",
+    "currencies": "fis",
+    "grad_mode": "block",
+    "att_rows_per_call_incumbent": 128,
+    "score_tables_incumbent": "c17=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c17_table.json",
+    "dump_incumbent": ""
+   },
+   "r7": {
+    "att_rows_per_call": 512,
+    "att_prefix_split": 128,
+    "att_measure_extra": [
+     16,
+     20,
+     24,
+     28,
+     40,
+     48,
+     56,
+     64,
+     80,
+     112
+    ],
+    "prot_measure": [
+     48,
+     56,
+     64,
+     68,
+     80,
+     96,
+     112,
+     128
+    ],
+    "measured_attention_superset": [
+     16,
+     20,
+     24,
+     28,
+     30,
+     31,
+     32,
+     40,
+     47,
+     48,
+     49,
+     56,
+     64,
+     65,
+     80,
+     96,
+     112,
+     128
+    ],
+    "score_tables": {
+     "c17": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c17_table.json",
+     "c17_s80": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c17_s80_table.json",
+     "inc": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections_table.json"
+    }
+   },
+   "parent_ladder": [
+    30,
+    31,
+    32,
+    47,
+    49,
+    65,
+    96
+   ],
+   "psl": 68,
+   "inputs": {
+    "parent_table": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/table.json",
+     "sha256": "5b544ad40712b423379cb68dc6b0f586d66d62f1bb924430e8d65fba01429345"
+    },
+    "parent_wrapper": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/wrapper.json",
+     "sha256": "f972033deb7c04b69cf8f52b1b93177673af94ab567abfc3990d00d712e836e8"
+    },
+    "parent_hybrid": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/hybrid_config.json",
+     "sha256": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc"
+    },
+    "c7_gfis_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfis_table.json",
+     "sha256": "4258b8a82ba57fa82a0fd08ca5331507476eb1f5e5a60d6e03a2676a16f86cf5"
+    },
+    "c7_gfisla_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla_table.json",
+     "sha256": "4899741a4c3d6070e773f7c5b570ec80978e6a12a4e4dc3968588b1b5becb6e2"
+    },
+    "c7_diag": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_diag.json",
+     "sha256": "9ff54009df54b1e433f722fb2233442b7d7e3dff74be212d719dceaa1c7a94f9"
+    },
+    "c7_log": {
+     "path": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_30B_t40_c7_61848817.out",
+     "sha256": "e54856335756535fb2af22b3f0ccc934e56e98dc6df8e9f05b0ac9d1f6231cc4"
+    },
+    "inc_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections_table.json",
+     "sha256": "6321e3781f4a53cf20b1f6138188093dbe35c1cda5d95f0674dedbe66e43653b"
+    },
+    "c17_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c17_table.json",
+     "sha256": "2bed7f8050be27072e19353ed2067b35d617db6f607e6947b64fde58befcccb9"
+    },
+    "c17_s80_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c17_s80_table.json",
+     "sha256": "d5964d2734a626cd3636112845b21d7728564724e806016eb2c366e6c893467b"
+    },
+    "awq_cache": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt",
+     "size": 63671651
+    },
+    "round6_gate_summary": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/diag_summary.json",
+     "sha256": "794bf4620fe954397a7c096525e029a1004ff45e2b2df7493d7e394b325b2b59"
+    },
+    "round6_arm_A_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/attn_diag_arms/30B_t40/A_table.json",
+     "sha256": "1a89cb0eda996cac2bc5bf73938f7abeeefff0625af697b151b539d5dc9f9873"
+    }
+   },
+   "refs": {
+    "c7_gfis_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfis_table.json",
+    "c7_gfisla_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla_table.json",
+    "c7_diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_diag.json",
+    "c7_log": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_30B_t40_c7_61848817.out",
+    "calib7_job": 61848817,
+    "expect_global_line": "[c6] global-fis: down_proj 41.3->40.6  gate_proj 33.1->27.9  k_proj 32.5->60.4  o_proj 33.4->38.1  q_proj 32.1->32.6  up_proj 33.4->30.2  v_proj 34.3->76.4",
+    "expect_joint_line": "[c7] JOINT lambda: linear L 34.83 -> 31.65; attention L 64.68 -> 74.87 (total cost held at the parent's)",
+    "inc_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections_table.json",
+    "inc_name": "round3_local candidate07",
+    "inc_relation": "prc_thresholds_only"
+   },
+   "paths": {
+    "cell_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40",
+    "capture_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture",
+    "stem": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/30B_t40_r7.json",
+    "diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/30B_t40_r7_diag.json",
+    "state": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/30B_t40_r7_state.npz",
+    "att_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/30B_t40_r7_att.npz",
+    "hold_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/30B_t40_r7_hold.npz",
+    "job_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/job.log",
+    "calib_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/calib10.log",
+    "identity": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/identity.json",
+    "pipeline_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/pipeline_check"
+   },
+   "prereg": {
+    "primary": "UK",
+    "arms": [
+     "UK",
+     "K",
+     "U"
+    ],
+    "ladder_policy": "up",
+    "mde_nats": 0.0092,
+    "mde_derivation": {
+     "rule": "MDE80 = (2 + z_0.80)/sqrt(32) * sigma_w = 0.50233 * sigma_w (the confirmation test: 32 paired TRAIN windows, one-sided z < -2, power 0.80). sigma_w = the LARGEST paired per-window SD among the pre-existing 16-window allocation pairs of the cell: prc2/<cell>_c7_heldout_nll.json pairs gfisla-gfis, gfisla-parent, gfis-parent, c17-parent, and the round-6 arm A - INC on the diag windows where it exists (the attribution-only oracles ATT128/LIN128 are excluded). Rounded UP to 1e-4 nats. Conservative by construction (the largest SD of any comparable move); it is the upper end of the scout's MDE80 ranges (30B t32 0.010-0.013, t40 0.006-0.009, t48 0.007-0.009).",
+     "sigma_w": 0.01820446396259683,
+     "pairs": [
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_heldout_nll.json:gfisla-gfis",
+       "n": 16,
+       "sd_w": 0.01580782803559865
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_heldout_nll.json:gfisla-parent",
+       "n": 16,
+       "sd_w": 0.01820446396259683
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_heldout_nll.json:gfis-parent",
+       "n": 16,
+       "sd_w": 0.01630287968572388
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_heldout_nll.json:c17-parent",
+       "n": 16,
+       "sd_w": 0.01562529300836494
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/A_nll.json - INC_nll.json",
+       "n": 16,
+       "sd_w": 0.01328017598122259
+      }
+     ],
+     "source": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json"
+    },
+    "s0": 1.0043,
+    "s0_source": "scout_calib section 4c s_pop (held-out, trace-equivalent): the INC's controlled-cycle shortfall vs the parent on held-out windows; = prc_r7_prereg_20260928.S0",
+    "family_kappa": true,
+    "round6_gate": {
+     "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/diag_summary.json",
+     "diag_summary_sha256": "794bf4620fe954397a7c096525e029a1004ff45e2b2df7493d7e394b325b2b59",
+     "passed": true,
+     "dppl_pct_A": -2.3556961598317803,
+     "threshold_dppl_pct": -1.252482929896764,
+     "dnll_A": -0.023838862776756287,
+     "se_dnll_A": 0.0033200439953056473,
+     "n_windows": 16,
+     "sigma_w_A": 0.01328017598122259,
+     "cell": "30B_t40",
+     "follows": null
+    },
+    "primary_rule": "30B cell whose round-6 gate passed -> UK (30B t48 follows 30B t40)",
+    "r6_arm_A": {
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/attn_diag_arms/30B_t40/A_table.json",
+     "sha256": "1a89cb0eda996cac2bc5bf73938f7abeeefff0625af697b151b539d5dc9f9873",
+     "measured_dnll": -0.023838862776756287,
+     "measured_se": 0.0033200439953056473,
+     "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/diag_summary.json"
+    }
+   },
+   "solve_defaults_informational": {
+    "initial_target_scale": 1.0043,
+    "note": "kept for references by name (prc_r7_prereg S0_SOURCE); the registered value is prereg.s0"
+   }
+  },
+  {
+   "index": 2,
+   "id": "30B_t48",
+   "model": "30B",
+   "target": 48,
+   "enabled": true,
+   "calib_args": {
+    "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48",
+    "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+    "ladder": "8,10,12,14,16,20,24,28,32,40,48,56,64,80,96,112,128",
+    "calib_windows": 6,
+    "holdout_windows": 2,
+    "rows_per_call": 64,
+    "expert_calls_per_block": 16,
+    "bins": 2048,
+    "seed": 0,
+    "frontend": "awq",
+    "currencies": "fis",
+    "grad_mode": "block",
+    "att_rows_per_call_incumbent": 128,
+    "score_tables_incumbent": "c17=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c17_table.json",
+    "dump_incumbent": ""
+   },
+   "r7": {
+    "att_rows_per_call": 512,
+    "att_prefix_split": 128,
+    "att_measure_extra": [
+     16,
+     20,
+     24,
+     28,
+     40,
+     56,
+     64,
+     80,
+     96,
+     112
+    ],
+    "prot_measure": [
+     48,
+     56,
+     64,
+     80,
+     96,
+     112,
+     128
+    ],
+    "measured_attention_superset": [
+     16,
+     20,
+     24,
+     28,
+     32,
+     40,
+     45,
+     46,
+     47,
+     48,
+     56,
+     64,
+     66,
+     80,
+     96,
+     109,
+     112,
+     128
+    ],
+    "score_tables": {
+     "c17": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c17_table.json",
+     "c17_s80": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c17_s80_table.json",
+     "inc": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla_table.json"
+    }
+   },
+   "parent_ladder": [
+    32,
+    45,
+    46,
+    47,
+    48,
+    66,
+    109
+   ],
+   "psl": 112,
+   "inputs": {
+    "parent_table": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/table.json",
+     "sha256": "12c74835b11ca99bba1255f4fa2a3fbb4037d14f207116025d2e07a3208b6ec7"
+    },
+    "parent_wrapper": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/wrapper.json",
+     "sha256": "bf7cd1436400b41ef37c28a5fc55b9de8a13d06100e529b45f4369456aa64cd1"
+    },
+    "parent_hybrid": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/hybrid_config.json",
+     "sha256": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc"
+    },
+    "c7_gfis_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfis_table.json",
+     "sha256": "bd4996017c4396efbace470836c932fc8987bbf4b183863e4e13a6e3bcbb4f82"
+    },
+    "c7_gfisla_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla_table.json",
+     "sha256": "f05e9935cdd4eeae522b454ed6bfacb4faafadd6162b153a797a44e284f26985"
+    },
+    "c7_diag": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_diag.json",
+     "sha256": "9b0ca99db5eabdc807cec9d35f2236bbe1af1a6399a640f805fa6fb67f7bbf7e"
+    },
+    "c7_log": {
+     "path": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_30B_t48_c7_61848818.out",
+     "sha256": "a90bce5c202bb2b414a076339811f80a77f3af2f91ac44bfbdd4dfcb7bf875ff"
+    },
+    "inc_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla_table.json",
+     "sha256": "f05e9935cdd4eeae522b454ed6bfacb4faafadd6162b153a797a44e284f26985"
+    },
+    "c17_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c17_table.json",
+     "sha256": "4b4bb720956a54224b8b5e281f4de4a04212ae71f8dd9c943bedb9eb6acec31d"
+    },
+    "c17_s80_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c17_s80_table.json",
+     "sha256": "b245213a7dbd09d5c5f2cf0bdc7116bd9578d4da9cbc37a6457b0178d0b9fb54"
+    },
+    "awq_cache": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt",
+     "size": 63671651
+    },
+    "round6_gate_summary": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/diag_summary.json",
+     "sha256": "794bf4620fe954397a7c096525e029a1004ff45e2b2df7493d7e394b325b2b59"
+    }
+   },
+   "refs": {
+    "c7_gfis_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfis_table.json",
+    "c7_gfisla_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla_table.json",
+    "c7_diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_diag.json",
+    "c7_log": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_30B_t48_c7_61848818.out",
+    "calib7_job": 61848818,
+    "expect_global_line": "[c6] global-fis: down_proj 49.8->51.4  gate_proj 40.5->34.1  k_proj 41.7->71.2  o_proj 40.6->46.2  q_proj 40.1->40.5  up_proj 42.8->37.3  v_proj 47.9->94.9",
+    "expect_joint_line": "[c7] JOINT lambda: linear L 43.06 -> 37.64; attention L 70.19 -> 86.44 (total cost held at the parent's)",
+    "inc_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla_table.json",
+    "inc_name": "c7gfisla",
+    "inc_relation": "identical"
+   },
+   "paths": {
+    "cell_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48",
+    "capture_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture",
+    "stem": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/30B_t48_r7.json",
+    "diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/30B_t48_r7_diag.json",
+    "state": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/30B_t48_r7_state.npz",
+    "att_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/30B_t48_r7_att.npz",
+    "hold_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/30B_t48_r7_hold.npz",
+    "job_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/job.log",
+    "calib_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/calib10.log",
+    "identity": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/identity.json",
+    "pipeline_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/pipeline_check"
+   },
+   "prereg": {
+    "primary": "UK",
+    "arms": [
+     "UK",
+     "K",
+     "U"
+    ],
+    "ladder_policy": "up",
+    "mde_nats": 0.0091,
+    "mde_derivation": {
+     "rule": "MDE80 = (2 + z_0.80)/sqrt(32) * sigma_w = 0.50233 * sigma_w (the confirmation test: 32 paired TRAIN windows, one-sided z < -2, power 0.80). sigma_w = the LARGEST paired per-window SD among the pre-existing 16-window allocation pairs of the cell: prc2/<cell>_c7_heldout_nll.json pairs gfisla-gfis, gfisla-parent, gfis-parent, c17-parent, and the round-6 arm A - INC on the diag windows where it exists (the attribution-only oracles ATT128/LIN128 are excluded). Rounded UP to 1e-4 nats. Conservative by construction (the largest SD of any comparable move); it is the upper end of the scout's MDE80 ranges (30B t32 0.010-0.013, t40 0.006-0.009, t48 0.007-0.009).",
+     "sigma_w": 0.018044466502463514,
+     "pairs": [
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:gfisla-gfis",
+       "n": 16,
+       "sd_w": 0.013545566709092358
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:gfisla-parent",
+       "n": 16,
+       "sd_w": 0.01583010092752358
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:gfis-parent",
+       "n": 16,
+       "sd_w": 0.014290528824119905
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:c17-parent",
+       "n": 16,
+       "sd_w": 0.018044466502463514
+      }
+     ],
+     "source": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json"
+    },
+    "s0": 1.011,
+    "s0_source": "scout_calib section 4c s_pop (held-out, trace-equivalent): the INC's controlled-cycle shortfall vs the parent on held-out windows; = prc_r7_prereg_20260928.S0",
+    "family_kappa": true,
+    "round6_gate": {
+     "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/diag_summary.json",
+     "diag_summary_sha256": "794bf4620fe954397a7c096525e029a1004ff45e2b2df7493d7e394b325b2b59",
+     "passed": true,
+     "dppl_pct_A": -2.3556961598317803,
+     "threshold_dppl_pct": -1.252482929896764,
+     "dnll_A": -0.023838862776756287,
+     "se_dnll_A": 0.0033200439953056473,
+     "n_windows": 16,
+     "sigma_w_A": 0.01328017598122259,
+     "cell": "30B_t40",
+     "follows": "30B_t40 (plan section 4 proposal, adopted: same model, qk and av l3 top-bound as at t40)"
+    },
+    "primary_rule": "30B cell whose round-6 gate passed -> UK (30B t48 follows 30B t40)"
+   },
+   "solve_defaults_informational": {
+    "initial_target_scale": 1.011,
+    "note": "kept for references by name (prc_r7_prereg S0_SOURCE); the registered value is prereg.s0"
+   }
+  },
+  {
+   "index": 3,
+   "id": "4B_t40",
+   "model": "4B",
+   "target": 40,
+   "enabled": false,
+   "calib_args": {
+    "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target40",
+    "model_path": "Qwen/Qwen3-4B-Instruct-2507",
+    "ladder": "8,10,12,14,16,20,24,28,32,40,48,56,64,80,96,112,128",
+    "calib_windows": 6,
+    "holdout_windows": 2,
+    "rows_per_call": 64,
+    "expert_calls_per_block": 8,
+    "bins": 2048,
+    "seed": 0,
+    "frontend": "awq",
+    "currencies": "rel,fis",
+    "grad_mode": "full",
+    "att_rows_per_call_incumbent": 128,
+    "score_tables_incumbent": "c17=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c17_table.json",
+    "dump_incumbent": ""
+   },
+   "r7": {
+    "att_rows_per_call": 512,
+    "att_prefix_split": 128,
+    "att_measure_extra": [
+     16,
+     20,
+     24,
+     28,
+     48,
+     56,
+     80,
+     112
+    ],
+    "prot_measure": [
+     48,
+     56,
+     64,
+     68,
+     80,
+     96,
+     112,
+     128
+    ],
+    "measured_attention_superset": [
+     16,
+     20,
+     24,
+     28,
+     31,
+     32,
+     35,
+     40,
+     44,
+     46,
+     48,
+     56,
+     64,
+     80,
+     96,
+     112,
+     128
+    ],
+    "score_tables": {
+     "c17": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c17_table.json",
+     "c17_s80": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c17_s80_table.json",
+     "inc": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_gfisla_table.json"
+    }
+   },
+   "parent_ladder": [
+    31,
+    32,
+    35,
+    40,
+    44,
+    46,
+    64,
+    96
+   ],
+   "psl": 68,
+   "inputs": {
+    "parent_table": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target40/table.json",
+     "sha256": "7f097c43957f65cbb70ab1c52dfac9135317c367c5795f1404e34b12e97862ed"
+    },
+    "parent_wrapper": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target40/wrapper.json",
+     "sha256": "d90101f51738fa3d173b7f17a972d1b99ca0dcbfcf580196027d7009e802ec86"
+    },
+    "parent_hybrid": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target40/hybrid_config.json",
+     "sha256": "ca4dfadf188109f528bae6f8ceff0a18fb4f45fc4399c816deb899c5e70efc4a"
+    },
+    "c7_gfis_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_gfis_table.json",
+     "sha256": "aa2f7bbb9c44acb3b8ddb402b4fa86766845c047463bc8c589bf917f2977d4db"
+    },
+    "c7_gfisla_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_gfisla_table.json",
+     "sha256": "520fe7643bf1009209b3f90b171d2677b777a19a4fbfd0da33ee76781627c664"
+    },
+    "c7_diag": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_diag.json",
+     "sha256": "b2cd227dd967bd3cc0147c258f8e94f1bc8300ff76c21f27cc94b5f12c59cb58"
+    },
+    "c7_log": {
+     "path": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_4B_t40_c7_61982983.out",
+     "sha256": "8d1601abfcf2bba3e7e5440110da54ac12bdce77bf698fe2a68057fdefe304c7"
+    },
+    "inc_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_gfisla_table.json",
+     "sha256": "520fe7643bf1009209b3f90b171d2677b777a19a4fbfd0da33ee76781627c664"
+    },
+    "c17_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c17_table.json",
+     "sha256": "11b1448ddfa588762f5356aa545dcbe8a88fc42430de138e8e4a2a6ecd7f2d72"
+    },
+    "c17_s80_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c17_s80_table.json",
+     "sha256": "9e8f2abdd90701f272b856060b5d91a87c192e8222039fa9ca08e22b637fd99b"
+    },
+    "awq_cache": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-4B-Instruct-2507_b4.pt",
+     "size": 2002827
+    },
+    "round6_gate_summary": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t40/diag_summary.json",
+     "sha256": "eef718dac3ef842936a70e79f81f5fb6fa8fb89e91ebf56b31d8d366feb78e92"
+    }
+   },
+   "refs": {
+    "c7_gfis_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_gfis_table.json",
+    "c7_gfisla_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_gfisla_table.json",
+    "c7_diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_diag.json",
+    "c7_log": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_4B_t40_c7_61982983.out",
+    "calib7_job": 61982983,
+    "expect_global_line": "[c6] global-fis: down_proj 35.3->43.7  gate_proj 33.2->27.1  k_proj 36.5->37.7  o_proj 38.4->37.1  q_proj 33.8->26.0  up_proj 31.0->31.8  v_proj 41.7->50.9",
+    "expect_joint_line": "[c7] JOINT lambda: linear L 34.15 -> 32.65; attention L 82.67 -> 92.27 (total cost held at the parent's)",
+    "inc_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_gfisla_table.json",
+    "inc_name": "c7gfisla",
+    "inc_relation": "identical"
+   },
+   "paths": {
+    "cell_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40",
+    "capture_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture",
+    "stem": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/4B_t40_r7.json",
+    "diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/4B_t40_r7_diag.json",
+    "state": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/4B_t40_r7_state.npz",
+    "att_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/4B_t40_r7_att.npz",
+    "hold_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/4B_t40_r7_hold.npz",
+    "job_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/job.log",
+    "calib_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/calib10.log",
+    "identity": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/identity.json",
+    "pipeline_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t40/capture/pipeline_check"
+   },
+   "prereg": {
+    "primary": "U",
+    "arms": [
+     "U"
+    ],
+    "ladder_policy": "up",
+    "mde_nats": 0.0148,
+    "mde_derivation": {
+     "rule": "MDE80 = (2 + z_0.80)/sqrt(32) * sigma_w = 0.50233 * sigma_w (the confirmation test: 32 paired TRAIN windows, one-sided z < -2, power 0.80). sigma_w = the LARGEST paired per-window SD among the pre-existing 16-window allocation pairs of the cell: prc2/<cell>_c7_heldout_nll.json pairs gfisla-gfis, gfisla-parent, gfis-parent, c17-parent, and the round-6 arm A - INC on the diag windows where it exists (the attribution-only oracles ATT128/LIN128 are excluded). Rounded UP to 1e-4 nats. Conservative by construction (the largest SD of any comparable move); it is the upper end of the scout's MDE80 ranges (30B t32 0.010-0.013, t40 0.006-0.009, t48 0.007-0.009).",
+     "sigma_w": 0.029311645792559574,
+     "pairs": [
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_heldout_nll.json:gfisla-gfis",
+       "n": 16,
+       "sd_w": 0.020880329277909535
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_heldout_nll.json:gfisla-parent",
+       "n": 16,
+       "sd_w": 0.025954588791803814
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_heldout_nll.json:gfis-parent",
+       "n": 16,
+       "sd_w": 0.029311645792559574
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_heldout_nll.json:c17-parent",
+       "n": 16,
+       "sd_w": 0.02803728518636508
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t40/A_nll.json - INC_nll.json",
+       "n": 16,
+       "sd_w": 0.012131121972757892
+      }
+     ],
+     "source": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json"
+    },
+    "s0": 1.001,
+    "s0_source": "1 + (1 - r_test)/0.95 (approximate); = prc_r7_prereg S0",
+    "family_kappa": false,
+    "round6_gate": {
+     "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t40/diag_summary.json",
+     "diag_summary_sha256": "eef718dac3ef842936a70e79f81f5fb6fa8fb89e91ebf56b31d8d366feb78e92",
+     "passed": false,
+     "dppl_pct_A": -0.60203659943247,
+     "threshold_dppl_pct": -1.2218545331641075,
+     "dnll_A": -0.006038561463356018,
+     "se_dnll_A": 0.003032780493189473,
+     "n_windows": 16,
+     "sigma_w_A": 0.012131121972757892,
+     "cell": "4B_t40"
+    },
+    "not_run_reason": "round-6 gate FAILED (dPPL(A) -0.60% vs -1.22%)"
+   },
+   "solve_defaults_informational": {
+    "initial_target_scale": 1.001,
+    "note": "kept for references by name (prc_r7_prereg S0_SOURCE); the registered value is prereg.s0"
+   },
+   "requires_r6_gate": {
+    "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t40/diag_summary.json",
+    "path": [
+     "round7_gate",
+     "binding",
+     "proceed_round7_attention_ladder_solve"
+    ]
+   },
+   "enable_rule": "NOT RUN in round 7: round-6 gate FAILED (dPPL(A) -0.60% vs -1.22%). Enabling needs an explicit user decision and a SEPARATE manifest (--enable-4b --out <other path>); dense kappa = 1."
+  },
+  {
+   "index": 4,
+   "id": "4B_t64",
+   "model": "4B",
+   "target": 64,
+   "enabled": false,
+   "calib_args": {
+    "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target64",
+    "model_path": "Qwen/Qwen3-4B-Instruct-2507",
+    "ladder": "8,10,12,14,16,20,24,28,32,40,48,56,64,80,96,112,128",
+    "calib_windows": 6,
+    "holdout_windows": 2,
+    "rows_per_call": 64,
+    "expert_calls_per_block": 8,
+    "bins": 2048,
+    "seed": 0,
+    "frontend": "awq",
+    "currencies": "rel,fis",
+    "grad_mode": "full",
+    "att_rows_per_call_incumbent": 128,
+    "score_tables_incumbent": "c17=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c17_table.json",
+    "dump_incumbent": ""
+   },
+   "r7": {
+    "att_rows_per_call": 512,
+    "att_prefix_split": 128,
+    "att_measure_extra": [
+     16,
+     20,
+     24,
+     28,
+     32,
+     40,
+     56,
+     80,
+     96,
+     112
+    ],
+    "prot_measure": [
+     48,
+     56,
+     64,
+     80,
+     96,
+     112,
+     128
+    ],
+    "measured_attention_superset": [
+     16,
+     20,
+     24,
+     28,
+     32,
+     40,
+     48,
+     56,
+     60,
+     61,
+     62,
+     63,
+     64,
+     80,
+     96,
+     105,
+     112,
+     128
+    ],
+    "score_tables": {
+     "c17": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c17_table.json",
+     "c17_s80": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c17_s80_table.json",
+     "inc": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_gfisla_table.json"
+    }
+   },
+   "parent_ladder": [
+    48,
+    60,
+    61,
+    62,
+    63,
+    64,
+    105
+   ],
+   "psl": 112,
+   "inputs": {
+    "parent_table": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target64/table.json",
+     "sha256": "26188d066fafbc611fe373febcd97da858c69ed7bf4f01e4bb108fd3dc2cea97"
+    },
+    "parent_wrapper": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target64/wrapper.json",
+     "sha256": "cb5dd7bb15d8425aff471911babf2b584df2c9843d613ea65d3d6f502f48ab87"
+    },
+    "parent_hybrid": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target64/hybrid_config.json",
+     "sha256": "ca4dfadf188109f528bae6f8ceff0a18fb4f45fc4399c816deb899c5e70efc4a"
+    },
+    "c7_gfis_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_gfis_table.json",
+     "sha256": "7cd1c8c5397b069fc9a40b649fed18be3fe0b39b4e373c729f449bcd92ef4141"
+    },
+    "c7_gfisla_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_gfisla_table.json",
+     "sha256": "0b4026b22fba8560d59e230ebd49430ee90799d2f0732fe4f45cf66a146dccc9"
+    },
+    "c7_diag": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_diag.json",
+     "sha256": "a7ea3076f9f57dde4dbeca8c59012aa4da18eec6ba7e793bfb489d9de11a084e"
+    },
+    "c7_log": {
+     "path": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_4B_t64_c7_62015988.out",
+     "sha256": "b4b875a4736fbf1c9faccebdeeca31f46338a039a8185455b3ba3853d7190fc5"
+    },
+    "inc_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_gfisla_table.json",
+     "sha256": "0b4026b22fba8560d59e230ebd49430ee90799d2f0732fe4f45cf66a146dccc9"
+    },
+    "c17_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c17_table.json",
+     "sha256": "4acfeb9fe15ac6bded7504a2f5bc76973f1460b12f152bdfe0bac7e4efacd743"
+    },
+    "c17_s80_table": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c17_s80_table.json",
+     "sha256": "b3c6a19eeba2ef847eb65aa00e50b31ee1eedd01040074b4abff6847d6c8f9c9"
+    },
+    "awq_cache": {
+     "path": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-4B-Instruct-2507_b4.pt",
+     "size": 2002827
+    },
+    "round6_gate_summary": {
+     "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t64/diag_summary.json",
+     "sha256": "a7707242c31bb92418da396801806fd17c4f3851e2c3859b4e5fb09c88301e5d"
+    }
+   },
+   "refs": {
+    "c7_gfis_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_gfis_table.json",
+    "c7_gfisla_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_gfisla_table.json",
+    "c7_diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_diag.json",
+    "c7_log": "/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_kbands/p7_4B_t64_c7_62015988.out",
+    "calib7_job": 62015988,
+    "expect_global_line": "[c6] global-fis: down_proj 62.3->71.8  gate_proj 56.2->49.7  k_proj 63.4->67.4  o_proj 64.1->64.8  q_proj 58.3->46.1  up_proj 57.0->56.4  v_proj 63.6->85.3",
+    "expect_joint_line": "[c7] JOINT lambda: linear L 59.35 -> 57.27; attention L 90.21 -> 103.57 (total cost held at the parent's)",
+    "inc_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_gfisla_table.json",
+    "inc_name": "c7gfisla",
+    "inc_relation": "identical"
+   },
+   "paths": {
+    "cell_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64",
+    "capture_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture",
+    "stem": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/4B_t64_r7.json",
+    "diag": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/4B_t64_r7_diag.json",
+    "state": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/4B_t64_r7_state.npz",
+    "att_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/4B_t64_r7_att.npz",
+    "hold_dump": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/4B_t64_r7_hold.npz",
+    "job_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/job.log",
+    "calib_log": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/calib10.log",
+    "identity": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/identity.json",
+    "pipeline_dir": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/4B_t64/capture/pipeline_check"
+   },
+   "prereg": {
+    "primary": "U",
+    "arms": [
+     "U"
+    ],
+    "ladder_policy": "up",
+    "mde_nats": 0.0073,
+    "mde_derivation": {
+     "rule": "MDE80 = (2 + z_0.80)/sqrt(32) * sigma_w = 0.50233 * sigma_w (the confirmation test: 32 paired TRAIN windows, one-sided z < -2, power 0.80). sigma_w = the LARGEST paired per-window SD among the pre-existing 16-window allocation pairs of the cell: prc2/<cell>_c7_heldout_nll.json pairs gfisla-gfis, gfisla-parent, gfis-parent, c17-parent, and the round-6 arm A - INC on the diag windows where it exists (the attribution-only oracles ATT128/LIN128 are excluded). Rounded UP to 1e-4 nats. Conservative by construction (the largest SD of any comparable move); it is the upper end of the scout's MDE80 ranges (30B t32 0.010-0.013, t40 0.006-0.009, t48 0.007-0.009).",
+     "sigma_w": 0.014414299963329383,
+     "pairs": [
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_heldout_nll.json:gfisla-gfis",
+       "n": 16,
+       "sd_w": 0.01351887562097311
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_heldout_nll.json:gfisla-parent",
+       "n": 16,
+       "sd_w": 0.014414299963329383
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_heldout_nll.json:gfis-parent",
+       "n": 16,
+       "sd_w": 0.013628403223961423
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_heldout_nll.json:c17-parent",
+       "n": 16,
+       "sd_w": 0.010950911711516733
+      },
+      {
+       "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t64/A_nll.json - INC_nll.json",
+       "n": 16,
+       "sd_w": 0.009504068071682355
+      }
+     ],
+     "source": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json"
+    },
+    "s0": 1.0015,
+    "s0_source": "1 + (1 - r_test)/0.95 (approximate); = prc_r7_prereg S0",
+    "family_kappa": false,
+    "round6_gate": {
+     "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t64/diag_summary.json",
+     "diag_summary_sha256": "a7707242c31bb92418da396801806fd17c4f3851e2c3859b4e5fb09c88301e5d",
+     "passed": true,
+     "dppl_pct_A": -0.4395934634135051,
+     "threshold_dppl_pct": -0.4185633151053997,
+     "dnll_A": -0.00440562516450882,
+     "se_dnll_A": 0.002376017017920589,
+     "n_windows": 16,
+     "sigma_w_A": 0.009504068071682355,
+     "cell": "4B_t64"
+    },
+    "not_run_reason": "known-outcome trial (feedback_no_known_outcome_trials): gate passed only marginally (dPPL(A) -0.44% vs -0.42%) and the plausible dense upside 0-0.3% (<= 0.003 nats) is below this cell's MDE 0.0073 nats"
+   },
+   "solve_defaults_informational": {
+    "initial_target_scale": 1.0015,
+    "note": "kept for references by name (prc_r7_prereg S0_SOURCE); the registered value is prereg.s0"
+   },
+   "requires_r6_gate": {
+    "diag_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t64/diag_summary.json",
+    "path": [
+     "round7_gate",
+     "binding",
+     "proceed_round7_attention_ladder_solve"
+    ]
+   },
+   "enable_rule": "NOT RUN in round 7: known-outcome trial (feedback_no_known_outcome_trials): gate passed only marginally (dPPL(A) -0.44% vs -0.42%) and the plausible dense upside 0-0.3% (<= 0.003 nats) is below this cell's MDE 0.0073 nats. Enabling needs an explicit user decision and a SEPARATE manifest (--enable-4b --out <other path>); dense kappa = 1."
+  }
+ ],
+ "frozen_manifests": {
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r6_attn_diag_20260928.json": {
+   "sha256": "04cd84c3acc61e51eb860ec22858ec5055b7a686caecee0392235373018c84f1",
+   "n_hashed_sources": 15
+  },
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r6_retarget_20260928.json": {
+   "sha256": "3bcc9256e575509e41abaf400c73c51e93351be7b4582ced9be68d7e15c96778",
+   "n_hashed_sources": 25
+  },
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_adjacent_20260927.json": {
+   "sha256": "26ec81cf56267826c3386d95323634ea8e95f1167016830563b0366ee404c448",
+   "n_hashed_sources": 14
+  },
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_adjacent_30b_20260927.json": {
+   "sha256": "a1b08531b29b1eb1ad0574209837cec69d9617e3de11401c2056544314dbd060",
+   "n_hashed_sources": 14
+  },
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_local_20260926.json": {
+   "sha256": "61bdbc384aef83c58221151a29ffef532aed1dd20060c1081dd590d913c20a8b",
+   "n_hashed_sources": 11
+  },
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json": {
+   "sha256": "c7fcfaec091ce01a2d06808f36d12ca617b3306d5f8388ca05b2165cfab4b6f2",
+   "n_hashed_sources": 0,
+   "role": "shared registration record (MDE, s0, pins, fixed point)"
+  }
+ },
+ "source_files": [
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/mp_per_row_chunk_calib10_r7.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r7_solve.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r7_capture_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_r7_calib_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_r7_capture_20260928.sbatch",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/build_prc_r7_capture_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/mp_per_row_chunk_calib9_r6.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/mp_per_row_chunk_calib5.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r6_attn_diag_arms.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_r6_retarget.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r6_retarget_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_resolve_r6.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/calibrate_mp_thresholds.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/quant/eval_quant.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/loader.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/sc_common.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/awq_apply.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/smoothquant_apply.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/config.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/__init__.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/matmul.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/kernels.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/rng.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/sng.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/constants.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/config_helpers.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/trace.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model_qwen4b/qwen3_sc.py"
+ ],
+ "code_hashes": {
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/mp_per_row_chunk_calib10_r7.py": "5282f274b38c47a6e1d89bbc79bdf273ba2a7c460a54ef46d24e54919cc2f592",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r7_solve.py": "bc171d7110bccfe7bb2ae0ba74a953e597aa81219ee4fcac7013bc920e1355b9",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r7_capture_20260928.py": "7b6b84f9c007f86d3776348dd43ae0644c7972007f76162d862779eea35fed17",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_r7_calib_20260928.py": "f51afac10ca57b55623ca3ba69fdd953ca17a5e21a0425927f658504dcc35cb4",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_r7_capture_20260928.sbatch": "27fc033d530c5505871c60ed5463f5f632ee930b5e03d2cb0e43716f06d1ebd2",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/build_prc_r7_capture_20260928.py": "e9285d48567fd37405529ffed1a92cfa268d6b400015111f79c650f318b13526",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/mp_per_row_chunk_calib9_r6.py": "4561bc370eda34696fd6516ce0a6e7cee1c8a9dc51a0dd490ad1b970b978a892",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/mp_per_row_chunk_calib5.py": "96ae7e940dddb0d7ff220be59b1890b3afdd5c6d06d3d23501bddee70474eca4",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r6_attn_diag_arms.py": "afa15def6aa63c3b34c07bf992053abfd8db58aacc1ab13aa3a95ff8408bbaea",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_r6_retarget.py": "f607e171e69ab71f5c279d3b85c6c8ec64247200668b65283c61c27f0f5d9fbd",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r6_retarget_20260928.py": "27d9afa9ac20be9b50669a9ba0507a7a23b458338afae1d19fc76ebe5fd6586b",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_resolve_r6.py": "8e2ed484f55d42f38a8f72481d293ce8e4a372b34a8021debc62fd4fcee31714",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/calibrate_mp_thresholds.py": "9344d8c8d7dddd4e7d037092df03d5e73b5b7e58a63ce084a5fae5da5c141792",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/quant/eval_quant.py": "48d243dbe48dedab24650559e0f02e6d0d3493b9ec9977eae16f1e924fedfcde",
+  "/home/allenjin/Projects/SCMP/scmp_llm/loader.py": "e667c6958b5b0486497b55863ccb7f6472968beffc0cf01693e843c647605990",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/sc_common.py": "7e2f55e7df841df62f9833dd71804d87cbc6d606e6b7a860e2ce0736e6ade4ed",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/awq_apply.py": "831d3fd34ae9c9e289160460819be9cce31e206060509e5b4cddee45261084ce",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/smoothquant_apply.py": "a12fd488e700e098aee117c67d4cce4753b2bde8777d66395369c70de3152db3",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/config.py": "a834c617c8cb08e943ae2bc2b7d83716c78a01be94160c77ea8b7fdb56ef7f13",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/__init__.py": "fdfd56ea4b3a57c50ad674ca9e69d09949af3afdbe5704e5107e80f9851c7e38",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/matmul.py": "4fe995a83261010ca3fdf61b8ceda43024621a04707609f129e98c2f9a1e9ae1",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/kernels.py": "5dc801af65dbc8da386c15b8a14f90e666ac5794a05e42dcbdb8570b2faf6b50",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/rng.py": "ecb63ba1125390626ca1593e9a248959bfcb4db3321397a586fbf55e8019c966",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/sng.py": "e0fe652f9fb8ef313d1a3501c4b49071cc3b6493e11b1bd54839b62c253a1725",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/constants.py": "58d2083e290f77b662b9ed22c90d6e3271058205314bc500204ee55d9fc0a6bb",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/config_helpers.py": "0983351f436d2c0c78b9bc843a17c382976bf61eb2a0abe251f45c5ffe1d91cd",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/trace.py": "bd37acacd24e1569ff5690c11d1df3e2c7593acc11185e232f0c7e526a8423c5",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model_qwen4b/qwen3_sc.py": "0e40ef2d555dab6ffd2c3e709a85f12c96de4ec6b72fa14487335d4366ce2bb3"
+ }
+}

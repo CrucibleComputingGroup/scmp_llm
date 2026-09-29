@@ -57,10 +57,32 @@ model.config.use_sc_linear = False
 _gen(f"FP16 baseline ({MODEL_PATH})")
 
 # SC sweep
+
+try:  # precision trace: one file per sweep config (SC_MP_TRACE=<path>)
+    from scmp_kernels import trace as sc_trace
+except ImportError:
+    sc_trace = None
+
+
+def _trace_cfg(stoc_len, do_reset=False):
+    if sc_trace is None or not sc_trace._ENABLED:
+        return
+    if do_reset:
+        sc_trace.reset()
+        return
+    import os as _os
+    base = _os.environ.get("SC_MP_TRACE", "")
+    root, ext = _os.path.splitext(base)
+    out = sc_trace.flush(f"{root}_sl{stoc_len}{ext or '.json'}")
+    if out:
+        print(f"[trace] wrote {out}")
+
 for stoc_len in STOC_LENS:
+    _trace_cfg(stoc_len, do_reset=True)
     model.config.use_sc_attn = True
     model.config.use_sc_linear = True
     model.config.sc_prec = SC_PREC
     model.config.sc_stoc_len = stoc_len
     model.config.sc_granularity = SC_ATTN_GRANULARITY
     _gen(f"SC sc_prec={SC_PREC} stoc_len={stoc_len} gran={SC_ATTN_GRANULARITY}")
+    _trace_cfg(stoc_len)

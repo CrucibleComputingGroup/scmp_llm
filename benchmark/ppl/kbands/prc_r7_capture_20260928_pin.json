@@ -1,0 +1,12 @@
+{
+ "schema": "prc-r7-capture-pin-v1",
+ "manifest": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_capture_20260928.json",
+ "manifest_sha256": "7a7d8121ffee45947ee24528fd30c5e9a7c29fd2b5c8f1913a3d092f009a9dac",
+ "created_utc": "2026-09-28T20:47:11.491746+00:00",
+ "submit": [
+  "cd /home/allenjin/Projects/SCMP/scmp_llm && R7C_MANIFEST_SHA256=7a7d8121ffee45947ee24528fd30c5e9a7c29fd2b5c8f1913a3d092f009a9dac sbatch --parsable --array=0-1%2 benchmark/ppl/kbands/run_prc_r7_capture_20260928.sbatch",
+  "cd /home/allenjin/Projects/SCMP/scmp_llm && R7C_MANIFEST_SHA256=7a7d8121ffee45947ee24528fd30c5e9a7c29fd2b5c8f1913a3d092f009a9dac sbatch --parsable --array=2 --dependency=afterany:62208440 benchmark/ppl/kbands/run_prc_r7_capture_20260928.sbatch"
+ ],
+ "conservative_alternative": "cd /home/allenjin/Projects/SCMP/scmp_llm && R7C_MANIFEST_SHA256=7a7d8121ffee45947ee24528fd30c5e9a7c29fd2b5c8f1913a3d092f009a9dac sbatch --parsable --array=0-2%1 benchmark/ppl/kbands/run_prc_r7_capture_20260928.sbatch",
+ "note": "Jobs refuse to start unless R7C_MANIFEST_SHA256 (exported at submit) equals sha256(manifest) and this pin. Record the job ids in a NEW prc_r7_capture_20260928_submission.json after sbatch."
+}

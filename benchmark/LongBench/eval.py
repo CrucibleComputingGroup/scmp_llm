@@ -6,6 +6,10 @@ import sys
 import numpy as np
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+from benchmark.config import parse_sc_args  # noqa: E402
 from metrics import (  # noqa: E402
     classification_score,
     code_sim_score,
@@ -53,18 +57,19 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model", type=str, default="llama-3.1-8b", choices=model_choices)
-    parser.add_argument(
-        "--mode", type=str, default="fp16", choices=["fp16", "sc"],
-        help="fp16 baseline or full SC matmul.")
-    parser.add_argument("--sc_prec", type=int, default=8)
-    parser.add_argument("--sc_stoc_len", type=int, default=256)
     parser.add_argument("--e", action="store_true", help="Evaluate on LongBench-E")
+    # --mode {fp16,sc,sc_linear,quant} + --quant_config + SC knobs, shared with
+    # pred.py so the tag scored here matches the tag prediction wrote (quant
+    # cells land in results/pred/<model>/quant_<config>/).
+    parser = parse_sc_args(parser)
     return parser.parse_args(args)
 
 
 def mode_tag(args: argparse.Namespace) -> str:
     if args.mode == "fp16":
         return "fp16"
+    if args.mode == "quant":
+        return f"quant_{args.quant_config}"
     return f"sc_prec{args.sc_prec}_stoc{args.sc_stoc_len}"
 
 
