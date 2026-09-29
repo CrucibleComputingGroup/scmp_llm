@@ -1,0 +1,31 @@
+0	4B	uniform	sc_avg96	wikitext2	2048	identity: must equal archived uac 4B t48 12.023089
+1	4B	mp	-	wikitext2	2048	identity: must equal best(all) 4B t48 10.466472
+2	30B	mp	-	c4	2048	corpus shift
+3	14B	mp	-	c4	2048	corpus shift
+4	30B	mp	-	wikitext2	4096	context shift
+5	14B	mp	-	wikitext2	4096	context shift
+6	llama8B	mp	-	c4	2048	corpus shift
+7	4B	mp	-	c4	2048	corpus shift
+8	llama8B	mp	-	wikitext2	4096	context shift
+9	4B	mp	-	wikitext2	4096	context shift
+10	30B	uniform	sc_avg96	c4	2048	uniform bracket, corpus shift
+11	30B	uniform	sc_int7	c4	2048	uniform bracket, corpus shift
+12	14B	uniform	sc_avg96	c4	2048	uniform bracket, corpus shift
+13	14B	uniform	sc_int7	c4	2048	uniform bracket, corpus shift
+14	llama8B	uniform	sc_avg96	c4	2048	uniform bracket, corpus shift
+15	llama8B	uniform	sc_int7	c4	2048	uniform bracket, corpus shift
+16	4B	uniform	sc_avg96	c4	2048	uniform bracket, corpus shift
+17	4B	uniform	sc_int7	c4	2048	uniform bracket, corpus shift
+18	30B	uniform	sc_avg96	wikitext2	4096	uniform bracket, context shift
+19	30B	uniform	sc_int7	wikitext2	4096	uniform bracket, context shift
+20	14B	uniform	sc_avg96	wikitext2	4096	uniform bracket, context shift
+21	14B	uniform	sc_int7	wikitext2	4096	uniform bracket, context shift
+22	llama8B	uniform	sc_avg96	wikitext2	4096	uniform bracket, context shift
+23	llama8B	uniform	sc_int7	wikitext2	4096	uniform bracket, context shift
+24	4B	uniform	sc_avg96	wikitext2	4096	uniform bracket, context shift
+25	4B	uniform	sc_int7	wikitext2	4096	uniform bracket, context shift
+26	14B	uniform	sc_int7	wikitext2	2048	mask-matched t64 anchor (archived uac 14B t64 used the h=10% mask)
+27	30B	fp16	-	c4	2048	fp16 reference, corpus shift
+28	14B	fp16	-	c4	2048	fp16 reference, corpus shift
+29	llama8B	fp16	-	c4	2048	fp16 reference, corpus shift
+30	4B	fp16	-	c4	2048	fp16 reference, corpus shift
