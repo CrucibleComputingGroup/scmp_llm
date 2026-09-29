@@ -25,7 +25,7 @@
 # GATE: the run prints SPLIT-HALF top-20% set overlap. Below ~70% the ranking
 # is noise and Phase 2 must not be launched on it.
 
-bash /home/allenjin/Projects/scmp_llm/hpca \
+bash /home/allenjin/Projects/SCMP/scmp_llm/hpca \
   --sensitivity \
   --models llama8B \
   --configs mp_avg32_v9 \

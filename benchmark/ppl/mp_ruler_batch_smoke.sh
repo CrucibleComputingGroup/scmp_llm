@@ -5,7 +5,7 @@
 set -o pipefail
 set +u; source ~/.bashrc; set -u 2>/dev/null || true
 conda activate annstention
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 export HF_HOME=/nfs/turbo/coe-nbleier/allenjin/hf_cache
 export TRANSFORMERS_CACHE="$HF_HOME"
 

@@ -13,7 +13,7 @@
 set -o pipefail
 set +u; source ~/.bashrc; set -u 2>/dev/null || true
 conda activate annstention
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 M="${1:?usage: mp_v5_lane.sh <model> <method> <tag> <configs-csv>}"
 METHOD="${2:?usage: mp_v5_lane.sh <model> <method> <tag> <configs-csv>}"

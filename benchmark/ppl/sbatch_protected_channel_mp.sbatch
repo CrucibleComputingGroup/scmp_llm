@@ -15,6 +15,6 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 GPU=0 bash benchmark/ppl/protected_channel_mp.sh
 echo "[sbatch-pc] end=$(date)"

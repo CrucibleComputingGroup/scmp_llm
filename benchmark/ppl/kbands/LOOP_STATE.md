@@ -2551,3 +2551,1068 @@ Memory `project_scmp_mp_beat_actglobal_study` records "pow2 levels beat
 non-pow2". That does NOT hold for ladder rung placement at matched budget --
 here non-pow2 wins by 0.9-5.0% on every model. Whatever that earlier result
 compared, it must not be cited as evidence against fine rung spacing.
+
+## ══ 2026-08-07 — DIRECTION 1 RESOLVED BY FREE ANALYSIS: llama8B's floor is
+## MODEL FRAGILITY at the SC ceiling, not error, not a mask, not the front-end ══
+
+Per NEXT_SESSION_PROMPT: no GPU spent; everything below is traces + tables +
+existing CSVs. Session artifacts: t96 decomposition script + JSON in the session
+scratchpad; map deliverable = `SEARCH_SPACE_MAP.md` (this dir).
+
+### 1. The deficit is a CEILING property (allocator exonerated, again)
+AWQ t128 uniform ceiling (mpbest_awq_vs_smoothquant.csv): 4B 1.0131,
+llama8B **1.0481**, 14B 0.9920, 30B 1.0369. llama8B t96 archive = 1.0535, so the
+128→96 budget cut costs only ~0.5pp; ~4.8pp is the ceiling itself. INT W8A8
+through the same driver = 1.0002 ⇒ protocol/fp16 reference sane (lead 5 CLOSED).
+
+### 2. Lead 1 (mask source) is t32-ONLY — cannot explain t96
+Verified all 24 mp_best hybrid_configs: llama8B t40–t96 use the SAME
+measured_curve sensitivity + same selection method as every Qwen cell. Only
+llama8B t32 uses int_swap (`v20_gate2_intswap_top20`). Lead 1 survives only as a
+cheap t32 experiment. (Also: 14B t64/t96 masks are fraction 0.1, not 0.2.)
+
+### 3. Lead 4 (front-end) CLOSED — llama8B's scales are the TAMEST of 4 models
+SQ act_scales down_proj max 537 vs 4B's 4552 (order of magnitude tamer);
+AWQ picks the exact identity s≡1 on 9 late-layer llama8B modules (0 on any
+Qwen) — AWQ itself reports nothing to smooth. dispatch ρ_amax ≈ 0.02–0.05 on
+llama8B (weakest of any model). ⚠ MEMORY CORRECTED: "llama8B down_proj = amax
+INVERTED" was v2-era; deployed llama8B down_proj = l2/+ everywhere; the only
+amax/INV cells are 14B o_proj t64/96. Residual untested front-end lever: SQ
+α=0.8–0.9 for Llama (repo docstring's own guidance; weak — AWQ is α-free and
+reproduces the same floor).
+
+### 4. ★ t96 PER-OPERATOR σ DECOMPOSITION INVERTS THE PREMISE
+Trace-MAC currency (never num_units), σ from each cell's SQ-parent table
+buckets[op:t0:l*].level_mean_error; 30B qk σ@128 = 0.226 reproduces the
+forensics 0.243 ✓. Global MAC-weighted σ:
+
+| model | mwσ(assigned) | mwσ@128 | x_fp16 t96 | excess-nats per unit σ |
+|---|---|---|---|---|
+| 4B | 0.0788 | 0.0641 | 1.0026 | 0.03 |
+| llama8B | 0.0776 | 0.0583 | 1.0535 | **0.67** |
+| 14B | 0.0661 | 0.0555 | 0.9967 | ≤0 |
+| 30B | 0.1041 | 0.0833 | 1.0043 | 0.04 |
+
+**llama8B carries LESS SC error than 4B/30B and converts it to loss ~15–20×
+more efficiently.** Not explained by fp16 level (30B fp16 7.26 ≈ llama 7.21).
+Per-op σ@128: llama8B linears ≈ 14B to 3 decimals; qk anomalously GOOD (0.045);
+av anomalously BAD (0.361 vs 0.22–0.26; bucket l0 0.358 vs Qwen 0.14–0.18 = 2.5×,
+l2 0.455) — av is 3.8% of MACs, ~19–23% of MACσ. σ caveat: SQ-parent tables
+don't see qk-rebalance/grid, so 30B/4B true σ is lower than tabled — corrects
+their damage-per-σ UP, does not close the order-of-magnitude gap.
+
+### 5. ★ INT LADDER = independent fragility proof + a RULER for SC noise
+llama8B is the only model above parity at W7A7 (1.0045); at W6A6 asymm its
+excess (1.44pp) is ~5× any Qwen (0.25–0.30pp). Same early-onset smooth noise
+sensitivity, different quantization mechanism ⇒ MODEL property. Interpolating
+each model's own INT-asymm curve at its SC-ceiling excess: SC@L128 ≈ **W5.2
+(llama8B) / W5.2 (30B) / W5.7 (4B) / ≥W8 (14B)-equivalent damage** — SC ceiling
+noise is ~W5.5-equivalent everywhere it can be measured; each model's deficit is
+its own sensitivity at that noise level. 30B recovers via qk rebalance (its
+noise was concentrated/reducible); llama8B's operands are already balanced —
+nothing left to condition, only the grid itself can go finer.
+
+### 6. Diffuse-error tally now SIX independent statistics
+band asym 1.29× · Q/K spread 4.5×/4.1× · ~linear INT-dose response · mask
+recovers 0.5pp at ceiling (vs 7.6pp on 4B, uniform_hybrid vs uniform) · per-op σ
+flat/normal · dispatch ρ_amax ≈ 0.02–0.05. Selection levers are CORRECTLY
+exhausted on this model.
+
+### CONSEQUENCE for the 1.05× goal on llama8B
+Its INT parity point is ~W7A7, its SC ceiling sits at ~W5.2-equivalent ⇒ the
+ceiling noise must drop ~2–4× to pass at ANY budget. The only open lever class
+matching every statistic is the REPRESENTATION fix — asymmetric SC / zero-point
+(INT asymm buys llama8B 0.96pp @W6, 4.3pp @W5; enable-grid alone was neutral on
+it). Definitive loss-unit attribution available cheaply: per-op INT7-swap wave
+via hybrid_config editing (config-only; av is masked in only 5/32 blocks).
+
+### housekeeping
+* `recreate_all.py --grid-policy main` now grids parent too (handoff-directed
+  revert; parent+grid wins 3 cells and was silently dropped).
+* t32 archive tables (v17/v20-era) carry NO level_mean_error — a t32 σ
+  decomposition needs sub-cliff extrapolation; not done, stated here so the gap
+  is a decision, not an oversight.
+* IN FLIGHT: `grid_30B_t96_prcqk` (56726323, pre-session); Qwen-shaped-code
+  audit of the llama SC path (results to be appended below when complete).
+
+### 2026-08-07 addendum — Qwen-shaped-code audit COMPLETE: no correctness bug;
+### four mis-tuned llama defaults + one full-length RNG artifact
+
+**Deployment path CLEAN** (lead 3 CLOSED): `_patch_attention_for_calibration`
+covers all three modeling families symmetrically; llama runs the adapter path
+with eager forced; SC attention PROVEN live from trace row counts (qk rows =
+(32−7 masked)×32 heads×288,768 tokens exactly); GQA repeat/rows/mac_per_row all
+exact (k/v_proj priced at 4096×1024 — GQA-aware); no module-name/36-block/
+head_dim hardcoding in the active path; hybrid mask keys are (op,b,u) — no
+name parsing. ⚠ Stale docs: CLAUDE.md still claims llama-sdpa-only smoke and
+per_head attention granularity — both false since PR#3 / 2026-07-03.
+
+**FINDINGS (none overturns fragility; ranked):**
+1. **`mp_best/rebuild.py:171-183` hard-codes the 10% mask for EVERY t128 cell.**
+   llama8B is the model that pays: int_dose shows 20% → 1.050 vs shipped 1.057.
+   Free ~0.7pp at the ceiling, already-measured data. (Known in this ledger
+   since 2026-08-02; code still unchanged. Fix needs OK — mp_best is frozen.)
+2. **qk rebalance is structurally unable to see llama:** (A) `qk_calib.py:78-79`
+   head-POOLS the per-dim maxima — valid for Qwen (head-shared q/k_norm gains),
+   meaningless for llama (per-head W_q structure, no QK-norm); a (H,head_dim)
+   table is a small change and the only route to llama's qk structure.
+   (B) deployed α is pinned 1.0 (`fill_queue.sh:99,112`) = the WORST end when
+   |Q|≈|K| spread (llama 4.6×/4.1×); α=0.5 is one cheap cell. (C) qk σ-curves +
+   dispatch metric are computed on the UNSMOOTHED operand
+   (`_sc_attn_matmul_at_level` has no smooth_scales; metric on `a3` pre-scale)
+   while deployment quantizes `a/s` — llama and 30B use `crest`, which is
+   scale-free and maximally perturbed by a per-dim rescale. Consistent with
+   llama t96 arms all inside the noise floor.
+3. **SQ α=0.5 for llama** where `smoothquant.py:69-71`'s own docstring says
+   0.8–0.9 for Llama. Never overridden per-model. SmoothQuant column only
+   (AWQ is α-free and floors the same), so bounded small.
+4. **Calib front-end ≠ deploy front-end** (tables SQ-fit, cells AWQ-run) —
+   model-agnostic, but llama's MLP share (75.2% of MACs vs 63.4% on 4B) is
+   where the two diverge most.
+5. **Full-length RNG artifact, model-agnostic:** Owen masks assign `d mod 64`
+   with M=64 while qk's D=head_dim=128 ⇒ dims d and d+64 — exactly the RoPE
+   rotate_half pair — share ONE scramble mask (perfectly correlated SC noise on
+   the most correlated coordinate pair). And for `av` (D=K_seq), position 0 =
+   the attention sink gets the IDENTITY mask (bit_reverse(0)=0). Identical on
+   all four models so it does NOT explain llama-vs-Qwen; cheap simulation
+   ablation = SC_SCRAMBLE_MASKS=128 with the HW_MAX_MASKS=64 cap relaxed.
+6. Latent landmines (no current effect): llama adapter lacks the post-load
+   `_attn_implementation="eager"` belt Qwen has (a checkpoint config could
+   silently drop qk/av to FP16-sdpa — would show as BETTER PPL + missing trace
+   groups); `mp_per_row_chunk_calib.py:80` floors n_chunks vs sc_common ceil —
+   diverges only on non-128-divisible widths (none in scope).
+
+Audit scope: read-only; nothing modified.
+
+## ══ 2026-08-07 — USER OK: diagnostics wave LAUNCHED + the next ALGORITHM ══
+
+User approved all four proposals + directed algorithm-level research toward
+"lowest bitstream at similar PPL". Design doc: `PLAN_2D_PRECISION.md` (rungs
+become (L, grid, mode) attributes; space.tex utilization verdict inside).
+
+### Launched (22 jobs in system, 10 GPUs saturated)
+* **Wave A — per-op INT7-swap** 56733300–311: llama8B t96 prcqk ×9 ops +
+  14B t96 parent+grid ×{av,down,up}. Configs `opswap/` (make_opswap_configs.py);
+  masks are the archive mask with ONE op fully int7. Baselines: 7.5992 / 8.6102.
+  DIAGNOSTIC ONLY (energy axis changes); tags `*_swap_<op>`, job names outside
+  prcppl_/grid_ so rebuilds can never ingest them.
+* **Wave B** 56733370 sqa085 (llama8B sc_int8 pure SQ α=0.85 vs 7.6628);
+  56733375→56733376 qk α=0.5 calib→prcqk eval (llama8B t96, vs α=1.0 7.5992).
+* **Wave C** 56733371/72 m128 (llama8B/4B sc_int8 pure, SC_SCRAMBLE_MASKS=128
+  SC_HW_MAX_MASKS=128 — SIMULATION-ONLY, tests RoPE-pair mask-reuse noise; vs
+  7.6628 / 11.0893). Kernel change: `SC_HW_MAX_MASKS` env override in
+  kernels.py `_scramble_mask_count` (byte-identical unset).
+* **Wave D** 56733373/74 mcmask (llama8B t32 prc+parent with the measured_curve
+  t48/t96 mask — t48≡t96 schedules verified — vs int_swap-mask 8.4864/8.6758).
+  Caveat: prc table was calibrated under the int_swap mask environment.
+* **Asym probe** 56733701/02: probe_asym_real.py llama8B+4B t96 — REAL-operand
+  bipolar vs unipolar(zp) at matched cycles, per op, + INT sym/asym refs.
+  Gate for PLAN_2D_PRECISION stage 1.
+* ⚠ CANCELLED 56733606/07 (t32_error_budget on llama8B/30B): that probe is
+  SYNTHETIC — `--model` is parsed but N/D/M and tensors are hard-coded
+  4B-down_proj-shaped, so per-model runs are a known-outcome no-op. Its
+  docstring says "on real activations"; it is not. Do not re-launch per-model.
+
+### Code landed this session
+* kernels.py: SC_HW_MAX_MASKS override (simulation-only, default identical).
+* recreate_all.py: `--grid-policy main` grids parent again (handoff revert).
+* mp_best/rebuild.py: t128 uniform candidate now enumerates BOTH mask doses
+  (10% + 20%) and select_winners picks per model — fixes the hard-coded 10%
+  that mis-selected llama8B (7.5714@20% vs 7.6268@10%), also 4B/30B.
+  **rebuild.py NOT yet run** — deferred until the queue drains (it rewrites
+  config bundles that starting jobs read; llama8B t128 will improve to 1.0500).
+* NEW: make_opswap_configs.py, probe_asym_real.py, PLAN_2D_PRECISION.md.
+
+### How to read Wave A when it lands
+Recovery_op = base_ppl − swap_ppl, in PPL units, minus the (small) INT7 error
+the swap adds. Rank ops by recovery on llama8B; compare against the σ shares
+(down 31 / up 22 / av 19 / gate 17%). If recovery is FLAT across ops at ~zero,
+the 5% is genuinely diffuse and only representation-level levers remain. If av
+recovers disproportionately vs its 3.8% MAC share, stage 1 of the 2-D plan
+(unipolar av) is the direct fix. 14B controls calibrate the method (its ceiling
+excess is ~0, so its recoveries should all be ≈0 — any big 14B recovery means
+the swap methodology is confounded).
+
+### 2026-08-07 — ⛔ ASYMMETRIC SC KILLED BY USER; program narrows to (L × grid)
+User: "the point of using sc is to save energy, using asymmetric increases
+cycles, which increases energy." Bipolar sign-magnitude halving IS the energy
+advantage; unipolar has no halve trick (grid parity ⇒ ~2× cycles), and a
+dual-mode PE is new runtime hardware. Actions: asym probes 56733701/02
+CANCELLED unrun; PLAN_2D_PRECISION.md rewritten to rungs = (L, g) only —
+calibrated per-rung pow2 enable-grid, cycle-neutral, existing rng_levels
+selector; SEARCH_SPACE_MAP A3 closed (do not revisit); the sc_vs_int_gap
+memory's "asymmetric SC" half is superseded, its grid half remains live.
+The queue keeps 20 jobs: op-swap ×12, sqa085, m128 ×2, mcmask ×2,
+qkcal05→qka05, grid_30B_t96 — none touch the dead axis.
+
+## ══ 2026-08-08 OVERNIGHT WAVE E — two loss-priced levers at t32 (user OK) ══
+
+### What tonight's diagnostics established (inputs to this wave)
+1. **op-swap, llama8B t96** (base 7.5992): qk **-1.75%**, av **-1.51%**,
+   down -0.44, gate -0.36, up -0.19, v -0.14, o/q/k ~floor. **Attention = 64%
+   of the deficit from 7.3% of MACs**; recoveries sum to ~86% of the excess
+   (near-additive). sigma prices qk at 2.0% of error mass => **~17x
+   mispricing**; MLPs (75% of MACs) are over-priced ~3.5x.
+2. **Scramble-mask count M=64->128, pure uniform sc_int8 ceiling**:
+   4B 11.0893 -> **10.7981 (-2.63%)**, llama8B 7.6628 -> **7.6425 (-0.26%)**.
+   Cycle-neutral (identical streams; only the Owen mask population changes) =>
+   a chunk of the ceiling floor is RNG STRUCTURE, not irreducible sampling.
+   Pays where raw SC error is large (4B), not where loss-sensitivity is the
+   problem (llama8B). SIMULATION-ONLY at M=128 (HW selector caps at 64) —
+   label any M>64 row as an ideal, never a deployed cell.
+3. CLOSED: SQ alpha=0.85 llama8B **7.8603 vs 7.6628 = +2.58% WORSE** (kernel
+   docstring's Llama guidance does not apply here; alpha stays 0.5).
+   CLOSED: llama8B t32 measured_curve mask is WORSE on BOTH arms (prc 8.5301
+   vs 8.4864 +0.51%; parent 8.7724 vs 8.6758 +1.11%) => the int_swap mask is a
+   genuine per-cell win, lead 1 dead, archive stands.
+   NEUTRAL: 30B t96 prcqk + grid 7.2951 vs 7.2922 (under floor).
+
+### Wave E — 12 cells, t32 first (biggest headroom), winning arm per cell
+E1 `attnmask_*_t32` 56743785-88 — attention-first mask, **MAC-MATCHED** to the
+   archive mask (all qk, then av late-first, then the archive's own remaining
+   picks until the archive's INT MAC share is hit, never exceeded). Entry count
+   rises (58->98 on llama8B) but INT MAC share is equal to 2 dp on all four
+   models, so this is a pure COMPOSITION test at the same energy operating
+   point. Builder `make_attnfirst_masks.py` (entry-matched was REJECTED: it
+   moves only 6.5% of llama8B MACs to INT vs 20.0% = a different operating
+   point, not a better mask).
+E2 `m128mp_*_t32` 56743789-92 — M=128 under the DEPLOYED MP config, i.e. does
+   the ceiling finding transfer to a tight budget with allocation active.
+   Caveat: tables were calibrated at M=64; thresholds key on ACTIVATION amax
+   (input-derived, M-independent) so they transfer, but the sigma CURVES that
+   set the allocation were measured at M=64 — if M=128 lowers error unevenly
+   across ops the allocation is slightly stale. Read as a lower bound.
+E3 `combo_{llama8B,4B}_t32` 56743794-95 — E1+E2 together. Disjoint mechanisms
+   (mask composition vs RNG structure) so they should compose additively; this
+   is the cell with a chance at a large move.
+E4 `attnmask_{llama8B,30B}_t48` 56743796-97 — second budget.
+Launcher gained `KB_MASKS` (default 64 = byte-identical). Startup verified:
+E2 prints SC_SCRAMBLE_MASKS=128 HW_MAX=128; E1 prints 64 + the attnfirst mask.
+
+### Baselines (mp_best_after_hpca_3, AWQ + INT7 20%, full protocol)
+t32: 4B 11.0860 | llama8B 8.4864 | 14B 9.1581 | 30B 7.9073
+t48: llama8B 7.8777 | 30B 7.5663.  fp16: 10.0445 / 7.2130 / 8.6383 / 7.2613.
+Noise floor sd 0.0069; |delta| < ~0.014 is not a result.
+
+### How to read it in the morning
+* Winner = lower full-protocol PPL, judged COST-ADJUSTED from each run's own
+  TRACE (sensitivities 4B 0.348, llama8B 0.279, 14B 0.134, 30B 0.401).
+* E1 changes WHICH ops are INT at equal INT-MAC share, so its SC pool changes
+  composition: realized_flop_avg_sl will move even at equal energy. Read the
+  trace, do not assume.
+* If E1 wins, the mask SELECTOR should be rebuilt on measured swap loss for
+  all four models (~18 more cells) — that is the loss-priced-allocation
+  program's first deployable piece.
+* If E2 transfers, M is an ARCHITECTURE parameter question (7-bit mask
+  selector, cycle-neutral) — price it in the energy model before claiming it.
+* STILL RUNNING from the diagnostics wave: 14B op-swap controls (av/down/up)
+  and qka05 (qk alpha=0.5, llama8B t96, vs alpha=1.0 7.5992).
+* rebuild.py t128 dose fix is landed but NOT yet run (deferred while jobs read
+  the config bundles); run it once the queue drains.
+
+### ★★ 2026-08-08 — qk ALPHA=0.5 WINS ON llama8B, and the 14B controls REFUTE
+### "attention carries the loss" as a UNIVERSAL claim
+
+**qk alpha=0.5, llama8B t96 prcqk: 7.5647 vs alpha=1.0's 7.5992 = -0.45%**
+(~5x the noise floor, cycle-neutral, score-invariant). The audit's Finding B
+predicted exactly this: alpha=1.0 flattens Q completely and dumps ALL imbalance
+into K, which is right when |K| spread >> |Q| (4B 81 vs 37, 30B 117 vs 47) and
+WRONG when they are equal (llama8B 4.1 vs 4.6). The deployed alpha was pinned
+1.0 by `fill_queue.sh`, never swept per model. Launched alpha=0.5 at llama8B
+t32/t48 (calib 56744123/25 -> eval 56744130/31): t32 is where alpha=1.0
+REGRESSED llama8B, so the sign may flip there.
+⚠ LAUNCHER BUG CAUGHT PRE-RUN: `run_prc_ppl.sbatch` HARDCODED the
+`_qk_alpha1.0.json` filename, so `KB_QKALPHA=0.5` was silently ignored and the
+cell would have run alpha=1.0 UNDER THE alpha=0.5 LABEL — the same
+named-but-missing/silent-fallback class this file already records twice. Fixed
+(`QKA="${KB_QKALPHA:-1.0}"`); the two evals submitted before the patch were
+CANCELLED and resubmitted, because sbatch snapshots the script at submit time.
+
+### 14B op-swap controls (base 8.6102) — the control did its job
+| op -> INT7 | 14B | llama8B (same test) |
+|---|---|---|
+| av        | **8.6246 (+0.17%, WORSE)** | 7.4841 (-1.51%) |
+| down_proj | **8.5655 (-0.52%)** | 7.5656 (-0.44%) |
+| up_proj   | 8.6055 (-0.05%, floor) | 7.5847 (-0.19%) |
+
+**14B's SC damage is in down_proj, NOT attention** — its av swap gives nothing
+(slightly worse). So "attention carries the loss" is a llama8B property, not a
+law. This is INTERNALLY CONSISTENT with the whole 14B record: qk rebalance
+REGRESSES 14B (+0.91%), K-bands regress it, and per-chunk allocation is worse
+than per-row on it. Two different models, two different loss-carrying operator
+classes — which is precisely the argument FOR a measured (loss-priced) mask and
+allocation and AGAINST any single hand-picked operator prior.
+Methodology check passes: 14B is BELOW fp16 at t96 (0.9967x) so a "~0 recovery"
+expectation was too strong -- the swap measures "does INT7 beat SC on this op
+here", which is a real per-op question even for a below-fp16 cell.
+
+### ⚠ PRE-REGISTERED PREDICTION for Wave E1 (written before the cells land)
+The attention-first mask is built from llama8B's swap ranking. Given the 14B
+control I predict, per cell: **llama8B HELPS** (attention = 64% of its loss),
+**4B/30B likely help** (largest attention MAC share 14.3%/22.9%, and qk
+rebalance pays on both), **14B REGRESSES** (its loss is in down_proj, and the
+attention-first mask moves down_proj OFF int7 and onto SC). If 14B regresses
+and the others gain, that is not a failure of the lever — it is the per-cell
+selection this project already applies to qk and grid, and the strongest
+argument yet that the mask SELECTOR must be rebuilt on measured per-op loss
+per model (~18 cells, the loss-priced program's first deployable piece).
+
+## ★★★★★ 2026-08-08 — LOSS-PRICED (ATTENTION-FIRST) MASK: the biggest single
+## lever this project has measured. BETTER PPL **AND** 16-23% CHEAPER.
+
+Same INT MAC share as the archive mask (MAC-matched to 2dp), same table, same
+front-end, same everything else. ONLY the mask COMPOSITION changes: which 20%
+of MACs run INT7. Ranked by the measured op-swap loss instead of the deployed
+SC-fragility proxy.
+
+| cell | PPL | vs archive | realized SC flop | vs archive | cost-adj* |
+|---|---|---|---|---|---|
+| **llama8B t32** | **8.1354** | **-4.14%** | **28.72** (was 34.18) | **-16.0%** | **~-8.6%** |
+| **4B t32** | **10.9927** | **-0.84%** | **26.84** (was 34.95) | **-23.2%** | **~-8.9%** |
+*sensitivities llama8B 0.279 / 4B 0.348, extrapolated past their fitted ~10%
+range, so read the RAW columns as the result and the cost-adj as indicative.
+
+x_fp16: llama8B 1.1765 -> **1.1279**; 4B 1.1037 -> **1.0944**.
+
+### Mechanism (verified in the traces, not inferred)
+Attention is now 100% INT7 (`qk`/`av` absent from both SC traces; SC pool is
+pure linears). Attention rows carry the HIGHEST stream lengths (llama8B t96
+qk 126 / av 117 vs a global 88), so moving them out of the SC pool removes
+expensive cycles, while the MLP blocks that come back INTO SC run at ~20-30.
+Hence PPL improves (SC was bad at attention -- the op-swap wave measured
+qk -1.75% / av -1.51% on llama8B) AND the SC average length collapses.
+llama8B SC pool now: up 32.97% @23.81, down 24.72% @29.55, gate 21.63% @29.96,
+o 8.83% @43.34, q 7.65% @21.61, v 2.28% @51.28, k 1.91% @27.34; global 28.81.
+
+### Why this was available
+The mask SELECTOR ranks by `top_fraction_by_bucket_worst_delta_loss` -- an
+SC-fragility proxy computed per (op, block) bucket. The op-swap wave measured
+the actual loss carried per operator and the ranking disagrees violently:
+llama8B's proxy mask spends 12/58 entries on attention which carries 64% of the
+loss. This is the first DEPLOYED consequence of the loss-priced program.
+
+### THE CELLS ARE 16-23% UNDER BUDGET => REINVESTMENT IS FREE HEADROOM
+Launched E5 `reinv_*_t40` 56744772-75 (4 models, attnfirst mask + the t40
+table): t40 with attention removed from SC should realize ~34 = the t32
+baseline's cost, making it a clean ISO-COST comparison against t32. If it holds
+the PPL gain at equal cost, the combined move is worth far more than either
+half. (llama8B t40 archive = 8.1302 @41.67, so the reinvested cell has to beat
+8.1354 while costing ~34 rather than 41.67.)
+
+### CAVEATS, stated before the morning read
+1. **The MP table is mask-blind** (recorded in mp_v8_forensics/verdict_B): the
+   allocator never sees the hybrid mask, so these cells run an allocation
+   calibrated for a DIFFERENT mask. That is why they underspend -- and it means
+   the gain is NOT from better allocation, it is from better mask composition.
+   A mask-aware recalibration is the obvious follow-up and is un-run.
+2. **Energy axis, not iso-total-compute.** INT MAC share is matched to 2dp, so
+   the INT side is fair, and the SC side is strictly cheaper -- but the INT7
+   MACs are still priced outside the SC budget, so the energy model must
+   arbitrate the final number.
+3. **Thesis tension to resolve with the user:** attention now runs entirely on
+   INT7, i.e. SC does none of it. The 20% dose is fixed by decree and we only
+   chose WHICH 20%, so this is inside the rules -- but "SC for attention" as a
+   story point is affected, and the paper's operator coverage claim needs
+   restating. FLAGGED, not decided.
+4. 4B's combo (attnfirst + M=128) is 11.0250, WORSE than attnfirst alone
+   (10.9927), so M=128 does not transfer additively under MP on 4B -- the
+   m128mp singles will confirm.
+
+### ★★ 2026-08-08 — llama8B t32 FULL DECOMPOSITION: the levers COMPOSE
+| arm | PPL | vs archive | SC flop | x_fp16 |
+|---|---|---|---|---|
+| archive (prc)        | 8.4864 | —      | 34.18 | 1.1765 |
+| M=128 only           | 8.4161 | -0.83% | 34.11 (ISO) | 1.1668 |
+| attention-first only | 8.1354 | -4.14% | 28.72 | 1.1279 |
+| **both**             | **8.0954** | **-4.61%** | **28.71** | **1.1223** |
+
+* **M=128 TRANSFERS under MP on llama8B** (-0.83% at iso-cost, ~10x the noise
+  floor) — the ceiling ablation was not a uniform-only artifact there.
+* Near-additive: sum of parts -4.97%, measured -4.61% (93%). Disjoint
+  mechanisms (mask composition vs RNG mask population), as predicted.
+* **4B is the opposite on M=128**: combo 11.0250 is WORSE than attnfirst alone
+  10.9927 (+0.29%), despite M=128 winning -2.63% at 4B's uniform CEILING. So
+  the ceiling win does NOT transfer to 4B under MP. Most likely the registered
+  caveat: the prc table's sigma curves were measured at M=64, so at M=128 the
+  ALLOCATION is stale, and 4B (the model with the most exploitable structure,
+  band asym 2.79x) has the most allocation to get stale. llama8B, whose
+  structure is diffuse, loses nothing from a stale allocation. TESTABLE:
+  recalibrate a prc table at M=128 and re-run 4B — un-run, and it would decide
+  whether M=128 is model-dependent or merely calibration-stale.
+* Launched the maximum-value cells: `reinvcombo_llama8B_t{40,48}` 56744845/46 =
+  attention-first + M=128 + a LOOSER table, i.e. spend the freed 16% back.
+  llama8B t40 archive is 8.1302 @41.67; a reinvested cell should beat that at
+  ~34 cost, and if it beats 8.0954 it is the new best llama8B t32-cost cell.
+
+### ⚠ CORRECTION (same hour): M=128 DOES work on 4B alone — the levers
+### ANTI-COMPOSE on 4B while they COMPOSE on llama8B
+
+| 4B t32 | PPL | vs archive | SC flop |
+|---|---|---|---|
+| archive (prcqk)      | 11.0860 | —      | 34.95 |
+| **M=128 only**       | **10.9783** | **-0.97%** | 34.89 (ISO) |
+| attention-first only | 10.9927 | -0.84% | 26.84 (-23.2%) |
+| both                 | 11.0250 | -0.55% | 26.82 |
+
+I wrote "M=128 does not transfer to 4B under MP" off the COMBO cell alone. That
+was wrong on n=1: M=128 alone is 4B's best raw-PPL arm at t32 (-0.97%, iso-cost,
+~15x the noise floor). What is true is narrower and more interesting:
+**on 4B the two levers ANTI-compose** (combo is worse than either alone, +0.29%
+vs attnfirst, +0.43% vs M128), while **on llama8B they compose near-additively**
+(-4.61% vs -4.14/-0.83 singles). Same code, same protocol, opposite interaction
+sign — a fourth instance in this project of a lever whose SIGN is model-
+dependent (qk, grid, K-bands, now lever-composition itself).
+Working hypothesis (untested): both levers perturb the SC pool that the
+M=64-calibrated prc table was fitted to — attnfirst by removing attention
+entirely, M=128 by lowering SC error across the board — and 4B, which has by
+far the most exploitable structure (band asymmetry 2.79x vs llama8B's 1.29x),
+has the most allocation quality to lose when its calibration goes stale.
+llama8B's diffuse structure means a stale allocation costs it nothing.
+DISCRIMINATOR (un-run, one cell): recalibrate a 4B prc table AT M=128 and
+re-run the combo. If the anti-composition disappears, it is calibration
+staleness, not a real interaction.
+
+Per-model best at t32 so far:
+* llama8B **8.0954** (attnfirst + M128) = 1.1223x fp16, at 28.71 vs 34.18 cost.
+* 4B raw-PPL best **10.9783** (M128, iso-cost); cost-adjusted best is attnfirst
+  (-0.84% at -23.2% cost). The t40 reinvestment cell decides which to deploy.
+
+## ★★★★★ 2026-08-08 — llama8B t48 + attention-first DOMINATES THE ARCHIVE'S
+## t64 CELL: better PPL at 36% LESS COMPUTE. The rung goal, achieved.
+
+    new t48 attnfirst   7.6776  x_fp16 1.0644  @ 40.50
+    archive t64         7.6912  x_fp16 1.0663  @ 63.20   <- beaten on BOTH axes
+    archive t48         7.8777  x_fp16 1.0922  @ 47.36   (-2.54% PPL, -14.5% cost)
+    archive t96         7.5992  x_fp16 1.0535  @ 88.03   (still 1.0% better, at
+                                                          2.2x the compute)
+
+**This is the "same quality, lower bitstream" claim demonstrated end-to-end**,
+and on llama8B — the model that had resisted every allocation lever for a month
+(prc -0.2..-2.2%, qk -0.21%, bands nil, grid nil). It did not come from the
+allocator at all: it came from pricing the INT mask by MEASURED per-operator
+loss instead of an SC-fragility proxy.
+
+### llama8B curve, old vs new (all full protocol, AWQ + 20% INT dose)
+| budget | archive PPL @ cost | NEW PPL @ cost | note |
+|---|---|---|---|
+| t32 | 8.4864 @ 34.18 | **8.0954 @ 28.71** | attnfirst + M=128, -4.61% |
+| t48 | 7.8777 @ 47.36 | **7.6776 @ 40.50** | attnfirst, -2.54%, beats archive t64 |
+| t64 | 7.6912 @ 63.20 | (dominated by the new t48) | |
+| t96 | 7.5992 @ 88.03 | (qk alpha=0.5: **7.5647**, -0.45%) | |
+
+Reinvestment cells in flight will say whether spending the freed 14-16% back
+buys more quality still (reinv_llama8B_t40, reinvcombo_llama8B_t40/t48).
+
+### ⚠ 2026-08-08 — MY PRE-REGISTERED 14B PREDICTION WAS WRONG (direction)
+I predicted "14B REGRESSES on the attention-first mask" because its op-swap
+control put the SC damage in down_proj, not attention, and the new mask moves
+down_proj OFF int7 and back onto SC. Measured:
+
+    14B t32 attnfirst  9.1482 @ 31.84   vs archive 9.1581 @ 35.76
+    dPPL -0.11% (0.0099 < the 0.014 floor => NOT a PPL result)
+    dcost -11.0%  =>  cost-adjusted ~-1.58% (sensitivity 0.134)
+
+So: not a regression, not a PPL win either — **PPL-neutral and meaningfully
+cheaper.** The mechanism half of the reasoning survives (14B gains no PPL from
+evicting attention, exactly as its op-swap control said), but the predicted
+DAMAGE from putting down_proj back on SC did not materialize. Recording the
+miss rather than reframing it: the prediction was directional and it was wrong.
+
+### THE GENERAL SHAPE, across three models now
+| model | dPPL | dcost | reading |
+|---|---|---|---|
+| llama8B t32 | **-4.14%** | -16.0% | attention carries its loss (swap: 64%) |
+| 4B t32      | -0.84% | -23.2% | mild PPL gain, biggest cost cut |
+| 14B t32     | -0.11% (floor) | -11.0% | no PPL effect; pure cost |
+
+**The cost reduction is UNIVERSAL and structural** — attention rows carry the
+longest streams on every model, so evicting them from the SC pool always cuts
+the MAC-weighted mean length (11-23% here). **The PPL effect is model-dependent
+and tracks the op-swap attribution**, which is exactly what a loss-priced
+selector is supposed to do: it finds nothing to win where there is nothing to
+win, and it still returns the compute.
+Consequence for the algorithm: the mask selector should be calibrated per model
+on measured swap loss (llama8B: attention-heavy; 14B: down_proj-heavy), not
+given one hand-picked operator prior. 30B t32 (22.9% attention MAC share, the
+model qk helps most) is the outstanding test.
+
+## ★★★★★ 2026-08-08 — REINVESTMENT: spending the freed budget back is where
+## the big numbers are. -6.74% (llama8B) / -3.78% (4B) AT LOWER COST THAN t32.
+
+The attention-first cells came in 11-23% under budget because the MP table is
+mask-blind. Reinvestment = run the SAME attention-first mask against a LOOSER
+table (t40) so the realized cost lands back at ~the t32 baseline's.
+
+| cell (vs its t32 ARCHIVE baseline) | PPL | x_fp16 | cost | dPPL | dcost |
+|---|---|---|---|---|---|
+| llama8B archive t32 | 8.4864 | 1.1765 | 34.18 | — | — |
+| **llama8B reinv t40+attnfirst** | **7.9144** | **1.0972** | **32.35** | **-6.74%** | **-5.4%** |
+| 4B archive t32 | 11.0860 | 1.1037 | 34.95 | — | — |
+| **4B reinv t40+attnfirst** | **10.6667** | **1.0619** | **33.74** | **-3.78%** | **-3.5%** |
+
+STRICT DOMINATION on both models: better PPL AND lower realized compute than
+the deployed t32 cell. 4B's cell also beats the ARCHIVE'S OWN t40 cell
+(10.7868 @ 40.38) by -1.11% at -16.4% cost.
+
+### Where the session now stands per model (best cell at ~t32 cost)
+| model | archive t32 | new best | improvement |
+|---|---|---|---|
+| llama8B | 8.4864 (1.1765) | **7.9144 (1.0972)** | **-6.74%** |
+| 4B | 11.0860 (1.1037) | **10.6667 (1.0619)** | **-3.78%** |
+| 14B | 9.1581 (1.0602) | 9.1482 @ -11% cost (PPL-neutral) | cost only |
+| 30B | 7.9073 (1.0890) | attnfirst cell still running | — |
+
+### Also landed
+* **qk alpha=0.5 helps llama8B at t32 too**: 8.4087 @ 34.18 = -0.92% ISO-COST
+  vs the archive prc cell, on the budget where alpha=1.0 REGRESSED it. The
+  pinned alpha=1.0 was wrong for this model at every budget measured (t96
+  -0.45%, t32 -0.92%). alpha belongs in the per-model calibration.
+* **M=128 hurts 14B** (9.1876 vs 9.1581, +0.32%) while helping llama8B
+  (-0.83%) and 4B (-0.97%). Third lever with a model-dependent sign.
+
+### E6 launched (56746513-15): reinvest one rung further
+4B t48 + attnfirst and 14B t48 + attnfirst (should realize ~40 = t48-baseline
+cost, the configuration that already made llama8B's t48 beat the archive t64),
+plus 4B t40 + attnfirst + M=128 (4B's best single arm stacked onto its
+reinvestment).
+
+### 2026-08-08 — 4B reinvestment holds at the NEXT operating point too
+`reinv_4B_t48` (t48 table + attention-first mask) = **10.4013 @ 39.89**.
+Two readings, both fair:
+* vs the archive's **t40** cell 10.7868 @ 40.38 => **-3.57% at ISO-COST**.
+* vs the archive's **t48** cell 10.3783 (cost not recorded — that cell has no
+  trace in the archive, `realized_flop_avg_sl` is null) => +0.22% PPL at ~40 vs
+  a nominal ~47-49, i.e. archive-t48 quality for ~15% less compute.
+So 4B improves ~3.6-3.8% at BOTH the t32-cost and t40-cost operating points —
+the curve shifts, it is not a single lucky cell.
+`reinvcombo_4B_t40` 10.7166 @ 33.75 is WORSE than `reinv_4B_t40` 10.6667 @
+33.74 => 4B's anti-composition with M=128 replicates a THIRD time (t32 combo,
+t40 reinvcombo). On 4B, use attention-first WITHOUT M=128; on llama8B, use both.
+Launched `reinv_{4B,llama8B}_t64` 56747911/12 to test the next rung.
+
+## ★★★★★ 2026-08-08 — llama8B PASSES 1.05x fp16. A STANDING "IMPOSSIBLE"
+## CONCLUSION IN THIS LEDGER IS NOW OVERTURNED.
+
+    reinv_llama8B_t64 (t64 table + attention-first mask)
+        7.4621 @ 57.76   x_fp16 = 7.4621/7.2130 = **1.0345**   PASSES
+
+vs archive t64 7.6912 @ 63.20 (1.0663): **-2.98% at -8.6% cost.**
+vs archive t96 7.5992 @ 88.03 (1.0535): **-1.80% at -34.4% cost** — the t64-cost
+cell beats the archive's t96 cell outright.
+
+### What this overturns
+This ledger recorded (2026-08-02, and repeated since): "**llama8B cannot reach
+1.05x by ALLOCATION at any budget** — at t128 the allocator has nothing left to
+allocate, so 1.0574 is the SC quality FLOOR", later revised to 1.0481 on the
+AWQ front-end, and the model was written off for selection levers entirely.
+**That floor was measured with SC EXECUTING ATTENTION.** The attention-first
+mask routes qk/av to INT7, and llama8B's deficit was 64% attention (op-swap,
+measured yesterday) — so the floor was never a property of SC, it was a property
+of SC-on-attention for this model. Correct statement going forward: llama8B's
+SC floor is 1.048 *when SC runs attention*; with attention on the INT side of
+the fixed 20% dose it reaches **1.0345 at t64**.
+
+### llama8B, complete new curve
+| cost | archive | NEW | x_fp16 |
+|---|---|---|---|
+| ~32 | 8.4864 @ 34.18 | **7.8581 @ 32.34** | 1.1765 -> **1.0894** |
+| ~40 | 7.8777 @ 47.36 (t48) | **7.6353 @ 40.49** | 1.0922 -> **1.0585** |
+| ~58 | 7.6912 @ 63.20 (t64) | **7.4621 @ 57.76** | 1.0663 -> **1.0345 PASS** |
+| ~88 | 7.5992 @ 88.03 (t96) | (dominated by the t64 cell) | 1.0535 |
+
+Launched `reinvcombo_llama8B_t64` (adds M=128, which composes on llama8B),
+`reinv_30B_t48`, `reinv_14B_t64` (56749223-25).
+
+### ⚠ THE CAVEAT THAT MUST TRAVEL WITH THIS NUMBER
+Attention now runs entirely on INT7, i.e. **SC executes no attention at all** in
+these cells. The 20% INT dose is fixed by decree and only its COMPOSITION
+changed (MAC-matched to 2dp against the archive mask), so this is inside the
+project's rules and the energy comparison is fair on the INT side — but any
+claim of the form "SC reaches 1.05x on llama8B" must state that attention is on
+the INT path. USER DECISION REQUIRED on whether the paper takes this trade.
+
+### 2026-08-08 — 4B op-swap wave at t32 (56749278-86): the calibration input
+### the loss-priced mask actually needs
+
+`make_attnfirst_masks.py` currently HARDCODES the order qk -> av -> the
+archive's own picks. That order came from llama8B's t96 swap table, and the 14B
+control proved the loss-carrying operator class is model-dependent (14B:
+down_proj, not attention). So the deployed version must rank by each model's
+OWN measured dL per INT MAC. We have swap tables for llama8B (9 ops, t96) and
+14B (3 ops, t96); 4B and 30B have none.
+
+Launched all 9 ops for **4B at t32** — the budget we actually deploy at, which
+is the right place to measure the prices (the t96 swaps were near-ceiling and
+cleaner, but composition is decided at the tight budget). 9 cells x ~28 min.
+Baseline: 11.0860 @ 34.95. Also fills GPUs that Wave E is releasing.
+Not a known-outcome trial: 4B's per-op loss attribution is unmeasured, and its
+attention MAC share (14.3%) sits between llama8B's 7.1% and 30B's 22.9%.
+30B's swap wave is the remaining gap (~9 x 3h = expensive; decide after 4B).
+
+Also in: `reinv_14B_t48` 8.9002 @ 47.02 vs archive t48 8.8571 = +0.49% PPL at
+-7.5% cost (cost-adjusted -0.51%) => 14B reinvestment is neutral at t48, having
+been -1.53% at t32-cost. Consistent with 14B having the least headroom (its
+archive cells already sit at 1.0253-1.0602x fp16).
+
+### 2026-08-08 — 30B lands: attention-first pays there too, at BOTH budgets
+    attnmask_30B_t32  7.7566 @ 33.74  vs archive 7.9073 @ 40.10  -1.91% at -15.9% cost  (1.0890 -> 1.0682)
+    attnmask_30B_t48  7.4702 @ 48.98  vs archive 7.5663 @ 53.60  -1.27% at  -8.6% cost  (1.0420 -> **1.0288**)
+    m128mp_30B_t32    7.8697 @ 40.12  ISO-COST                   -0.48%
+30B t48 improves to 1.0288x fp16 (already a 1.05 passer, now with margin) and
+its t32 cell drops to 1.0682. Its reinvestment cells are still running.
+
+### M=64 -> 128 scramble masks, ALL FOUR MODELS under deployed MP at t32 (iso-cost)
+| model | dPPL | |
+|---|---|---|
+| 4B | **-0.97%** | helps |
+| llama8B | **-0.83%** | helps |
+| 30B | **-0.48%** | helps |
+| 14B | **+0.32%** | HURTS |
+Helps 3 of 4, and the one it hurts is the model that regresses on every other
+lever too (qk +0.91%, K-bands +0.12/+0.33%, per-chunk worse than per-row).
+Reminder: M=128 is SIMULATION-ONLY (HW_MAX_MASKS=64 is the silicon cap); it is
+an ARCHITECTURE-PARAMETER result (a 7-bit mask selector), cycle-neutral, and
+must never be tabled as a deployed cell at the current hardware spec.
+
+## ★★★ 2026-08-08 — 4B's SWAP TABLE FIXES THE RANKING RULE:
+## rank by dL PER UNIT OF COMPUTE FREED, not by raw dL.
+
+4B t32 op-swaps (baseline 11.0860 @ 34.95):
+| op -> INT7 | raw dPPL | dcost | cost-adjusted VALUE |
+|---|---|---|---|
+| up_proj   | **-3.73%** | +10.50% | -0.07% |
+| down_proj | **-3.67%** |  +3.66% | -2.40% |
+| av        | -1.22% | **-10.24%** | **-4.78%** |
+| qk        | -0.24% |  **-9.67%** | **-3.60%** |
+(remaining 5 ops still running)
+
+**On RAW PPL, 4B's loss is in the MLP — the OPPOSITE of llama8B (attention) and
+the same as 14B (down_proj).** Had I ranked by raw dL, 4B's mask would have gone
+MLP-first. But masking an MLP op COSTS compute (it removes SHORT-stream rows
+from the SC pool, RAISING the mean length) while masking attention FREES it
+(long-stream rows leave). Since reinvestment converts freed compute back into
+quality, the correct objective is dL per unit of compute freed — and on that
+axis attention still wins on 4B (-4.78 / -3.60 vs -2.40 / -0.07).
+
+This retro-explains the whole wave: 4B's attention-first cell was only -0.84%
+raw but -23.2% cost, and reinvesting that gave **-3.78%** at t32-cost. The
+mask's job is not only to remove loss, it is to remove loss CHEAPLY so the
+allocator can spend the difference.
+
+**RULE for the deployable selector (supersedes "attention-first"):**
+    score(op) = measured dNLL(op -> INT) / (SC cycles freed by masking op)
+    subject to the fixed INT MAC dose; solve as a knapsack.
+`make_attnfirst_masks.py` currently hardcodes qk -> av -> archive order, which
+happens to be near-optimal on this score for 3 of 4 models but is NOT the rule.
+Rebuild it to consume the measured swap table per model.
+
+Also in: `reinv_30B_t40` 7.7125 @ 35.52 = **-2.46% vs the archive t32 cell
+(7.9073 @ 40.10) at -11.4% cost**, x_fp16 1.0890 -> 1.0621.
+
+## ══ 2026-08-08 — WAVE COMPLETE (queue drained). Two housekeeping items. ══
+
+### ⚠ MY ERROR: `reinv_30B_t48` was a DUPLICATE of `attnmask_30B_t48`
+Both were launched with KB_TARGET=48, KB_ARM=prcqk, SC_RNG_GRID=pow2 and the
+SAME `30B_t48_attnfirst.json` mask — only KB_TAGSUFFIX differed. I intended the
+second as "reinvestment" but reinvestment means a LOOSER TABLE than the target
+being compared against, and at t48 vs t48 there is nothing to reinvest. Result:
+identical numbers to 4 dp (7.4702 @ 48.98 both), ~3 GPU-hours wasted on 30B.
+Silver lining, worth keeping: two INDEPENDENT job submissions of the same config
+returned bit-identical PPL and cost, which is a free confirmation of
+[[project_scmp_eval_determinism_and_test_selection]] across processes/nodes.
+Lesson: a "reinvestment" cell is defined by (table target) > (comparison
+target); encode that in the launcher rather than in the tag.
+
+### 4B t32 op-swap table COMPLETE (9/9 ops, baseline 11.0860 @ 34.95)
+| op -> INT7 | raw dPPL | dcost | VALUE (dL per compute freed) |
+|---|---|---|---|
+| **av** | -1.22% | -10.24% | **-4.78%** |
+| **qk** | -0.24% | -9.67% | **-3.60%** |
+| down_proj | **-3.67%** | +3.66% | -2.40% |
+| **o_proj** | -1.42% | 0.00% | **-1.42%** |
+| v_proj | -0.77% | -0.17% | -0.83% |
+| k_proj | -0.36% | +0.26% | -0.27% |
+| up_proj | **-3.73%** | +10.50% | -0.07% |
+| gate_proj | -1.57% | +5.29% | +0.27% |
+| q_proj | -0.68% | +3.12% | +0.41% |
+
+**The two ops with the SMALLEST raw effect (av, qk) are the two BEST masking
+targets; the two with the LARGEST raw effect (up/down_proj) are worthless once
+their compute is priced.** Ranking on raw dL would have built exactly the wrong
+mask for 4B. This is the cleanest possible demonstration of the corrected
+objective. Note `o_proj` (-1.42% at EXACTLY iso-cost) is 4B's 3rd-best target
+and is NOT in the hardcoded attention-first order — another concrete way the
+measured selector differs from the heuristic.
+
+### ⏸ rebuild.py NOT RUN — needs explicit OK (it overwrites the frozen archive)
+The two-dose fix is landed in `mp_best/rebuild.py`. Previewed against the
+measured `int_dose_all.csv`, it would change the t128 ceiling row on 3 of 4
+models: 4B 10.3302 -> **10.2187** (1.028 -> 1.017), llama8B 7.6268 -> **7.5714**
+(1.057 -> **1.050**), 30B 7.5546 -> **7.5154** (1.040 -> 1.035); 14B correctly
+stays at 10% (its 20% cell regresses). Running it rewrites `mp_best/configs/**`
+and `traces/**`, which the paper cites, so per the launch-discipline rule it
+waits for the user rather than being done autonomously overnight.
+
+## ⛔ 2026-08-08 — HARD CONSTRAINT (user): MP IS SC-DOMAIN ONLY.
+## "INT7 as a rung in the per-group allocator" is REJECTED as unbuildable.
+
+User: "mp should happen only at sc domain. within one layer, you cannot mix int
+and sc." A PE array runs SC streams or INT MACs for a given GEMM; routing some
+128-element groups of one matmul to INT and others to SC is not a hardware you
+can build. The per-group MP knob is the STREAM LENGTH (and enable-grid) inside
+SC. Recorded durably as [[feedback_mp_sc_domain_only]].
+
+**RETRACTED (mine, same day): "unify the mask into the allocator — INT7 as a
+rung, not a separate stage."** It would have made the INT-vs-SC choice
+per-GROUP inside a matmul. Dead; do not revisit.
+
+**The overnight results are UNAFFECTED — verified, not assumed.** Every
+attention-first mask assigns `sc` or `int7` per (operator, block), i.e. per
+whole matmul, exactly like the deployed hybrid schedule; distinct values in the
+file are exactly {sc, int7} with no sub-matmul entries. llama8B -7.40%, the
+1.05x pass, and all four models' gains stand as hardware-legal configurations.
+
+### What remains OPEN for allocation, all pure-SC
+1. **MASK-AWARE ALLOCATION.** The allocator does not know which whole matmuls
+   the mask removed from its pool, so it underspends 11-23% — that underspend
+   is exactly what the reinvestment hack recovered by hand. Making the budget
+   accounting mask-aware is budget bookkeeping, NOT datapath mixing, so it is
+   legal, and it would subsume reinvestment into the algorithm. Highest-value
+   allocation item on the board.
+2. **Loss-priced CROSS-OPERATOR stream-length pricing.** All 20 deployed cells
+   run `cross_layer_weight: uniform` on a pure sigma objective (verified in the
+   tables), while sigma misprices qk ~17x. The swap table is the first
+   estimator with the SNR to fix it. Tier 1 = measured per-operator prices set
+   the cross-operator split; tier 2 = sigma keeps shaping WITHIN an operator.
+3. **Calibrated per-rung enable-grid** (PLAN_2D_PRECISION.md).
+The MASK itself stays what it is today: a whole-matmul, offline, calibration-
+time backend choice. What this session changed is only HOW it is ranked
+(measured loss per unit of compute freed) — which is a calibration decision,
+not a hardware one.
+
+## ══ 2026-08-08 — DOSE INVARIANT SETTLED: 20% BY OPERATOR COUNT, not by MACs ══
+
+User, on being shown that the attention-first masks preserved INT *MACs* but let
+the *entry* share drift: **"we should keep the By operator count 20%."**
+
+The two definitions and why they diverge — attention matmuls are individually
+CHEAP in MACs, so many more of them fit inside the same MAC budget:
+
+| model | INT entries archive -> attnfirst(mm) | INT MACs archive -> attnfirst(mm) |
+|---|---|---|
+| 4B | 20.1% -> **27.2%** | 21.25% -> 21.21% |
+| llama8B | 20.1% -> **33.3%** | 20.03% -> 20.03% |
+| 14B | 20.0% -> **32.2%** | 18.06% -> 18.06% |
+| 30B | 20.1% -> 21.1% | 20.21% -> 20.21% |
+
+**ENTRY-matched is now the standard**, and it is strictly better for the thesis:
+it keeps the canonical dose AND leaves far more work on SC — llama8B 93.5% of
+MACs on SC vs the archive's 80% (INT MAC share 6.47%), 14B 94.6%, 4B 87.1%,
+30B 79.3%. It also still masks all of qk plus most of av, i.e. the operators the
+swap table prices highest, so most of the measured gain should survive.
+
+### ⚠ PROVENANCE HAZARD I CREATED AND FIXED
+Regenerating the masks OVERWROTE the MAC-matched files that produced every
+number in `mp_best_after_hpca_4`. Recovered from the archive's own copies
+(`_4/masks/`, written at build time) and the two variants are now separate:
+  `<model>_t<T>_attnfirst_mm.json`  MAC-matched — PRODUCED _4's results
+  `<model>_t<T>_attnfirst_em.json`  ENTRY-matched — the new standard
+`build_mp_best_after_hpca_4.py` is PINNED to `_mm` so a rebuild cannot pair new
+masks with old numbers; `make_attnfirst_masks.py` now emits `_em` only.
+Lesson: a generator that overwrites its own output destroys the provenance of
+every result already derived from it — version the filename, not just the
+content.
+
+### Wave: 12 entry-matched cells (t40/t48/t64 x 4 models)
+Winning arm per model (4B/llama8B/30B prcqk, 14B prc; 30B keeps grid), tag
+`attnfirst_em`, job prefix `emask_`. These re-measure the headline
+configurations under the correct dose invariant. Expect realized SC cost to be
+HIGHER than the `_mm` cells (a bigger SC pool: 93.5% vs 80% of MACs on llama8B),
+so the comparison must be read on TOTAL SC cycle-MACs + INT MACs, not on mean
+stream length alone — the mean is over a different pool.
+**`mp_best_after_hpca_4` stands as measured but its cells are MAC-matched; once
+these land, the entry-matched set is what the paper should carry.**
+
+## ★★★★★ 2026-08-09 — MARGINAL PRICES MEASURED: the deployed allocation is
+## PROVABLY OFF-OPTIMUM by 5-24x. First clean algorithm-level result.
+
+### The instrument (new): one-rung perturbation, staying in SC
+For each operator, shift ONLY that operator's per-(row,chunk) thresholds one rung
+shorter and run full protocol. dPPL / (compute freed) IS the Lagrangian's price
+dLoss/dCycles at the deployed allocation. Never routes to INT (constraint: MP is
+SC-domain only). Generator `make_marginal_tables.py` (round-trips every emitted
+table through the DEPLOYED parser before any GPU is spent).
+Distinct from the op-swap wave, which measured the INTEGRAL (remove an operator's
+SC error entirely); the allocator needs the DERIVATIVE, and they diverge at the
+cliff.
+
+### ESTIMATOR QUALITY — this is why six earlier attempts failed and this did not
+26/28 cells have the physically correct sign (shortening a stream raises loss);
+the 2 negatives are noise-scale. The knock-down probe that killed `measured`,
+`measured_marg`, `grad*`, `fisher`, `P1`, `B1/B2` had 8/31/39/56% impossible
+signs by model. The perturbation estimator is ~7% and noise-scale.
+
+### PRICES at t32 (dPPL% per 1% of TOTAL compute freed)
+| model | dearest to starve | cheapest | SPREAD |
+|---|---|---|---|
+| 4B | down_proj 0.78 | gate_proj 0.14 | 5.6x |
+| llama8B | down_proj 0.83, k_proj 0.78 | o_proj 0.17 | 4.9x |
+| 14B | v_proj 0.86 | o_proj 0.11 | 7.8x |
+| 30B | v_proj 2.85, k_proj 2.31 | up_proj 0.12 | **24x** |
+
+**At a Lagrangian optimum every price is EQUAL (KKT). They differ by 5-24x, so
+the deployed allocation is not optimal — and the direction of the fix is
+MEASURED, not guessed.** Note the cross-model pattern: the projections that feed
+attention (v/k/q_proj) are dear on the big models while the MLP trio (up/gate)
+is cheap everywhere except 4B — the opposite of where sigma sends the budget
+(sigma's MAC-weighted mass is ~70% MLP).
+Caveat on the largest prices: 30B v/k_proj have tiny denominators (0.27/0.20% of
+total cost), so their ratios carry wide error bars; the ORDERING is robust, the
+magnitude is not.
+
+### THE MOVE (launched): equalize prices at <= control cost
+`make_equalize_tables.py` lengthens the dear operators one rung and shortens the
+cheap ones to pay for it, greedy on price, never exceeding the control's cost.
+Predictions stated BEFORE the runs, as sums of measured terms:
+| model | lengthen | shorten | predicted dPPL | cost slack |
+|---|---|---|---|---|
+| llama8B | down, k, up | o, gate, v, q | **-2.41%** | +2.69% |
+| 4B | down, v | k, q, gate, o | **-1.48%** | +3.52% |
+| 14B | v, down, q, k | o, up, gate | -0.98% | +10.01% |
+| 30B | v, k, q, o | up, gate, down | -0.49% | +10.47% |
+If these land near prediction, the sum-of-measured-terms model is validated and
+the next step is a full price-weighted re-solve rather than one-rung moves.
+If they undershoot, the prices are not additive across operators and that is
+itself the finding.
+
+### ⚠ BUG CAUGHT PRE-GPU (same silent-fallback family as the qk-alpha one)
+The first submission passed `KB_PRC_OVERRIDE`, which `run_prc_ppl.sbatch` did
+not support — all 28 cells would have run the DEPLOYED table under a perturbed
+label, and the launcher's 0-bucket guard CANNOT catch it because the deployed
+table has buckets. A flawless null result. Cancelled, launcher patched to honour
+`KB_PRC_OVERRIDE`, resubmitted, and verified from the log that the perturbed
+file is the one loaded.
+
+### IN FLIGHT (36 cells, GPUs saturated)
+4 equalization cells at t32 + the full t48 marginal wave (4 controls + 28 ops) —
+prices may reorder at a looser budget, and t48 is where the deployed cells sit.
+
+## ══ 2026-09-20 — THE 2026-08-09/10 WAVE WAS NEVER HARVESTED. Collected here. ══
+
+This ledger stopped at "IN FLIGHT (36 cells, GPUs saturated)". The cells ran.
+84 `[RESULT]` lines dated 2026-08-09/10 sat unread for six weeks. All 680 logs
+in `_kbands` are now copied to
+`/nfs/turbo/.../kbands_20260801/logs_backup_20260920/` and the parsed lines to
+`harvested_results_20260920.txt` — scratch purges at ~60 days and these were at
+day 42.
+
+Validity: every `margctl_*` control reproduces its `mp_best_after_hpca_3`
+baseline to the digit (4B t32 11.0860@34.95, llama8B 8.4864@34.18,
+14B 9.1581@35.76, 30B 7.9073@40.10). Token counts are a single value per model
+across all 349 harvested runs (298,862 Qwen / 288,627 Llama).
+
+### ★ THE EQUALIZATION MOVE FAILED ITS PRE-REGISTRATION. Prices are NOT additive.
+
+The wave pre-registered predicted dPPL as sums of measured marginal terms, and
+stated the falsification criterion itself: "If they undershoot, the prices are
+not additive across operators and that is itself the finding." They undershot,
+and two reversed sign.
+
+| model | predicted dPPL | actual (`equal`, ≤ ctl cost) | actual dcost |
+|---|---:|---:|---:|
+| llama8B | **−2.41%** | −0.65% | +1.6% |
+| 4B | **−1.48%** | −0.06% (inside noise) | −1.9% |
+| 14B | **−0.98%** | **+0.68%** (sign flip) | −8.4% |
+| 30B | **−0.49%** | **+1.13%** (sign flip) | −9.6% |
+
+`equal2` overspends its control (+5…+13% cost) and loses on all four models
+once cost-adjusted. **Consequence: the proposed next step in the previous entry
+— "a full price-weighted re-solve rather than one-rung moves" — rests on a
+premise this wave refuted. Do not build it.** The one-rung prices remain valid
+as a DIAGNOSTIC of where the allocation is off-optimum; they are not a
+composable objective.
+
+### The t48 marginal table is noise-dominated — the instrument does not scale
+At t48 one rung frees only 0.1–0.9% of total compute (vs 0.2–6.5% at t32), so
+the price denominator collapses: **8/28 cells have a physically impossible
+negative price at t48 versus 2/28 at t32.** The 2026-08-09 entry's claim that
+the perturbation estimator is ~7% impossible-signed is a **t32-only** property.
+Quote it that way. Prices at t48 (4B up_proj −2.13, llama8B q_proj −0.94,
+14B q_proj −0.18, 30B k_proj −0.35) are not measurements.
+
+### `aint8` (qk+av → INT8, every weight-bearing matmul → SC) — NOT dose-matched
+Four cells beat the `_4` archive cost-adjusted: 30B t64 −8.05%, 30B t32 −1.22%,
+14B t64 −1.02%, 30B t48 −0.71% (the two 30B t32/t48 by strict dominance —
+better PPL AND lower SC cost). **But the arm is confounded on two axes at once:**
+it runs **INT8** where the archive runs **INT7**, and it routes a **larger** INT
+side (qk+av entire = 96/432 entries) than the archive's `attnfirst`
+(91/432, MAC-matched to 20.2%). `realized_flop_avg_sl` prices only SC work, so
+neither the extra bit nor the extra entries are charged. The win is not bankable
+as measured. The decisive control is the same rule at **INT7** (`aint7`), which
+isolates the bit from the rule.
+
+### ★★★★★ 2026-09-20 — THE PAPER'S LLM TABLE IS FOUR GENERATIONS STALE
+
+`Overleaf/.../src/evaluation/model_quality.tex` `tab:quality-llm` sources its
+PaYN SC-MP rows from `frontend_awq/mpbest_awq_vs_smoothquant.csv`, i.e. **the
+frozen `mp_best` allocation, calibrated under SmoothQuant and deployed under AWQ
+with the thresholds never re-fit** (the file's own note 1). Everything since —
+per-(row,chunk) dispatch, qk rebalance, enable-grid, loss-priced mask — is
+absent from the submitted paper. All 20 cells improve, same front-end (AWQ),
+same dose (h=20%), same full protocol:
+
+| | mean cost-adjusted gain vs the paper's MP cells | cells ≤1.05x fp16 |
+|---|---:|---:|
+| paper as submitted | — | 7/20 |
+| `mp_best_after_hpca_3` (attention stays on SC) | **−3.22%** | 10/20 |
+| `mp_best_after_hpca_4` (+loss-priced mask, attention→INT7) | **−6.79%** | 12/20 |
+
+Largest single cell: 30B @ 6 bits **9.4647 → 7.7566** (−18.0%) at lower realized
+cost. Every one of the 20 cells improves under both archives; no cell regresses.
+All deployed winners in both archives carry `hw_realizable: true` (the
+simulation-only M=128 arms win 5 cells in `_4` but are correctly not selected).
+
+**This is the same edit as rebuttal weakness T1.** The group-vs-row granularity
+error the rebuttal must admit IS what per-(row,chunk) dispatch fixes, so the
+admission and the improved table are one change, not two.
+
+⚠ **FAIRNESS BLOCKER before this is tabled.** The table's `Uniform SC` rows come
+from `mp_vs_uniform_under_awq.md` = each cell's exact deployed hybrid mask with
+**the allocator disabled**. `_3`/`_4` cells additionally carry qk operand
+rebalance and the enable-grid, which are NOT allocation — a uniform comparator
+that lacks them would credit the allocator with their work, the same error
+`uniform/` vs `uniform_hybrid/` already cost this project once. Updating the MP
+row REQUIRES re-running the uniform row with qk+grid and the same mask, or
+restricting the update to cells whose winner uses neither.
+⚠ `_4`'s attnfirst cells realize far under their target label (4B t32 realizes
+26.84 against a t32 label) because the mask evicted attention from the SC pool;
+the bits label prices SC only. Do not table the label as the cost.
+
+## ══ 2026-09-20 — ALLOCATION SHAPE: the L(m) relationship was never optimized ══
+
+### ⛔ FIRST: the compute environment was DEAD and is now on Turbo
+`annstention` lived at `/scratch/.../shared_data/envs/annstention` and the scratch
+purge reaped its Python **stdlib** — 3 of 153 top-level `.py` files survived, so
+the interpreter could not boot (`init_fs_encoding: ... no codec search functions`).
+site-packages (torch, transformers) was intact. `sc_llm` has no torch; `vit_sc`
+lacks typing_extensions. **No SC experiment could run at all.**
+Fixed by rsyncing the env to **`/nfs/turbo/coe-nbleier/allenjin/conda-envs/annstention`**
+and restoring the stdlib from the cached `python-3.10.20-h741d88c_0` package — the
+EXACT build hash the env was created with, so it is a file restore, no dependency
+resolution, no ABI risk. `conda config --prepend envs_dirs /nfs/turbo/.../conda-envs`
+makes `conda activate annstention` resolve to the Turbo copy, so every existing
+sbatch script works unchanged. **Do not recreate envs on scratch.**
+Verified byte-faithful: `plawctl_4B_t32` reproduces the August `prcppl_4B_t32_prc`
+number to the digit (11.3881 @ 34.97).
+
+### The gap: ranking was validated, SHAPE never was
+`mp_per_row_chunk_calib.py:179-205` (`thresholds_from_alloc`) sorts pairs by the
+proxy metric, takes `counts = bincount(alloc)` from the oracle's allocation, and
+cuts thresholds at those cumulative counts. **The oracle's length HISTOGRAM is
+imposed exactly and only the proxy's RANKING is validated** (the 94-99% figure).
+Sharper still: that histogram was optimized for the UNCONSTRAINED oracle, which
+the deployed monotone-in-m rule cannot realize — a histogram optimal for a free
+assignment is not optimal under a monotone constraint. Nothing anywhere re-solves
+the histogram under that constraint, so **the shape of L(m) has never been an
+optimization variable.**
+
+### The closed form the shape should have
+For one output element the chunk errors add with |eps_j| ~ m_j/sqrt(L_j):
+  independent chunk errors  -> minimize sum m_j^2/L_j  s.t. sum L_j = B  =>  L ~ m
+  perfectly correlated      -> minimize sum m_j/sqrt(L_j)                =>  L ~ m^(2/3)
+The array shares two RNG banks across the contraction, so the correlated case is
+the physical one. **Measured (probe_alloc_shape.py, 4B, 14 real operands, iso-cost):
+p=2/3 wins on 11/14, mean squared error -11.53%, closing 61% of the gap to an
+oracle that needs an FP16 reference.** The exponent the physics predicts is the
+exponent the data picks. ⚠ That probe's baseline was an equal-rung split at
+meanL 47.3 while the deployed cell runs at 27.6 — right direction, wrong
+operating point; the end-to-end wave is the number that counts.
+
+### ★ STRANDED RUNGS — confirmed in the prc tables, worst where budget is tightest
+`thresholds_from_alloc:195-198` emits threshold **1.0** when the water-fill gives a
+rung zero pairs, and `bucketize` can never exceed 1.0, so that rung is UNREACHABLE.
+Buckets carrying >=1 dead rung: **30B t32 25/28, 30B t40 25/28, 4B t40 17/28,
+llama8B t32 16/28 (49 of 168 thresholds), 14B t40 16/28** — but only 1-4/28 at t96.
+The effect concentrates exactly where allocation matters most. Realized usage
+agrees: 30-72% of MACs sit on the FLOOR rung, 0.1-1.9% on the top.
+⚠ An earlier note in this session put these numbers on the per-ROW `buckets`
+section; that was the wrong table, then over-corrected to "not real". Both wrong:
+the phenomenon is real in the per-(row,chunk) tables, at the counts above.
+
+### ⚠ NEW BUG: calibration and deployment normalize over different populations
+Normalization is per-call min-max over ALL (row, chunk) pairs. The calibrator cuts
+thresholds from a **256-row** sample (`mp_per_row_chunk_calib.py:222,336-337`)
+while deployment runs **ctx 2048** (`run_prc_ppl.sbatch:147`). A max over 8x more
+heavy-tailed samples is systematically larger, so every runtime `mn` is biased
+DOWN relative to calibration and mass slides toward the cheap rungs. Same family
+as the already-recorded 9-23% parent-budget overestimate. Unfixed.
+
+### Also found (not yet acted on)
+* **Min-max is the least robust normalizer possible** — `hi` is one order statistic
+  over ~8e4 heavy-tailed values. Median consecutive-threshold ratio is 1.05-1.71,
+  so a 5% change in a call's single largest chunk demotes EVERY group in the
+  14B t40 cell one full rung.
+* **Degenerate-call resolver disagreement** — a constant-metric call gets the
+  SHORTEST rung under prc (`sc_common.py`, levels ascending) and the LONGEST under
+  the per-row resolver (`config.py:1054-1066`). The two-resolvers bug family again.
+* **MoE**: rows/call is min 1, median 81, max 2802. At N=1 the allocation is
+  decided entirely by within-row chunk RANKING, independent of absolute magnitude.
+* **Nothing limits the rung count** — not the hardware, kernel, or loader. Extra
+  rungs cost one k_table slice each (R x 64KB, LRU-cached) and **zero extra kernel
+  launches**; the D-chunk loop already launches once per chunk.
+
+### The wave (launched, 8 cells, t32, full protocol, AWQ, h=20% unchanged)
+`make_powerlaw_prc.py` re-emits each bucket as 16 rungs whose thresholds place
+L = kappa * m^(2/3), with kappa bisected per bucket so the induced mean length
+matches the parent staircase's. **Iso-cost holds per bucket to max 0.003%** across
+all four models, so the cross-layer split is untouched. NO code change — the power
+law is expressible in the deployed (levels asc, thresholds asc) format, so this is
+a table swap. Every table round-tripped through the DEPLOYED parser
+(AdaptiveMPConfig) before writing: 28/28 buckets accepted on all four models.
+Arms: `plawctl_*` (deployed v7 table re-run in this env) vs `plaw23_*`.
+Jobs 61606068-71, 61606093-96.
+
+## 2026-09-23 — prc2: per-(row,chunk) allocation recalibrated correctly (T1/T2)
+Archive `hpca_results/llm/ppl/prc2/` (README/SUMMARY/manifest; builder
+`build_prc2_archive.py`); narrative + run log `PRC2_OVERNIGHT.md`.
+- v7 prc under-delivered because its CALIBRATOR was wrong, not because granularity is
+  worth ~1%: thresholds cut on x[:256] but runtime normalizes over the 2048-row call
+  (deployed/intended L −6…−24% per op); first 4 blocks per bucket only; INT-masked calls
+  sampled; error curves without AWQ smooth_scales; tail chunk dropped; per-ROW ladder
+  reused (floor held 43–84% of linear MACs at t40–t64); unconstrained-oracle histogram
+  imposed on a monotone rule; budgets from a biased sample.
+- `mp_per_row_chunk_calib2.py` fixes all eight (see archive README). Budgets = the
+  parent's own L on the same stratified TRAIN windows (the first train windows make the
+  parent overspend down_proj +22% vs its test trace — prefix calibration windows are a
+  trap). Pre-registered held-out gate before every chained c17/r17 eval. 30B t32 read
+  1.028 and failed — cause (corrected): dense q_proj/o_proj over-spend plus a MEASUREMENT
+  bug: sampled expert pairs were not re-weighted by 1/(sampling rate), so the gate's
+  aggregate weighted experts at ~11% of linear MACs vs ~67% true (true-MAC ratio 1.007).
+  Fixed in calib2/3 on 2026-09-23 before any remaining 30B c17 result existed; gate
+  thresholds unchanged; the c17e32 retry (32 expert calls) was already queued.
+- Iso-cost vs parent (full protocol, same wrapper/mask/attention/AWQ): 4B
+  −5.49/−2.40/−1.37/−0.63/−0.23%; llama8B −3.30/−1.51/−1.32/−0.68% (t32–t64); 14B
+  −1.53/−1.04% (t32/t48); llama8B t96 −0.21%. Every finished cell improves; trace cost
+  within 1.1% of the parent (the [RESULT] tracker reads per-group arms ≤0.4% cheap —
+  archive uses trace cost). SUMMARY.md is authoritative for counts/means.
+- DECOMPOSITION (4B t32): identically-calibrated per-ROW control (`SC_PRC_ROWSHARED=1`)
+  −1.12% ⇒ granularity alone −4.42% raw (control spent 1.1% less; ≈−4.0% cost-adjusted;
+  cost-matched control r17m queued). Held-out error: per-row-same-calib 0.848,
+  per-(row,chunk) 0.600, oracle 0.518 (4B t32); 0.885/0.790/0.748 (llama8B t32).
+- NOT PURSUED (held-out, same budget): smoothed-operand statistic (0.631 vs 0.600 on
+  4B t32, worse; ≈equal on llama8B), absolute thresholds (0.571 on 4B t32 but ≈0 on
+  llama8B, and a runtime-rule change), per-block thresholds (0.593 / 0.791). The deployed
+  statistic captures ~83% of the oracle's gain on both models tested.
+- WHY THE GAIN SHRINKS WITH BUDGET (investigation 2026-09-23): the per-row parent's own
+  held-out linear error falls ~1/L² (E_par·L² roughly constant per model) while per-group
+  removes a ~constant fraction of it (4B 34–40% through t64); at t96 ~⅓ of linear MACs
+  already sit at the 128 cap in both arms (k/v/o pinned). Attention's cost share and
+  staircase expressiveness are ruled out. WITHIN-BUCKET headroom is small: at the parent's
+  per-(op,layer-quartile) budgets and in summed squared error, the rule gets 83% of an
+  unconstrained per-pair oracle (4B/llama8B t32). This does NOT bound cross-bucket,
+  cross-op or linear↔attention re-splits, nor a loss-aware objective — the per-bucket
+  budgets are inherited from the SmoothQuant-era per-row parent and were never
+  re-optimized for per-group (unexplored headroom).
+- NOTE: on the linears the per-(row,chunk) path has no μ+2τ escape gate (its dense
+  ladder reaches 128); attention keeps the parent's escape.
+- Iso-PPL: 4B t32 at 0.8× linear budget = 11.9836 vs parent 11.9886 at −12.1% SC cycles.

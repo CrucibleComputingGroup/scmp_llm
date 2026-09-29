@@ -17,7 +17,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
 export HF_HOME=/nfs/turbo/coe-nbleier/allenjin/hf_cache

@@ -21,7 +21,7 @@ import json
 import re
 from pathlib import Path
 
-MP_BEST = Path("/home/allenjin/Projects/hpca_results/llm/ppl/mp_best")
+MP_BEST = Path("/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best")
 DEFAULT_LOGS = Path("/scratch/nbleier_owned_root/nbleier_owned1/shared_data"
                     "/allenjin/hpca/logs/_mpbest_awq")
 MODELS = ["4B", "llama8B", "14B", "30B"]

@@ -23,7 +23,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${EVAL_TARGET:?EVAL_TARGET is required}"
 case "$EVAL_TARGET" in

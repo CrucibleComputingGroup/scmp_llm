@@ -15,12 +15,12 @@ set +u                       # /etc/bashrc references unbound vars (BASHRCSOURCE
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 # FLOP/energy-weighted (iso-compute) budget run — separate output files so it
 # never collides with / is skipped against the row-weighted results.
 BUDGET_WEIGHT=macs \
   TABLES=/nfs/turbo/coe-nbleier/allenjin/hpca/mp_calib_fw \
-  RESULTS=/home/allenjin/Projects/hpca_results/llm/mp/fw_results.tsv \
-  MANIFEST=/home/allenjin/Projects/hpca_results/llm/mp/fw_manifest.tsv \
+  RESULTS=/home/allenjin/Projects/SCMP/hpca_results/llm/mp/fw_results.tsv \
+  MANIFEST=/home/allenjin/Projects/SCMP/hpca_results/llm/mp/fw_manifest.tsv \
   bash benchmark/ppl/overnight_mp.sh   # NGPU auto-detected from SLURM_GPUS_ON_NODE
 echo "[sbatch] end=$(date)"

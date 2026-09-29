@@ -39,7 +39,7 @@
 #
 # No partial output: the ranking JSON is written only at the end of the sweep.
 
-bash /home/allenjin/Projects/scmp_llm/hpca \
+bash /home/allenjin/Projects/SCMP/scmp_llm/hpca \
   --sensitivity \
   --models 30B \
   --configs mp_avg32_v9 \

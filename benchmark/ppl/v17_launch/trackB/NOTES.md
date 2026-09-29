@@ -1,6 +1,6 @@
 # Track B — V17 fallback-search prep (agent work log)
 
-Work dir: /home/allenjin/Projects/scmp_llm/benchmark/ppl/v17_launch/trackB/
+Work dir: /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/v17_launch/trackB/
 Date: 2026-07-19. NO sbatch submission from this session; scripts are prepared only.
 
 ## Task

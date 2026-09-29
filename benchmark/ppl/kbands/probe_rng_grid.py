@@ -33,7 +33,7 @@ os.environ.setdefault("SC_SCRAMBLE_MASKS", "64")
 
 from scmp_kernels import sc_matmul                      # noqa: E402
 
-RES = Path("/home/allenjin/Projects/hpca_results/llm")
+RES = Path("/home/allenjin/Projects/SCMP/hpca_results/llm")
 MODEL = os.environ.get("KB_MODEL", "4B")
 TARGET = os.environ.get("KB_TARGET", "32")
 SC_PREC = 8

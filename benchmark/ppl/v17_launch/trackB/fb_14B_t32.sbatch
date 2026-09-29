@@ -24,7 +24,7 @@ export V16_PATIENCE=4
 export V16_MAX_SWEEPS=8
 
 # Run the lane (it does its own source ~/.bashrc + conda activate + env).
-bash /home/allenjin/Projects/scmp_llm/benchmark/ppl/mp_v16_lane.sh 14B mp_v17_fbsearch_20260719_033500
+bash /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/mp_v16_lane.sh 14B mp_v17_fbsearch_20260719_033500
 rc=$?
 
 # Auto-resubmit only if the branch stopped on the walltime guard (not converged).

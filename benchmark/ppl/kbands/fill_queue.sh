@@ -6,7 +6,7 @@
 # loop calls whenever the queue drops below the floor. Every entry here is a
 # genuine open question, NOT filler -- filler would burn the same GPU-hours and
 # teach nothing.
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 # NOTE: source ~/.bashrc with `set -u` OFF -- the module system references unset
 # vars and would abort the whole script silently (that is why the first version
 # submitted nothing and printed nothing).
@@ -18,7 +18,7 @@ set -u
 D=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands
 Q=$D/kbands_20260801/qk
 A=$D/kbands_20260801/alloc
-MB=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs
+MB=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs
 MIN=${KB_MIN_JOBS:-4}
 
 busy() { squeue -u allenjin -h 2>/dev/null | wc -l; }
@@ -101,7 +101,7 @@ if [ ! -f "$Q/llama8B_t96_qk_alpha1.0.json" ] && [ "$(busy)" -lt "$MIN" ] \
     benchmark/ppl/kbands/run_kband_tool.sbatch 2>&1 | tail -1
 fi
 submit kb_llama8B_awq_qk_t96   llama8B awq_qk_t96 \
-  /home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs/llama8B/target96 \
+  /home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/llama8B/target96 \
   $Q/llama8B_t96_qk_alpha1.0.json
 
 # 4B t40: the rung BETWEEN the two measured points. Fills in the rung curve and
@@ -114,7 +114,7 @@ if [ ! -f "$Q/4B_t40_qk_alpha1.0.json" ] && [ "$(busy)" -lt "$MIN" ] \
     benchmark/ppl/kbands/run_kband_tool.sbatch 2>&1 | tail -1
 fi
 submit kb_4B_awq_qk_t40        4B      awq_qk_t40 \
-  /home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs/4B/target40 \
+  /home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target40 \
   $Q/4B_t40_qk_alpha1.0.json
 
 echo "[fill] GPUs busy at end: $(busy)"

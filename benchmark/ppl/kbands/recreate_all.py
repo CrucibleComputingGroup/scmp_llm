@@ -36,7 +36,7 @@ import subprocess
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-RES = Path("/home/allenjin/Projects/hpca_results/llm")
+RES = Path("/home/allenjin/Projects/SCMP/hpca_results/llm")
 MPB = RES / "ppl" / "mp_best" / "configs"
 QK_ARCH = RES / "ppl" / "mp_best_after_hpca" / "qk_scales"
 TURBO = Path("/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801")
@@ -46,7 +46,11 @@ LOGS = Path("/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/"
 AWQ_TRACES = RES / "ppl" / "mp_best" / "awq_traces" / "mp"
 
 MODELS = ["4B", "llama8B", "14B", "30B"]
-TARGETS = [32, 40, 48, 64, 96, 128]
+# t128 is NOT an MP cell: those bundles are deployment_mode=uniform_sc /
+# quant_config=sc_int8, realized 128.0, with no table.json at all. There is
+# nothing for the allocator to allocate at the ceiling, so including it just
+# queued jobs that fail instantly on a missing table.
+TARGETS = [32, 40, 48, 64, 96]
 ARMS = ["parent", "prc", "qk", "prcqk"]
 
 
@@ -110,12 +114,12 @@ def main() -> int:
                          "pointless and it starves the rest of the lab")
     ap.add_argument("--grid-policy", choices=["main", "winner", "all", "none"],
                     default="main",
-                    help="Which arms get the SC_RNG_GRID=pow2 variant. 'winner' "
-                         "(default) runs it only on the cell's currently-best "
-                         "measured arm, so grid FOLLOWS measurement instead of "
-                         "doubling every cell up front -- grid pays on 30B and "
-                         "is neutral-to-negative elsewhere, so running it 8x per "
-                         "cell burns ~2x the wave for nothing.")
+                    help="Which arms get the SC_RNG_GRID=pow2 variant. 'main' "
+                         "(default) grids prc/prcqk/parent (every arm family "
+                         "that has ever won a cell). 'winner' runs it only on "
+                         "the cell's currently-best measured arm, so grid "
+                         "FOLLOWS measurement instead of doubling every cell "
+                         "up front -- but it trickles the wave.")
     ap.add_argument("--models", default=",".join(MODELS))
     ap.add_argument("--targets", default=",".join(str(t) for t in TARGETS))
     a = ap.parse_args()
@@ -181,13 +185,15 @@ def main() -> int:
                 grids = (False,)
                 if a.grid_policy == "all":
                     grids = (False, True)
-                elif a.grid_policy == "main" and arm in ("prc", "prcqk"):
+                elif a.grid_policy == "main" and arm in ("prc", "prcqk", "parent"):
                     # Submit the grid variant NOW, with no dependency on the base
                     # arm's result. "winner" policy could only submit grid after
                     # its base arm finished, which forced the wave to trickle and
                     # left GPUs idle between top-ups -- the scheduler should be
-                    # doing the sequencing, not us. prc/prcqk are the only arms
-                    # that ever win a cell, so parent+grid / qk+grid are dropped.
+                    # doing the sequencing, not us. parent+grid is INCLUDED: it
+                    # wins 3 cells in mp_best_after_hpca_3 (llama8B t40, 14B
+                    # t64/t96), so dropping it silently regresses those cells in
+                    # any recreated wave. Only qk+grid (never a winner) is dropped.
                     grids = (False, True)
                 elif a.grid_policy == "winner" and arm == best_arm:
                     grids = (False, True)

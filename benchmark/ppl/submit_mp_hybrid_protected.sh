@@ -147,8 +147,8 @@ IFS=, read -ra MODELS <<<"$MODELS_CSV"
 IFS=, read -ra BUDGETS <<<"$BUDGETS_CSV"
 
 TABLES="$TURBO/mp_calib_hybrid_protected_${TAG}"
-RESULTS="/home/allenjin/Projects/hpca_results/llm/mp/hybrid_protected_${TAG}_results.tsv"
-MANIFEST="/home/allenjin/Projects/hpca_results/llm/mp/hybrid_protected_${TAG}_manifest.tsv"
+RESULTS="/home/allenjin/Projects/SCMP/hpca_results/llm/mp/hybrid_protected_${TAG}_results.tsv"
+MANIFEST="/home/allenjin/Projects/SCMP/hpca_results/llm/mp/hybrid_protected_${TAG}_manifest.tsv"
 LOGDIR="$SCRATCH/logs/_mp_hybrid_protected_${TAG}"
 
 if [[ $DRY -eq 0 ]]; then
@@ -165,7 +165,7 @@ for model in "${MODELS[@]}"; do
   hf="${MODEL_ID[$model]:-}"
   if [[ -z "$hf" ]]; then echo "[submit-mp-hyb] skip unknown model $model" >&2; continue; fi
   sm="$(safe "$hf")"
-  trace="/home/allenjin/Projects/hpca_results/llm/uniform/traces/${model}_sc_int7_trace.json"
+  trace="/home/allenjin/Projects/SCMP/hpca_results/llm/uniform/traces/${model}_sc_int7_trace.json"
   for budget in "${BUDGETS[@]}"; do
     spec="$(budget_spec "$budget")" || { echo "[submit-mp-hyb] bad budget $budget" >&2; exit 1; }
     read -r levels ratio int_bits <<<"$spec"

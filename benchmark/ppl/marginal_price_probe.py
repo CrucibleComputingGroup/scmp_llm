@@ -28,7 +28,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-REPO = Path("/home/allenjin/Projects/scmp_llm")
+REPO = Path("/home/allenjin/Projects/SCMP/scmp_llm")
 sys.path.insert(0, str(REPO)); sys.path.insert(0, str(REPO / "kernels"))
 from benchmark.ppl.mp_v16_refine import (  # noqa: E402
     _build_parent_model, _load_eval_stream, eval_windows, paired_deltas,

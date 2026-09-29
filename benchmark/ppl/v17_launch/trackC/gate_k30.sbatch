@@ -23,7 +23,7 @@ OUT=/nfs/turbo/coe-nbleier/allenjin/hpca/mp_gate_ab_20260719_032500/eval_k3
 source ~/.bashrc
 conda activate annstention
 set -euo pipefail
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 export SC_OWEN_MODE=bitrev
 export SC_SCRAMBLE_MASKS=64

@@ -22,4 +22,4 @@ export FINAL_TARGETS=32
 export FINAL_MAX_SWEEPS=4
 export FINAL_WALLTIME_HOURS=21.0
 export FINAL_GATE_K=2.0
-bash /home/allenjin/Projects/scmp_llm/benchmark/ppl/final_mp_lane.sh llama8B final_20260720
+bash /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/final_mp_lane.sh llama8B final_20260720

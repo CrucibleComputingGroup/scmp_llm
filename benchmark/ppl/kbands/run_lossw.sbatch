@@ -29,14 +29,14 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${KB_STAGE:?KB_STAGE required (calib|eval)}"
 : "${KB_MODEL:?KB_MODEL required}"
 : "${KB_ARM:?KB_ARM required (control|p1|p2|p3|b1|b2|pow2)}"
 KB_TARGET="${KB_TARGET:-32}"
 
-RES=/home/allenjin/Projects/hpca_results/llm
+RES=/home/allenjin/Projects/SCMP/hpca_results/llm
 PARENT="$RES/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}"
 TRACE="$RES/uniform/traces/${KB_MODEL}_sc_int7_trace.json"
 OUT=/nfs/turbo/coe-nbleier/allenjin/hpca/lossw/lossw_20260804

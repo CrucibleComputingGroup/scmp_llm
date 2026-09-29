@@ -1,0 +1,6308 @@
+{
+ "schema": "prc-screen-r7-v1",
+ "run_id": "prc_screen_r7_20260928",
+ "dry_run": false,
+ "test_build": false,
+ "test_overrides": null,
+ "purpose": "Round-7 screen -> confirm -> full test of the pre-registered primary per cell (family-kappa joint lambda over attention ladders up to 128, re-solved at parent cost).",
+ "units": "stream lengths HALVED (nominal = 2x); code cap 128; cost = MAC-weighted mean halved length",
+ "max_total_gpus": 4,
+ "gpus_per_task": 1,
+ "concurrency_note": "One GPU per task; submit with --array=<enabled>%K and --dependency so that K plus every other running GPU job stays <= 4.",
+ "enabled_tasks": [
+  0,
+  1,
+  2
+ ],
+ "protocol": {
+  "frontend": "awq",
+  "owen_mode": "bitrev",
+  "scramble_masks": 64,
+  "hw_max_masks": 64,
+  "ctx": 2048,
+  "stride": 2048,
+  "split": "train",
+  "sc_prec": 8,
+  "sc_halve": true,
+  "qk_rebalance": false,
+  "rng_grid": "fixed128",
+  "awq_obj_bits": 4,
+  "sq_alpha": 0.5,
+  "escape": "mu+2tau gate (escape_gate_k 2.0, escape_stoc_len 128) unchanged in every arm",
+  "max_code_length": 128,
+  "screen_windows": 16,
+  "confirm_windows": 32,
+  "cost_gate_tolerance": 0.01,
+  "confirm_z": -2.0,
+  "full_test": "primary only, full WikiText-2 test, ctx 2048, PPL_MAX_TOKENS=0, batch 1, via run_prc_ppl.sbatch"
+ },
+ "output_root": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/screen",
+ "windows_registry": {
+  "path": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_windows_r7_20260928.json",
+  "sha256": "b06d64d9272f29585b7d8e5322b9120bde14a3db078d4209e1abbd9cdbd8ae49"
+ },
+ "prereg": {
+  "path": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json",
+  "sha256": "c7fcfaec091ce01a2d06808f36d12ca617b3306d5f8388ca05b2165cfab4b6f2",
+  "frozen_utc": "2026-09-28T19:40:51.347060+00:00",
+  "mde_nats": {
+   "30B_t32": 0.0129,
+   "30B_t40": 0.0092,
+   "30B_t48": 0.0091,
+   "4B_t40": 0.0148,
+   "4B_t64": 0.0073
+  }
+ },
+ "kappa": {
+  "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/kappa_decision.json",
+  "sha256": "2bd67e2688c38a9aad7500222f4ef7206b0b8821f59b3ddbb6c0d1fe0b34d8b6",
+  "decision": "keep_0.42",
+  "ratio": 0.42,
+  "requires_user_review": false,
+  "flags": [],
+  "review_accepted": false,
+  "created": 1790656215.88694,
+  "assumed": false,
+  "pins": {
+   "kappa_lin": 1.96,
+   "kappa_att": 0.83,
+   "branch": "keep_0.42"
+  }
+ },
+ "candidate_spec": {
+  "path": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_candidates_r7_20260928.json",
+  "sha256": "546a32ef945713863d0bbfd76f757987a8dc4d8e28ff64d5ae9b0f6e70233f68"
+ },
+ "flags": [
+  "30B_t40 UK: replayed C(s1)/P = 1.00289 (outside +-0.25%; non-binding)"
+ ],
+ "tasks": [
+  {
+   "index": 0,
+   "id": "30B_t32",
+   "cell": "30B_t32",
+   "enabled": true
+  },
+  {
+   "index": 1,
+   "id": "30B_t40",
+   "cell": "30B_t40",
+   "enabled": true
+  },
+  {
+   "index": 2,
+   "id": "30B_t48",
+   "cell": "30B_t48",
+   "enabled": true
+  },
+  {
+   "index": 3,
+   "id": "4B_t40",
+   "cell": "4B_t40",
+   "enabled": false
+  },
+  {
+   "index": 4,
+   "id": "4B_t64",
+   "cell": "4B_t64",
+   "enabled": false
+  }
+ ],
+ "cells": {
+  "30B_t32": {
+   "id": "30B_t32",
+   "model": "30B",
+   "target": 32,
+   "nominal_cycles": 64,
+   "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+   "total_blocks": 48,
+   "layer_buckets": 4,
+   "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/hybrid_config.json",
+   "awq_cache": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt",
+   "r6_gate": {
+    "source_cell": "30B_t32",
+    "passed": true,
+    "assumed": false,
+    "summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t32/diag_summary.json",
+    "summary_sha256": "e0e0d15df59dd1b6aede23c6f09fcfc3bc8950016cc9f1250eb63b5ea3aa588c",
+    "binding": {
+     "proceed_round7_attention_ladder_solve": true,
+     "verification_ok": true,
+     "cond_beats_budget_marginal": true,
+     "cond_gross_dnll": true,
+     "dppl_pct_A": -1.9811013701980178,
+     "threshold_dppl_pct": -1.5260363328425706,
+     "budget_term_pct": -0.9631176363980662,
+     "se_term_pct": -0.5629186964445043,
+     "dnll_A": -0.020009882748126984,
+     "gross_dnll_threshold": -0.01,
+     "chord": 0.2291552308795254,
+     "extra_cycles_pct": 7.004841453989541,
+     "constants": {
+      "marginal_fraction": 0.6,
+      "se_multiplier": 1.5
+     }
+    }
+   },
+   "mde_nats": 0.0129,
+   "flags": [],
+   "capture_identity": {
+    "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/identity_check7fix.json",
+    "sha256": "d8e37fe5617ff752d56f50965a71c78b5da3cb0a9bcbdf6836aa503a9f3c779e",
+    "identity_level": "exact",
+    "near_flag": false,
+    "pipeline_check_ok": true
+   },
+   "fixed_point": {
+    "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/fixed_point/30B_t32_fixed_point.json",
+    "sha256": "a317aeb0ef39f106a4d903e03781f40427e5b1f95818faeb72b9a5e6d8293701",
+    "s0": 1.0037,
+    "P": 34.21313981123266,
+    "U": 1.8695852308298215,
+    "s1": {
+     "UK": 1.0102,
+     "K": 1.0087,
+     "U": 1.0073
+    }
+   },
+   "kappa_pins": {
+    "kappa_lin": 1.96,
+    "kappa_att": 0.83,
+    "branch": "keep_0.42"
+   },
+   "enabled": true,
+   "disabled_reason": null,
+   "incumbent": {
+    "arm": "c7gfisla",
+    "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla.json",
+    "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json",
+    "full_test_ppl": 8.58117847495862,
+    "full_test_cost": 33.91502086235954,
+    "full_test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c7gfisla_trace.json",
+    "full_test_cost_vs_parent_pct": -0.5872901420773902
+   },
+   "parent": {
+    "wrapper": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/wrapper.json",
+    "table": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/table.json",
+    "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_parent_trace.json",
+    "test_cost": 34.11537710905354,
+    "ppl": 9.4647,
+    "test_trace_header_ppl": 9.464660593505346
+   },
+   "arms": {
+    "INC": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json",
+     "role": "incumbent",
+     "kind": "INC"
+    },
+    "PARENT": {
+     "wrapper": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/wrapper.json",
+     "table": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/table.json",
+     "role": "parent",
+     "kind": "PARENT"
+    },
+    "UK": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/30B_t32_r7UK_k0423_s10102.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/30B_t32_r7UK_k0423_s10102_table.json",
+     "kind": "UK",
+     "role": "primary",
+     "pred_true_nats": -0.5079291037388936,
+     "mde_nats": 0.0129,
+     "kappa_ratio": 0.423469387755102,
+     "kappa_pins": {
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "branch": "keep_0.42"
+     },
+     "pred_detail": {
+      "table_name": "r7UK_k0423_s10102",
+      "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/solve_summary.json",
+      "solve_summary_sha256": "d16a2c5085dc60bf6f0ae27e2157eaf06662fa3bed1e2883a88ae3ab0ba2c660",
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "heldout_vs_inc": {
+       "pred_dnll": -0.6027616296504029,
+       "pred_dnll_lin": -0.006758363831025772,
+       "pred_dnll_att": -0.5960032658193772,
+       "cost_over_ref": 1.0134810706767463,
+       "lin_cost_over_ref": 1.0953677480073654,
+       "att_cost_over_ref": 0.9169811320754717
+      },
+      "calib_cost_over_target": 0.9999754162431561,
+      "fixed_point_s1": 1.0102,
+      "ladders": {
+       "av:l0": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "av:l1": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "av:l2": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "av:l3": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "qk:l0": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "qk:l1": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "qk:l2": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "qk:l3": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ]
+      },
+      "escape": {
+       "av:l0": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2935347855091095,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l1": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2485906481742859,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l2": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2381018102169037,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l3": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2394650280475616,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "qk:l0": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.8133141994476318,
+        "gate_can_fire": true,
+        "th_top": 0.8089402914047241,
+        "escape_redundant": true
+       },
+       "qk:l1": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.972242534160614,
+        "gate_can_fire": true,
+        "th_top": 0.877510130405426,
+        "escape_redundant": true
+       },
+       "qk:l2": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9142196178436279,
+        "gate_can_fire": true,
+        "th_top": 0.7716496586799622,
+        "escape_redundant": true
+       },
+       "qk:l3": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9455708861351013,
+        "gate_can_fire": true,
+        "th_top": 0.937809407711029,
+        "escape_redundant": true
+       }
+      }
+     },
+     "target_scale": 1.0102,
+     "fixed_point_arm": {
+      "status": "ok",
+      "s0_table_name": "r7UK_k0423_s10037",
+      "s0_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_s0/30B_t32_r7UK_k0423_s10037_table.json",
+      "s0_table_sha256": "6393383fdce2b36fc01c452f821cc45d014a244609507fc6f647c624090e4dde",
+      "C_replay_s0": 34.0062900060751,
+      "C_replay_s0_over_P": 0.9939540829547118,
+      "calib_cost_over_target_s0": 0.9979977687703413,
+      "heldout_cost_over_inc_s0": 1.004823777414126,
+      "s1_raw": 1.0101603745433343,
+      "s1": 1.0102,
+      "replay": {
+       "cost": 34.0062900060751,
+       "cycle_macs": 3132607016860672.0,
+       "fixed_cycle_macs": 201624709570560.0,
+       "prc_cycle_macs": 1737819888606208.0,
+       "attention_cycle_macs": 1193162418683904.0,
+       "ladders_changed": [
+        "attention|av:t0:l0",
+        "attention|av:t0:l1",
+        "attention|av:t0:l2",
+        "attention|av:t0:l3",
+        "attention|qk:t0:l0",
+        "attention|qk:t0:l1",
+        "attention|qk:t0:l2",
+        "attention|qk:t0:l3"
+       ]
+      }
+     },
+     "replay_at_s1": {
+      "C_replay_s1": 34.28556069592761,
+      "C_replay_s1_over_P": 1.0021167564594926,
+      "P": 34.21313981123266,
+      "flag": false
+     },
+     "predicted_cost_ratio": 1.0134810706767463,
+     "allow_psl_change": false,
+     "allow_layer_rekey": false,
+     "lineage": {
+      "ok": true,
+      "failures": [],
+      "n_failures": 0,
+      "prc_threshold_keys_changed": [
+       "down_proj:t0:l0",
+       "down_proj:t0:l1",
+       "down_proj:t0:l2",
+       "down_proj:t0:l3",
+       "gate_proj:t0:l0",
+       "gate_proj:t0:l1",
+       "gate_proj:t0:l2",
+       "gate_proj:t0:l3",
+       "k_proj:t0:l0",
+       "k_proj:t0:l1",
+       "k_proj:t0:l2",
+       "k_proj:t0:l3",
+       "o_proj:t0:l0",
+       "o_proj:t0:l1",
+       "o_proj:t0:l2",
+       "o_proj:t0:l3",
+       "q_proj:t0:l0",
+       "q_proj:t0:l1",
+       "q_proj:t0:l2",
+       "q_proj:t0:l3",
+       "up_proj:t0:l0",
+       "up_proj:t0:l1",
+       "up_proj:t0:l2",
+       "up_proj:t0:l3",
+       "v_proj:t0:l0",
+       "v_proj:t0:l1",
+       "v_proj:t0:l2",
+       "v_proj:t0:l3"
+      ],
+      "attention_threshold_keys_changed": [
+       "av:t0:l0",
+       "av:t0:l1",
+       "av:t0:l2",
+       "av:t0:l3",
+       "qk:t0:l0",
+       "qk:t0:l1",
+       "qk:t0:l2",
+       "qk:t0:l3"
+      ],
+      "attention_ladders_changed": {
+       "av:t0:l0": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "av:t0:l1": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "av:t0:l2": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "av:t0:l3": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "qk:t0:l0": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "qk:t0:l1": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "qk:t0:l2": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "qk:t0:l3": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ]
+      },
+      "descriptive_bucket_fields_changed": [],
+      "provenance_keys": [
+       "prc10_r7",
+       "prc6_calib"
+      ],
+      "layer_rekey": false,
+      "protected_stoc_len": [
+       80,
+       80
+      ],
+      "notes": []
+     },
+     "resolver_sweep": {
+      "attention": 96,
+      "prc": 336,
+      "linear_escape": 336
+     },
+     "realized_length_prediction": {
+      "schema": "prc-r7-new-rung-prediction-v1",
+      "standin": false,
+      "tolerance": 0.1,
+      "rungs": [
+       112,
+       128
+      ],
+      "rule": "Before any screen NLL is read: GPU trace histograms per (op, bucket) resolved through get_levels; realized lengths within the table's bucket ladder (+128 escape), none above 128; every new rung (112/128) realized where the solve's hold-window att_mac_hist_hold predicts it, MAC share within +-0.10 absolute of that prediction; any failure stops the cell (resolver bug family).",
+      "source": {
+       "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/solve_summary.json",
+       "solve_summary_sha256": "d16a2c5085dc60bf6f0ae27e2157eaf06662fa3bed1e2883a88ae3ab0ba2c660",
+       "table_name": "r7UK_k0423_s10102"
+      },
+      "buckets": {
+       "av:l0": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.010199652777777778
+        },
+        "pred_share_all": {
+         "16": 0.2074652777777778,
+         "24": 0.4534505208333333,
+         "32": 0.3288845486111111,
+         "128": 0.010199652777777778
+        },
+        "pred_macs": 309237645312.0
+       },
+       "av:l1": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.009440104166666666
+        },
+        "pred_share_all": {
+         "16": 0.049072265625,
+         "24": 0.3720703125,
+         "32": 0.5694173177083334,
+         "128": 0.009440104166666666
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l2": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.004964192708333333
+        },
+        "pred_share_all": {
+         "16": 0.005859375,
+         "24": 0.08439127604166667,
+         "32": 0.3614908854166667,
+         "48": 0.5432942708333334,
+         "128": 0.004964192708333333
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l3": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.0030110677083333335
+        },
+        "pred_share_all": {
+         "16": 0.0032552083333333335,
+         "24": 0.026936848958333332,
+         "32": 0.14396158854166666,
+         "48": 0.24202473958333334,
+         "64": 0.580810546875,
+         "128": 0.0030110677083333335
+        },
+        "pred_macs": 412316860416.0
+       },
+       "qk:l0": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.301513671875,
+         "128": 0.053955078125
+        },
+        "pred_share_all": {
+         "32": 0.035888671875,
+         "96": 0.608642578125,
+         "112": 0.301513671875,
+         "128": 0.053955078125
+        },
+        "pred_macs": 137438953472.0
+       },
+       "qk:l1": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.2093505859375,
+         "128": 0.0977783203125
+        },
+        "pred_share_all": {
+         "16": 0.0013427734375,
+         "24": 0.0045166015625,
+         "32": 0.372314453125,
+         "48": 0.2379150390625,
+         "64": 0.01708984375,
+         "96": 0.0596923828125,
+         "112": 0.2093505859375,
+         "128": 0.0977783203125
+        },
+        "pred_macs": 274877906944.0
+       },
+       "qk:l2": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.3388671875,
+         "128": 0.13232421875
+        },
+        "pred_share_all": {
+         "16": 0.00341796875,
+         "24": 0.00029296875,
+         "32": 0.0033203125,
+         "48": 0.14140625,
+         "64": 0.23544921875,
+         "96": 0.144921875,
+         "112": 0.3388671875,
+         "128": 0.13232421875
+        },
+        "pred_macs": 343597383680.0
+       },
+       "qk:l3": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.2790305397727273,
+         "128": 0.013227982954545454
+        },
+        "pred_share_all": {
+         "32": 0.004172585227272727,
+         "64": 0.4435369318181818,
+         "96": 0.2600319602272727,
+         "112": 0.2790305397727273,
+         "128": 0.013227982954545454
+        },
+        "pred_macs": 377957122048.0
+       }
+      }
+     },
+     "escape_disclosure": {
+      "qk:t0:l0": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 0.8133141994476318,
+       "threshold_128": 0.8089402914047241,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l1": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 0.972242534160614,
+       "threshold_128": 0.877510130405426,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l2": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 0.9142196178436279,
+       "threshold_128": 0.7716496586799622,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l3": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 0.9455708861351013,
+       "threshold_128": 0.937809407711029,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "av:t0:l0": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 1.2935347855091095,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l1": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 1.2485906481742859,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l2": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 1.2381018102169037,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l3": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 1.2394650280475616,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      }
+     },
+     "kb_tbl": "r7UK20260928",
+     "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_r7UK20260928_trace.json"
+    },
+    "U": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/30B_t32_r7U_k1000_s10073.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/30B_t32_r7U_k1000_s10073_table.json",
+     "kind": "U",
+     "role": "secondary",
+     "pred_true_nats": -0.508531722871138,
+     "mde_nats": 0.0129,
+     "kappa_ratio": 1.0,
+     "kappa_pins": {
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "branch": "keep_0.42"
+     },
+     "pred_detail": {
+      "table_name": "r7U_k1000_s10073",
+      "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/solve_summary.json",
+      "solve_summary_sha256": "d16a2c5085dc60bf6f0ae27e2157eaf06662fa3bed1e2883a88ae3ab0ba2c660",
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "heldout_vs_inc": {
+       "pred_dnll": -0.614408282836982,
+       "pred_dnll_lin": 0.00126296626863447,
+       "pred_dnll_att": -0.6156712491056164,
+       "cost_over_ref": 1.010472156477747,
+       "lin_cost_over_ref": 0.9843747326041383,
+       "att_cost_over_ref": 1.0412268516681087
+      },
+      "calib_cost_over_target": 0.9996008863985536,
+      "fixed_point_s1": 1.0073,
+      "ladders": {
+       "av:l0": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "av:l1": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "av:l2": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "av:l3": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "qk:l0": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "qk:l1": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "qk:l2": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ],
+       "qk:l3": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        96,
+        112,
+        128
+       ]
+      },
+      "escape": {
+       "av:l0": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2935347855091095,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l1": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2485906481742859,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l2": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2381018102169037,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l3": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2394650280475616,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "qk:l0": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.8133141994476318,
+        "gate_can_fire": true,
+        "th_top": 0.8089402914047241,
+        "escape_redundant": true
+       },
+       "qk:l1": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.972242534160614,
+        "gate_can_fire": true,
+        "th_top": 0.8127261400222778,
+        "escape_redundant": true
+       },
+       "qk:l2": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9142196178436279,
+        "gate_can_fire": true,
+        "th_top": 0.6609792709350586,
+        "escape_redundant": true
+       },
+       "qk:l3": {
+        "ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9455708861351013,
+        "gate_can_fire": true,
+        "th_top": 0.937809407711029,
+        "escape_redundant": true
+       }
+      }
+     },
+     "target_scale": 1.0073,
+     "fixed_point_arm": {
+      "status": "ok",
+      "s0_table_name": "r7U_k1000_s10037",
+      "s0_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_s0/30B_t32_r7U_k1000_s10037_table.json",
+      "s0_table_sha256": "64adb85714a070dd8c855fc207fbc8602ccc0d48e734f458fe2d476ffb392f52",
+      "C_replay_s0": 34.097786092727056,
+      "C_replay_s0_over_P": 0.9966283796476426,
+      "calib_cost_over_target_s0": 0.9997124630711084,
+      "heldout_cost_over_inc_s0": 1.0070362231182088,
+      "s1_raw": 1.007292522206257,
+      "s1": 1.0073,
+      "replay": {
+       "cost": 34.097786092727056,
+       "cycle_macs": 3141035495327744.0,
+       "fixed_cycle_macs": 201624709570560.0,
+       "prc_cycle_macs": 1566750910703616.0,
+       "attention_cycle_macs": 1372659875053568.0,
+       "ladders_changed": [
+        "attention|av:t0:l0",
+        "attention|av:t0:l1",
+        "attention|av:t0:l2",
+        "attention|av:t0:l3",
+        "attention|qk:t0:l0",
+        "attention|qk:t0:l1",
+        "attention|qk:t0:l2",
+        "attention|qk:t0:l3"
+       ]
+      }
+     },
+     "replay_at_s1": {
+      "C_replay_s1": 34.206868791326755,
+      "C_replay_s1_over_P": 0.9998167072668425,
+      "P": 34.21313981123266,
+      "flag": false
+     },
+     "predicted_cost_ratio": 1.010472156477747,
+     "allow_psl_change": false,
+     "allow_layer_rekey": false,
+     "lineage": {
+      "ok": true,
+      "failures": [],
+      "n_failures": 0,
+      "prc_threshold_keys_changed": [
+       "down_proj:t0:l0",
+       "down_proj:t0:l1",
+       "down_proj:t0:l2",
+       "down_proj:t0:l3",
+       "gate_proj:t0:l1",
+       "gate_proj:t0:l3",
+       "k_proj:t0:l0",
+       "k_proj:t0:l1",
+       "k_proj:t0:l2",
+       "k_proj:t0:l3",
+       "o_proj:t0:l0",
+       "o_proj:t0:l1",
+       "o_proj:t0:l2",
+       "o_proj:t0:l3",
+       "q_proj:t0:l0",
+       "q_proj:t0:l1",
+       "q_proj:t0:l2",
+       "q_proj:t0:l3",
+       "up_proj:t0:l0",
+       "up_proj:t0:l1",
+       "up_proj:t0:l2",
+       "up_proj:t0:l3",
+       "v_proj:t0:l0",
+       "v_proj:t0:l1",
+       "v_proj:t0:l2",
+       "v_proj:t0:l3"
+      ],
+      "attention_threshold_keys_changed": [
+       "av:t0:l0",
+       "av:t0:l1",
+       "av:t0:l2",
+       "av:t0:l3",
+       "qk:t0:l0",
+       "qk:t0:l1",
+       "qk:t0:l2",
+       "qk:t0:l3"
+      ],
+      "attention_ladders_changed": {
+       "av:t0:l0": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "av:t0:l1": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "av:t0:l2": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "av:t0:l3": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "qk:t0:l0": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "qk:t0:l1": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "qk:t0:l2": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "qk:t0:l3": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ]
+      },
+      "descriptive_bucket_fields_changed": [],
+      "provenance_keys": [
+       "prc10_r7",
+       "prc6_calib"
+      ],
+      "layer_rekey": false,
+      "protected_stoc_len": [
+       80,
+       80
+      ],
+      "notes": []
+     },
+     "resolver_sweep": {
+      "attention": 96,
+      "prc": 336,
+      "linear_escape": 336
+     },
+     "realized_length_prediction": {
+      "schema": "prc-r7-new-rung-prediction-v1",
+      "standin": false,
+      "tolerance": 0.1,
+      "rungs": [
+       112,
+       128
+      ],
+      "rule": "Before any screen NLL is read: GPU trace histograms per (op, bucket) resolved through get_levels; realized lengths within the table's bucket ladder (+128 escape), none above 128; every new rung (112/128) realized where the solve's hold-window att_mac_hist_hold predicts it, MAC share within +-0.10 absolute of that prediction; any failure stops the cell (resolver bug family).",
+      "source": {
+       "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/solve_summary.json",
+       "solve_summary_sha256": "d16a2c5085dc60bf6f0ae27e2157eaf06662fa3bed1e2883a88ae3ab0ba2c660",
+       "table_name": "r7U_k1000_s10073"
+      },
+      "buckets": {
+       "av:l0": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.010199652777777778
+        },
+        "pred_share_all": {
+         "16": 0.17545572916666666,
+         "24": 0.1392144097222222,
+         "32": 0.6751302083333334,
+         "128": 0.010199652777777778
+        },
+        "pred_macs": 309237645312.0
+       },
+       "av:l1": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.009440104166666666
+        },
+        "pred_share_all": {
+         "16": 0.00048828125,
+         "24": 0.18994140625,
+         "32": 0.245849609375,
+         "48": 0.5542805989583334,
+         "128": 0.009440104166666666
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l2": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.004964192708333333
+        },
+        "pred_share_all": {
+         "24": 0.027425130208333332,
+         "32": 0.17081705729166666,
+         "48": 0.7967936197916666,
+         "128": 0.004964192708333333
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l3": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.0030110677083333335
+        },
+        "pred_share_all": {
+         "24": 0.006591796875,
+         "32": 0.060465494791666664,
+         "48": 0.112060546875,
+         "64": 0.81787109375,
+         "128": 0.0030110677083333335
+        },
+        "pred_macs": 412316860416.0
+       },
+       "qk:l0": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.331298828125,
+         "128": 0.053955078125
+        },
+        "pred_share_all": {
+         "48": 0.035400390625,
+         "64": 0.00048828125,
+         "96": 0.578857421875,
+         "112": 0.331298828125,
+         "128": 0.053955078125
+        },
+        "pred_macs": 137438953472.0
+       },
+       "qk:l1": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.2528076171875,
+         "128": 0.119873046875
+        },
+        "pred_share_all": {
+         "16": 0.0013427734375,
+         "24": 0.0045166015625,
+         "32": 0.0003662109375,
+         "48": 0.0047607421875,
+         "64": 0.5394287109375,
+         "96": 0.076904296875,
+         "112": 0.2528076171875,
+         "128": 0.119873046875
+        },
+        "pred_macs": 274877906944.0
+       },
+       "qk:l2": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.268359375,
+         "128": 0.24111328125
+        },
+        "pred_share_all": {
+         "48": 0.00849609375,
+         "64": 0.19814453125,
+         "96": 0.28388671875,
+         "112": 0.268359375,
+         "128": 0.24111328125
+        },
+        "pred_macs": 343597383680.0
+       },
+       "qk:l3": {
+        "arm_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         16,
+         24,
+         32,
+         48,
+         64,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.2790305397727273,
+         "128": 0.013227982954545454
+        },
+        "pred_share_all": {
+         "32": 0.0036399147727272725,
+         "48": 0.0005326704545454545,
+         "64": 0.2705078125,
+         "96": 0.43306107954545453,
+         "112": 0.2790305397727273,
+         "128": 0.013227982954545454
+        },
+        "pred_macs": 377957122048.0
+       }
+      }
+     },
+     "escape_disclosure": {
+      "qk:t0:l0": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 0.8133141994476318,
+       "threshold_128": 0.8089402914047241,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l1": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 0.972242534160614,
+       "threshold_128": 0.8127261400222778,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l2": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 0.9142196178436279,
+       "threshold_128": 0.6609792709350586,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l3": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 0.9455708861351013,
+       "threshold_128": 0.937809407711029,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "av:t0:l0": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 1.2935347855091095,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l1": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 1.2485906481742859,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l2": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 1.2381018102169037,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l3": {
+       "ladder": [
+        128,
+        112,
+        96,
+        64,
+        48,
+        32,
+        24,
+        16
+       ],
+       "t_esc": 1.2394650280475616,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      }
+     },
+     "kb_tbl": "r7U20260928",
+     "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_r7U20260928_trace.json"
+    }
+   },
+   "primary": "UK",
+   "secondaries": [
+    "U"
+   ],
+   "refused": {
+    "K": "pred_true -0.001694820179032096 > -MDE (0.0129)"
+   },
+   "notes": [],
+   "windows": {
+    "screen": [
+     149504,
+     296960,
+     378880,
+     628736,
+     755712,
+     860160,
+     1073152,
+     1216512,
+     1314816,
+     1435648,
+     1636352,
+     1779712,
+     2011136,
+     2172928,
+     2252800,
+     2463744
+    ],
+    "confirm": [
+     65536,
+     163840,
+     245760,
+     376832,
+     428032,
+     516096,
+     538624,
+     643072,
+     716800,
+     823296,
+     890880,
+     966656,
+     1011712,
+     1105920,
+     1222656,
+     1290240,
+     1392640,
+     1433600,
+     1525760,
+     1613824,
+     1624064,
+     1757184,
+     1845248,
+     1900544,
+     1933312,
+     2060288,
+     2101248,
+     2193408,
+     2244608,
+     2336768,
+     2381824,
+     2484224
+    ],
+    "capture_windows": [
+     266240,
+     514048,
+     788480,
+     1026048,
+     1353728,
+     1585152,
+     1908736,
+     2205696
+    ],
+    "token_ids_sha256": "9bdd7deff48783430543edbc3bc2f12ecd2be45526f8a5a52b12ce8a9915ddde",
+    "screen_source": "r6diag30B",
+    "registry": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_windows_r7_20260928.json"
+   },
+   "identity": {
+    "screen_reference": {
+     "nll_file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t32/confirm_incumbent_nll.json",
+     "trace_file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t32/confirm_incumbent_trace.json",
+     "window_nll": [
+      2.2339019775390625,
+      1.9027788639068604,
+      1.4052993059158325,
+      1.9637646675109863,
+      2.32918119430542,
+      2.0854523181915283,
+      2.2631595134735107,
+      1.7113981246948242,
+      2.013608455657959,
+      2.281059741973877,
+      1.6489412784576416,
+      2.3821280002593994,
+      2.252523899078369,
+      2.123838424682617,
+      2.208768844604492,
+      2.6971700191497803
+     ],
+     "total_macs": 92118458564608,
+     "total_cycle_macs": 3119816494589952,
+     "source": "round-4 confirm_incumbent"
+    },
+    "probes": []
+   },
+   "parent_cost": {
+    "mode": "reference",
+    "file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/parent_reference.json",
+    "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/PARENT_trace.json",
+    "P": 34.21313981123266,
+    "trace_sha256": "6dc19c1b33b23b7224cb617dfd3f930681e78fff2e04e1e36d4616900ce6316e"
+   },
+   "full_test": {
+    "fp16_ppl": 7.2613,
+    "flip_thresholds": {
+     "1.05x": 7.624365,
+     "1.10x": 7.98743
+    },
+    "eval_tokens": 298862,
+    "best_all_test_cost_bound": 0.015,
+    "budget_correction_note": "INC's full-test cost is -0.587% vs the parent; a round-7 table re-targeted to the parent's cost carries that budget correction in any gain"
+   },
+   "hashes": {
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla.json": "fb6cd4b856419f23419d606b2e5eda447f3f9b0edc8f48a2c7f34e2609475379",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json": "3dc3169e15f0f85499b6c5a1be4c44eb3c3a8025e7c28b45c24894633b1de4eb",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/wrapper.json": "423243cbb5a184d9a03615e6cdf5d75aea054e3fa0f558c586911c5f237583b3",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/table.json": "40981e7b719cb22f42d121001526d898d370acaa1fb52fc22c68ff5cd36a3fd5",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/30B_t32_r7UK_k0423_s10102.json": "e199b88c79ac6382eb3b8f680a2a6b2a1f88b8c73f9dfa5238de6f46e4a75445",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/30B_t32_r7UK_k0423_s10102_table.json": "f775de348212fce0d34ba4feb0e2effa6d99671731e9a37c7334b19a8704076f",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/30B_t32_r7U_k1000_s10073.json": "984fa4e6504a61460cf217b85538b2ac262a15f65a06a218db2f38838223b20d",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/30B_t32_r7U_k1000_s10073_table.json": "33cb7cbc3d3a4e5c63270cc45d5fb563d83768efcc718025d28f331479d2a881",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/hybrid_config.json": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt": "cff1acebfff48965331e294d9a3fe160f29d6caaba933554852c0295b76d15e3",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c7gfisla_trace.json": "c845b54fb629f87179395062fa912ffff1c0378d32db675b0eba59cdc06a4258",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_parent_trace.json": "1709cabafaaa6d17bd836c5a3ec9ad3b1b9c597360e474cec2163e9bc2bfae9b",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/fixed_point/30B_t32_fixed_point.json": "a317aeb0ef39f106a4d903e03781f40427e5b1f95818faeb72b9a5e6d8293701",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/capture/identity_check7fix.json": "d8e37fe5617ff752d56f50965a71c78b5da3cb0a9bcbdf6836aa503a9f3c779e",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json": "c7fcfaec091ce01a2d06808f36d12ca617b3306d5f8388ca05b2165cfab4b6f2",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/step0_summary.json": "4e6e4b67af0878a6905919e3551a7458cfbd57cad5ed8ccd71177c51e2bc85bb",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/parent_reference.json": "41ac9c3a273bb53162aaf0265aab602d16df59e17b1f9f81e9e6b398fb3ef450",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/INC16_nll.json": "dc2cbd345591d77a3bb50387cce8784e18cd3b1ec93e04a10b8b68d08f5b86c3",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/INC16_profile.json": "9a46faba5980fc6039ae8d5ff3a3de0f93b2b012fe66c10db76c9aff46d050dc",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/INC16_trace.json": "dd799f33a3723e887316ad39f215d4e5b66f61de114c155289b4f2ef333db29d",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/INC16_audit.json": "de0eb093f66bbf76e3ae9aa7d3da0e763272397876a781110c2ac2d83e6e468f",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t32/PARENT_trace.json": "6dc19c1b33b23b7224cb617dfd3f930681e78fff2e04e1e36d4616900ce6316e",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/kappa_decision.json": "2bd67e2688c38a9aad7500222f4ef7206b0b8821f59b3ddbb6c0d1fe0b34d8b6",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t32/solve_fixedpoint/solve_summary.json": "d16a2c5085dc60bf6f0ae27e2157eaf06662fa3bed1e2883a88ae3ab0ba2c660",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t32/confirm_incumbent_nll.json": "10df5d012ff68dd3697ac6f6239fca150588c408c47900d130928a73a3da124c",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t32/confirm_incumbent_trace.json": "ee21e2847517f09d9eb230a62bcfd34bf5efecff33281c02e948af058c6dbf5c"
+   },
+   "simulation": {
+    "inc_standin": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t32/confirm_incumbent_trace.json",
+    "deltas": {
+     "UK": -0.01,
+     "U": -0.002
+    },
+    "force_cost_gate_pass": false,
+    "note": "CPU dry-run only; other arms synthesized onto their own ladders; force_cost_gate_pass is honoured only by the simulation evaluator"
+   }
+  },
+  "30B_t40": {
+   "id": "30B_t40",
+   "model": "30B",
+   "target": 40,
+   "nominal_cycles": 80,
+   "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+   "total_blocks": 48,
+   "layer_buckets": 4,
+   "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/hybrid_config.json",
+   "awq_cache": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt",
+   "r6_gate": {
+    "source_cell": "30B_t40",
+    "passed": true,
+    "assumed": false,
+    "summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/diag_summary.json",
+    "summary_sha256": "794bf4620fe954397a7c096525e029a1004ff45e2b2df7493d7e394b325b2b59",
+    "binding": {
+     "proceed_round7_attention_ladder_solve": true,
+     "verification_ok": true,
+     "cond_beats_budget_marginal": true,
+     "cond_gross_dnll": true,
+     "dppl_pct_A": -2.3556961598317803,
+     "threshold_dppl_pct": -1.252482929896764,
+     "budget_term_pct": -0.7662078529362378,
+     "se_term_pct": -0.486275076960526,
+     "dnll_A": -0.023838862776756287,
+     "gross_dnll_threshold": -0.01,
+     "chord": 0.1474691952522364,
+     "extra_cycles_pct": 8.65952435722468,
+     "constants": {
+      "marginal_fraction": 0.6,
+      "se_multiplier": 1.5
+     }
+    }
+   },
+   "mde_nats": 0.0092,
+   "flags": [
+    "30B_t40 UK: replayed C(s1)/P = 1.00289 (outside +-0.25%; non-binding)"
+   ],
+   "capture_identity": {
+    "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/identity_check7fix.json",
+    "sha256": "c307bc9edca069d64ef1665d49e36e2bd101ce39d63dce66180d2f2ddf1a4bc1",
+    "identity_level": "exact",
+    "near_flag": false,
+    "pipeline_check_ok": true
+   },
+   "fixed_point": {
+    "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/fixed_point/30B_t40_fixed_point.json",
+    "sha256": "3b269fe84caf1fbff2b849e01b50323d6675d4012f2195f11971b4659c8bd6ac",
+    "s0": 1.0043,
+    "P": 42.72471731126375,
+    "U": 1.589119445539508,
+    "s1": {
+     "UK": 1.0121,
+     "K": 1.0146,
+     "U": 1.0076
+    }
+   },
+   "kappa_pins": {
+    "kappa_lin": 1.96,
+    "kappa_att": 0.83,
+    "branch": "keep_0.42"
+   },
+   "enabled": true,
+   "disabled_reason": null,
+   "incumbent": {
+    "arm": "round3_local",
+    "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections.json",
+    "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections_table.json",
+    "full_test_ppl": 8.085610625763966,
+    "full_test_cost": 42.46211528193216,
+    "full_test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p3local20260926_trace.json",
+    "full_test_cost_vs_parent_pct": -0.4468929448590786
+   },
+   "parent": {
+    "wrapper": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/wrapper.json",
+    "table": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/table.json",
+    "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_parent_trace.json",
+    "test_cost": 42.65272731107533,
+    "ppl": 8.5294,
+    "test_trace_header_ppl": 8.529432798012557
+   },
+   "arms": {
+    "INC": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections_table.json",
+     "role": "incumbent",
+     "kind": "INC"
+    },
+    "PARENT": {
+     "wrapper": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/wrapper.json",
+     "table": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/table.json",
+     "role": "parent",
+     "kind": "PARENT"
+    },
+    "UK": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/30B_t40_r7UK_k0423_s10121.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/30B_t40_r7UK_k0423_s10121_table.json",
+     "kind": "UK",
+     "role": "primary",
+     "pred_true_nats": -0.016833968145475265,
+     "mde_nats": 0.0092,
+     "kappa_ratio": 0.423469387755102,
+     "kappa_pins": {
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "branch": "keep_0.42"
+     },
+     "pred_detail": {
+      "table_name": "r7UK_k0423_s10121",
+      "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/solve_summary.json",
+      "solve_summary_sha256": "5656e092bb7a376f7ad7c55e75141511f295f4c63281f0f23ace08fa8763d02c",
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "heldout_vs_inc": {
+       "pred_dnll": -0.013563034930423405,
+       "pred_dnll_lin": -0.0049350877462157865,
+       "pred_dnll_att": -0.008627947184207618,
+       "cost_over_ref": 1.0125936892477587,
+       "lin_cost_over_ref": 1.0853930012132857,
+       "att_cost_over_ref": 0.9150358528903416
+      },
+      "calib_cost_over_target": 0.9997598163710888,
+      "fixed_point_s1": 1.0121,
+      "ladders": {
+       "av:l0": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "av:l1": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "av:l2": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "av:l3": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "qk:l0": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "qk:l1": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "qk:l2": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "qk:l3": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ]
+      },
+      "escape": {
+       "av:l0": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2935347855091095,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l1": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2485906481742859,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l2": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2381018102169037,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l3": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2394650280475616,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "qk:l0": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.8133141994476318,
+        "gate_can_fire": true,
+        "th_top": 0.6507590413093567,
+        "escape_redundant": true
+       },
+       "qk:l1": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.972242534160614,
+        "gate_can_fire": true,
+        "th_top": 0.8702408075332642,
+        "escape_redundant": true
+       },
+       "qk:l2": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9142196178436279,
+        "gate_can_fire": true,
+        "th_top": 0.8871926665306091,
+        "escape_redundant": true
+       },
+       "qk:l3": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9455708861351013,
+        "gate_can_fire": true,
+        "th_top": 0.9373655915260315,
+        "escape_redundant": true
+       }
+      }
+     },
+     "target_scale": 1.0121,
+     "fixed_point_arm": {
+      "status": "ok",
+      "s0_table_name": "r7UK_k0423_s10043",
+      "s0_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_s0/30B_t40_r7UK_k0423_s10043_table.json",
+      "s0_table_sha256": "359bee0b66e714c21d6b5776a1f1c4bf275a9c6d6bc2a1e5af23fa7d368682b4",
+      "C_replay_s0": 42.40724851825219,
+      "C_replay_s0_over_P": 0.9925694349081657,
+      "calib_cost_over_target_s0": 0.996727509564157,
+      "heldout_cost_over_inc_s0": 1.001904002515561,
+      "s1_raw": 1.012111085810757,
+      "s1": 1.0121,
+      "replay": {
+       "cost": 42.40724851825219,
+       "cycle_macs": 3906490365467648.0,
+       "fixed_cycle_macs": 176575954941952.0,
+       "prc_cycle_macs": 2325305672557568.0,
+       "attention_cycle_macs": 1404608737968128.0,
+       "ladders_changed": [
+        "attention|av:t0:l0",
+        "attention|av:t0:l1",
+        "attention|av:t0:l2",
+        "attention|av:t0:l3",
+        "attention|qk:t0:l0",
+        "attention|qk:t0:l1",
+        "attention|qk:t0:l2",
+        "attention|qk:t0:l3"
+       ]
+      }
+     },
+     "replay_at_s1": {
+      "C_replay_s1": 42.84821054539499,
+      "C_replay_s1_over_P": 1.0028904400521026,
+      "P": 42.72471731126375,
+      "flag": true
+     },
+     "predicted_cost_ratio": 1.0125936892477587,
+     "allow_psl_change": false,
+     "allow_layer_rekey": false,
+     "lineage": {
+      "ok": true,
+      "failures": [],
+      "n_failures": 0,
+      "prc_threshold_keys_changed": [
+       "down_proj:t0:l0",
+       "down_proj:t0:l1",
+       "down_proj:t0:l2",
+       "down_proj:t0:l3",
+       "gate_proj:t0:l0",
+       "gate_proj:t0:l1",
+       "gate_proj:t0:l2",
+       "gate_proj:t0:l3",
+       "k_proj:t0:l0",
+       "k_proj:t0:l1",
+       "k_proj:t0:l2",
+       "k_proj:t0:l3",
+       "o_proj:t0:l0",
+       "o_proj:t0:l1",
+       "o_proj:t0:l2",
+       "o_proj:t0:l3",
+       "q_proj:t0:l0",
+       "q_proj:t0:l1",
+       "q_proj:t0:l2",
+       "q_proj:t0:l3",
+       "up_proj:t0:l0",
+       "up_proj:t0:l1",
+       "up_proj:t0:l2",
+       "up_proj:t0:l3",
+       "v_proj:t0:l0",
+       "v_proj:t0:l1",
+       "v_proj:t0:l2",
+       "v_proj:t0:l3"
+      ],
+      "attention_threshold_keys_changed": [
+       "av:t0:l0",
+       "av:t0:l1",
+       "av:t0:l2",
+       "av:t0:l3",
+       "qk:t0:l0",
+       "qk:t0:l1",
+       "qk:t0:l2",
+       "qk:t0:l3"
+      ],
+      "attention_ladders_changed": {
+       "av:t0:l0": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "av:t0:l1": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "av:t0:l2": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "av:t0:l3": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "qk:t0:l0": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "qk:t0:l1": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "qk:t0:l2": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "qk:t0:l3": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ]
+      },
+      "descriptive_bucket_fields_changed": [],
+      "provenance_keys": [
+       "prc10_r7",
+       "prc6_calib"
+      ],
+      "layer_rekey": false,
+      "protected_stoc_len": [
+       68,
+       68
+      ],
+      "notes": []
+     },
+     "resolver_sweep": {
+      "attention": 96,
+      "prc": 336,
+      "linear_escape": 336
+     },
+     "realized_length_prediction": {
+      "schema": "prc-r7-new-rung-prediction-v1",
+      "standin": false,
+      "tolerance": 0.1,
+      "rungs": [
+       112,
+       128
+      ],
+      "rule": "Before any screen NLL is read: GPU trace histograms per (op, bucket) resolved through get_levels; realized lengths within the table's bucket ladder (+128 escape), none above 128; every new rung (112/128) realized where the solve's hold-window att_mac_hist_hold predicts it, MAC share within +-0.10 absolute of that prediction; any failure stops the cell (resolver bug family).",
+      "source": {
+       "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/solve_summary.json",
+       "solve_summary_sha256": "5656e092bb7a376f7ad7c55e75141511f295f4c63281f0f23ace08fa8763d02c",
+       "table_name": "r7UK_k0423_s10121"
+      },
+      "buckets": {
+       "av:l0": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.010525173611111112
+        },
+        "pred_share_all": {
+         "30": 0.3840060763888889,
+         "31": 0.14680989583333334,
+         "32": 0.0014105902777777778,
+         "47": 0.4572482638888889,
+         "128": 0.010525173611111112
+        },
+        "pred_macs": 309237645312.0
+       },
+       "av:l1": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.009602864583333334
+        },
+        "pred_share_all": {
+         "30": 0.11612955729166667,
+         "31": 0.1875,
+         "32": 0.008382161458333334,
+         "47": 0.6783854166666666,
+         "128": 0.009602864583333334
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l2": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.005126953125
+        },
+        "pred_share_all": {
+         "30": 0.0888671875,
+         "31": 0.09309895833333333,
+         "47": 0.3400065104166667,
+         "49": 0.0005696614583333334,
+         "65": 0.4723307291666667,
+         "128": 0.005126953125
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l3": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.0027669270833333335
+        },
+        "pred_share_all": {
+         "30": 0.0068359375,
+         "31": 0.009033203125,
+         "47": 0.24983723958333334,
+         "65": 0.7315266927083334,
+         "128": 0.0027669270833333335
+        },
+        "pred_macs": 412316860416.0
+       },
+       "qk:l0": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.198974609375,
+         "128": 0.205078125
+        },
+        "pred_share_all": {
+         "32": 0.002197265625,
+         "49": 0.051025390625,
+         "65": 0.127197265625,
+         "96": 0.41552734375,
+         "112": 0.198974609375,
+         "128": 0.205078125
+        },
+        "pred_macs": 137438953472.0
+       },
+       "qk:l1": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.356201171875,
+         "128": 0.100341796875
+        },
+        "pred_share_all": {
+         "30": 0.0006103515625,
+         "31": 0.0010986328125,
+         "32": 0.00146484375,
+         "49": 0.002685546875,
+         "65": 0.4720458984375,
+         "96": 0.0655517578125,
+         "112": 0.356201171875,
+         "128": 0.100341796875
+        },
+        "pred_macs": 274877906944.0
+       },
+       "qk:l2": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.587890625,
+         "128": 0.06201171875
+        },
+        "pred_share_all": {
+         "31": 0.00078125,
+         "32": 0.000390625,
+         "47": 0.00537109375,
+         "49": 0.0763671875,
+         "65": 0.0830078125,
+         "96": 0.1841796875,
+         "112": 0.587890625,
+         "128": 0.06201171875
+        },
+        "pred_macs": 343597383680.0
+       },
+       "qk:l3": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.19549005681818182,
+         "128": 0.013849431818181818
+        },
+        "pred_share_all": {
+         "32": 0.0006214488636363636,
+         "49": 0.017578125,
+         "65": 0.24538352272727273,
+         "96": 0.5270774147727273,
+         "112": 0.19549005681818182,
+         "128": 0.013849431818181818
+        },
+        "pred_macs": 377957122048.0
+       }
+      }
+     },
+     "escape_disclosure": {
+      "qk:t0:l0": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 0.8133141994476318,
+       "threshold_128": 0.6507590413093567,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l1": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 0.972242534160614,
+       "threshold_128": 0.8702408075332642,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l2": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 0.9142196178436279,
+       "threshold_128": 0.8871926665306091,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l3": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 0.9455708861351013,
+       "threshold_128": 0.9373655915260315,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "av:t0:l0": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 1.2935347855091095,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l1": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 1.2485906481742859,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l2": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 1.2381018102169037,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l3": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 1.2394650280475616,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      }
+     },
+     "kb_tbl": "r7UK20260928",
+     "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_r7UK20260928_trace.json"
+    },
+    "U": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/30B_t40_r7U_k1000_s10076.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/30B_t40_r7U_k1000_s10076_table.json",
+     "kind": "U",
+     "role": "secondary",
+     "pred_true_nats": -0.016541747367368947,
+     "mde_nats": 0.0092,
+     "kappa_ratio": 1.0,
+     "kappa_pins": {
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "branch": "keep_0.42"
+     },
+     "pred_detail": {
+      "table_name": "r7U_k1000_s10076",
+      "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/solve_summary.json",
+      "solve_summary_sha256": "5656e092bb7a376f7ad7c55e75141511f295f4c63281f0f23ace08fa8763d02c",
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "heldout_vs_inc": {
+       "pred_dnll": -0.019709622624826593,
+       "pred_dnll_lin": -0.00016173503430342757,
+       "pred_dnll_att": -0.01954788759052317,
+       "cost_over_ref": 1.0086649253961582,
+       "lin_cost_over_ref": 0.9778908145335413,
+       "att_cost_over_ref": 1.049905090866429
+      },
+      "calib_cost_over_target": 0.9999243589601,
+      "fixed_point_s1": 1.0076,
+      "ladders": {
+       "av:l0": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "av:l1": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "av:l2": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "av:l3": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "qk:l0": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "qk:l1": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "qk:l2": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ],
+       "qk:l3": [
+        30,
+        31,
+        32,
+        47,
+        49,
+        65,
+        96,
+        112,
+        128
+       ]
+      },
+      "escape": {
+       "av:l0": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2935347855091095,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l1": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2485906481742859,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l2": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2381018102169037,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l3": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2394650280475616,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "qk:l0": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.8133141994476318,
+        "gate_can_fire": true,
+        "th_top": 0.46231818199157715,
+        "escape_redundant": true
+       },
+       "qk:l1": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.972242534160614,
+        "gate_can_fire": true,
+        "th_top": 0.5770322680473328,
+        "escape_redundant": true
+       },
+       "qk:l2": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9142196178436279,
+        "gate_can_fire": true,
+        "th_top": 0.8871926665306091,
+        "escape_redundant": true
+       },
+       "qk:l3": {
+        "ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9455708861351013,
+        "gate_can_fire": true,
+        "th_top": 0.9373655915260315,
+        "escape_redundant": true
+       }
+      }
+     },
+     "target_scale": 1.0076,
+     "fixed_point_arm": {
+      "status": "ok",
+      "s0_table_name": "r7U_k1000_s10043",
+      "s0_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_s0/30B_t40_r7U_k1000_s10043_table.json",
+      "s0_table_sha256": "d9ddd1b7794ec56caed7deafa144f84b92e58d5bf6f1b79af86898a148ed0b07",
+      "C_replay_s0": 42.58902225836539,
+      "C_replay_s0_over_P": 0.9968239683855652,
+      "calib_cost_over_target_s0": 0.9998951172434847,
+      "heldout_cost_over_inc_s0": 1.005263102237047,
+      "s1_raw": 1.007623874747898,
+      "s1": 1.0076,
+      "replay": {
+       "cost": 42.58902225836539,
+       "cycle_macs": 3923235082214400.0,
+       "fixed_cycle_macs": 176575954941952.0,
+       "prc_cycle_macs": 2101010692842496.0,
+       "attention_cycle_macs": 1645648434429952.0,
+       "ladders_changed": [
+        "attention|av:t0:l0",
+        "attention|av:t0:l1",
+        "attention|av:t0:l2",
+        "attention|av:t0:l3",
+        "attention|qk:t0:l0",
+        "attention|qk:t0:l1",
+        "attention|qk:t0:l2",
+        "attention|qk:t0:l3"
+       ]
+      }
+     },
+     "replay_at_s1": {
+      "C_replay_s1": 42.72585050078614,
+      "C_replay_s1_over_P": 1.0000265230431866,
+      "P": 42.72471731126375,
+      "flag": false
+     },
+     "predicted_cost_ratio": 1.0086649253961582,
+     "allow_psl_change": false,
+     "allow_layer_rekey": false,
+     "lineage": {
+      "ok": true,
+      "failures": [],
+      "n_failures": 0,
+      "prc_threshold_keys_changed": [
+       "down_proj:t0:l0",
+       "down_proj:t0:l1",
+       "down_proj:t0:l2",
+       "down_proj:t0:l3",
+       "gate_proj:t0:l0",
+       "gate_proj:t0:l1",
+       "gate_proj:t0:l2",
+       "gate_proj:t0:l3",
+       "k_proj:t0:l0",
+       "k_proj:t0:l1",
+       "k_proj:t0:l2",
+       "k_proj:t0:l3",
+       "o_proj:t0:l0",
+       "o_proj:t0:l1",
+       "o_proj:t0:l2",
+       "o_proj:t0:l3",
+       "q_proj:t0:l0",
+       "q_proj:t0:l1",
+       "q_proj:t0:l2",
+       "q_proj:t0:l3",
+       "up_proj:t0:l0",
+       "up_proj:t0:l1",
+       "up_proj:t0:l2",
+       "up_proj:t0:l3",
+       "v_proj:t0:l0",
+       "v_proj:t0:l1",
+       "v_proj:t0:l2",
+       "v_proj:t0:l3"
+      ],
+      "attention_threshold_keys_changed": [
+       "av:t0:l0",
+       "av:t0:l1",
+       "av:t0:l2",
+       "av:t0:l3",
+       "qk:t0:l0",
+       "qk:t0:l1",
+       "qk:t0:l2",
+       "qk:t0:l3"
+      ],
+      "attention_ladders_changed": {
+       "av:t0:l0": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "av:t0:l1": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "av:t0:l2": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "av:t0:l3": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "qk:t0:l0": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "qk:t0:l1": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "qk:t0:l2": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "qk:t0:l3": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ]
+      },
+      "descriptive_bucket_fields_changed": [],
+      "provenance_keys": [
+       "prc10_r7",
+       "prc6_calib"
+      ],
+      "layer_rekey": false,
+      "protected_stoc_len": [
+       68,
+       68
+      ],
+      "notes": []
+     },
+     "resolver_sweep": {
+      "attention": 96,
+      "prc": 336,
+      "linear_escape": 336
+     },
+     "realized_length_prediction": {
+      "schema": "prc-r7-new-rung-prediction-v1",
+      "standin": false,
+      "tolerance": 0.1,
+      "rungs": [
+       112,
+       128
+      ],
+      "rule": "Before any screen NLL is read: GPU trace histograms per (op, bucket) resolved through get_levels; realized lengths within the table's bucket ladder (+128 escape), none above 128; every new rung (112/128) realized where the solve's hold-window att_mac_hist_hold predicts it, MAC share within +-0.10 absolute of that prediction; any failure stops the cell (resolver bug family).",
+      "source": {
+       "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/solve_summary.json",
+       "solve_summary_sha256": "5656e092bb7a376f7ad7c55e75141511f295f4c63281f0f23ace08fa8763d02c",
+       "table_name": "r7U_k1000_s10076"
+      },
+      "buckets": {
+       "av:l0": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.010525173611111112
+        },
+        "pred_share_all": {
+         "30": 0.2807074652777778,
+         "31": 0.016059027777777776,
+         "32": 0.0032552083333333335,
+         "47": 0.689453125,
+         "128": 0.010525173611111112
+        },
+        "pred_macs": 309237645312.0
+       },
+       "av:l1": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.009602864583333334
+        },
+        "pred_share_all": {
+         "30": 0.07666015625,
+         "31": 0.013020833333333334,
+         "32": 0.0004069010416666667,
+         "47": 0.9003092447916666,
+         "128": 0.009602864583333334
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l2": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.005126953125
+        },
+        "pred_share_all": {
+         "30": 0.014811197916666666,
+         "31": 0.039469401041666664,
+         "47": 0.225830078125,
+         "49": 0.00439453125,
+         "65": 0.7103678385416666,
+         "128": 0.005126953125
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l3": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.0,
+         "128": 0.0027669270833333335
+        },
+        "pred_share_all": {
+         "30": 0.0068359375,
+         "47": 0.014892578125,
+         "65": 0.252197265625,
+         "96": 0.7233072916666666,
+         "128": 0.0027669270833333335
+        },
+        "pred_macs": 412316860416.0
+       },
+       "qk:l0": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.08837890625,
+         "128": 0.5224609375
+        },
+        "pred_share_all": {
+         "32": 0.002197265625,
+         "49": 0.015625,
+         "65": 0.0927734375,
+         "96": 0.278564453125,
+         "112": 0.08837890625,
+         "128": 0.5224609375
+        },
+        "pred_macs": 137438953472.0
+       },
+       "qk:l1": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.1099853515625,
+         "128": 0.35009765625
+        },
+        "pred_share_all": {
+         "30": 0.0006103515625,
+         "31": 0.0010986328125,
+         "32": 0.00146484375,
+         "49": 0.002685546875,
+         "65": 0.208740234375,
+         "96": 0.3253173828125,
+         "112": 0.1099853515625,
+         "128": 0.35009765625
+        },
+        "pred_macs": 274877906944.0
+       },
+       "qk:l2": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.707421875,
+         "128": 0.06201171875
+        },
+        "pred_share_all": {
+         "49": 0.0013671875,
+         "65": 0.041015625,
+         "96": 0.18818359375,
+         "112": 0.707421875,
+         "128": 0.06201171875
+        },
+        "pred_macs": 343597383680.0
+       },
+       "qk:l3": {
+        "arm_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96,
+         112,
+         128
+        ],
+        "inc_ladder": [
+         30,
+         31,
+         32,
+         47,
+         49,
+         65,
+         96
+        ],
+        "new_rungs": [
+         112,
+         128
+        ],
+        "pred_share": {
+         "112": 0.22505326704545456,
+         "128": 0.013849431818181818
+        },
+        "pred_share_all": {
+         "32": 0.00044389204545454544,
+         "47": 0.0001775568181818182,
+         "65": 0.001953125,
+         "96": 0.7585227272727273,
+         "112": 0.22505326704545456,
+         "128": 0.013849431818181818
+        },
+        "pred_macs": 377957122048.0
+       }
+      }
+     },
+     "escape_disclosure": {
+      "qk:t0:l0": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 0.8133141994476318,
+       "threshold_128": 0.46231818199157715,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l1": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 0.972242534160614,
+       "threshold_128": 0.5770322680473328,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l2": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 0.9142196178436279,
+       "threshold_128": 0.8871926665306091,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l3": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 0.9455708861351013,
+       "threshold_128": 0.9373655915260315,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "av:t0:l0": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 1.2935347855091095,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l1": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 1.2485906481742859,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l2": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 1.2381018102169037,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l3": {
+       "ladder": [
+        128,
+        112,
+        96,
+        65,
+        49,
+        47,
+        32,
+        31,
+        30
+       ],
+       "t_esc": 1.2394650280475616,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      }
+     },
+     "kb_tbl": "r7U20260928",
+     "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_r7U20260928_trace.json"
+    }
+   },
+   "primary": "UK",
+   "secondaries": [
+    "U"
+   ],
+   "refused": {
+    "K": "pred_true -0.005990965564120571 > -MDE (0.0092)"
+   },
+   "notes": [],
+   "windows": {
+    "screen": [
+     149504,
+     296960,
+     378880,
+     628736,
+     755712,
+     860160,
+     1073152,
+     1216512,
+     1314816,
+     1435648,
+     1636352,
+     1779712,
+     2011136,
+     2172928,
+     2252800,
+     2463744
+    ],
+    "confirm": [
+     65536,
+     163840,
+     245760,
+     376832,
+     428032,
+     516096,
+     538624,
+     643072,
+     716800,
+     823296,
+     890880,
+     966656,
+     1011712,
+     1105920,
+     1222656,
+     1290240,
+     1392640,
+     1433600,
+     1525760,
+     1613824,
+     1624064,
+     1757184,
+     1845248,
+     1900544,
+     1933312,
+     2060288,
+     2101248,
+     2193408,
+     2244608,
+     2336768,
+     2381824,
+     2484224
+    ],
+    "capture_windows": [
+     266240,
+     514048,
+     788480,
+     1026048,
+     1353728,
+     1585152,
+     1908736,
+     2205696
+    ],
+    "token_ids_sha256": "9bdd7deff48783430543edbc3bc2f12ecd2be45526f8a5a52b12ce8a9915ddde",
+    "screen_source": "r6diag30B",
+    "registry": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_windows_r7_20260928.json"
+   },
+   "identity": {
+    "screen_reference": {
+     "nll_file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t40/confirm_incumbent_nll.json",
+     "trace_file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t40/confirm_incumbent_trace.json",
+     "window_nll": [
+      2.1804323196411133,
+      1.8635777235031128,
+      1.3034738302230835,
+      1.904445767402649,
+      2.2478199005126953,
+      2.050905704498291,
+      2.2118782997131348,
+      1.6389386653900146,
+      1.9410537481307983,
+      2.2162985801696777,
+      1.5760003328323364,
+      2.3029892444610596,
+      2.2284092903137207,
+      2.0720529556274414,
+      2.184208869934082,
+      2.6654374599456787
+     ],
+     "total_macs": 92118458564608,
+     "total_cycle_macs": 3902860258199552,
+     "source": "round-4 confirm_incumbent"
+    },
+    "probes": []
+   },
+   "parent_cost": {
+    "mode": "reference",
+    "file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/parent_reference.json",
+    "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/PARENT_trace.json",
+    "P": 42.72471731126375,
+    "trace_sha256": "522c81f4b610c6a4da410a19018c647015ad487497631f7793f8c4a8b967e64d"
+   },
+   "full_test": {
+    "fp16_ppl": 7.2613,
+    "flip_thresholds": {
+     "1.05x": 7.624365,
+     "1.10x": 7.98743
+    },
+    "eval_tokens": 298862,
+    "best_all_test_cost_bound": 0.015,
+    "budget_correction_note": "INC's full-test cost is -0.447% vs the parent; a round-7 table re-targeted to the parent's cost carries that budget correction in any gain"
+   },
+   "hashes": {
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections.json": "4743e3fc118339b9f9f6b2207b09e47c7ec23525d5a44ece1919f8bee6bdcf1b",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections_table.json": "6321e3781f4a53cf20b1f6138188093dbe35c1cda5d95f0674dedbe66e43653b",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/wrapper.json": "f972033deb7c04b69cf8f52b1b93177673af94ab567abfc3990d00d712e836e8",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/table.json": "5b544ad40712b423379cb68dc6b0f586d66d62f1bb924430e8d65fba01429345",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/30B_t40_r7UK_k0423_s10121.json": "27c8a5554b794a28768fdd9adca428005088a9cf0d3221de3ec83eea7a2e01d5",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/30B_t40_r7UK_k0423_s10121_table.json": "24699f4ab91a9c6fa5ecccd500911cd9db5abe7a007abede8aec302c7a6b950d",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/30B_t40_r7U_k1000_s10076.json": "709ed1d9b1ae0bcd11e5c398d8f0aa8710b2564544250695387aa84b3489b87a",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/30B_t40_r7U_k1000_s10076_table.json": "25cc31b149ab6264126a1f6bd86d4cc5f97bd7de8f06da4f8d45f8b445638343",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/hybrid_config.json": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt": "cff1acebfff48965331e294d9a3fe160f29d6caaba933554852c0295b76d15e3",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p3local20260926_trace.json": "feb55c7e991432b9e45212d1ec3f45c8548e9a79592e465d056adecd9e197e07",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_parent_trace.json": "8d8ce1c53838aa6c20433ac4bbfeaede49a373b41f757acd71a325b89cc588ba",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/fixed_point/30B_t40_fixed_point.json": "3b269fe84caf1fbff2b849e01b50323d6675d4012f2195f11971b4659c8bd6ac",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/capture/identity_check7fix.json": "c307bc9edca069d64ef1665d49e36e2bd101ce39d63dce66180d2f2ddf1a4bc1",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json": "c7fcfaec091ce01a2d06808f36d12ca617b3306d5f8388ca05b2165cfab4b6f2",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/step0_summary.json": "41d818a54b4da0150be565d03662a94f8437ef9c946cb43282567c83d4436edd",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/parent_reference.json": "36102c40cdd8f0c1ba00ed537bbb9e09ccf1f8e1ba2e1dc2951a8a1a7fed0042",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/INC16_nll.json": "98c0e9a50085618e2d0a5a25061dca305f1247f9c784761c1e1403fe3df9875f",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/INC16_profile.json": "f2c6df3f62cf676bac6a3fb792a54ffb8c3ffa338f25613fdb7b00d03ec24cbc",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/INC16_trace.json": "0359853f250c73404097fd5eff39f7e6c576a365ca315b03c935cc1be24c1426",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/INC16_audit.json": "2e0737f874ce50b37181baf672763962d4ed70d76f6345bad7d4c6baa29ac635",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t40/PARENT_trace.json": "522c81f4b610c6a4da410a19018c647015ad487497631f7793f8c4a8b967e64d",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/kappa_decision.json": "2bd67e2688c38a9aad7500222f4ef7206b0b8821f59b3ddbb6c0d1fe0b34d8b6",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t40/solve_fixedpoint/solve_summary.json": "5656e092bb7a376f7ad7c55e75141511f295f4c63281f0f23ace08fa8763d02c",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t40/confirm_incumbent_nll.json": "3a468007c8e546b32ed88f083a6457e0b22c883bc0ef0a525739332082fa39e4",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t40/confirm_incumbent_trace.json": "c7cb25fcb1ebf21bfce66a7997b121ac78b8bbb7d238c3c1ddb6ead9dffc844b"
+   },
+   "simulation": {
+    "inc_standin": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/30B_t40/confirm_incumbent_trace.json",
+    "deltas": {
+     "UK": -0.01,
+     "U": -0.002
+    },
+    "force_cost_gate_pass": false,
+    "note": "CPU dry-run only; other arms synthesized onto their own ladders; force_cost_gate_pass is honoured only by the simulation evaluator"
+   }
+  },
+  "30B_t48": {
+   "id": "30B_t48",
+   "model": "30B",
+   "target": 48,
+   "nominal_cycles": 96,
+   "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+   "total_blocks": 48,
+   "layer_buckets": 4,
+   "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/hybrid_config.json",
+   "awq_cache": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt",
+   "r6_gate": {
+    "source_cell": "30B_t40",
+    "passed": true,
+    "assumed": false,
+    "summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/30B_t40/diag_summary.json",
+    "summary_sha256": "794bf4620fe954397a7c096525e029a1004ff45e2b2df7493d7e394b325b2b59",
+    "binding": {
+     "proceed_round7_attention_ladder_solve": true,
+     "verification_ok": true,
+     "cond_beats_budget_marginal": true,
+     "cond_gross_dnll": true,
+     "dppl_pct_A": -2.3556961598317803,
+     "threshold_dppl_pct": -1.252482929896764,
+     "budget_term_pct": -0.7662078529362378,
+     "se_term_pct": -0.486275076960526,
+     "dnll_A": -0.023838862776756287,
+     "gross_dnll_threshold": -0.01,
+     "chord": 0.1474691952522364,
+     "extra_cycles_pct": 8.65952435722468,
+     "constants": {
+      "marginal_fraction": 0.6,
+      "se_multiplier": 1.5
+     }
+    }
+   },
+   "mde_nats": 0.0091,
+   "flags": [],
+   "capture_identity": {
+    "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/identity_check7fix.json",
+    "sha256": "9f7d1148a19487726615e07837788ba4d328ad94fb0f20a3b8fb78b3762566d3",
+    "identity_level": "exact",
+    "near_flag": false,
+    "pipeline_check_ok": true
+   },
+   "fixed_point": {
+    "path": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/fixed_point/30B_t48_fixed_point.json",
+    "sha256": "08e1fecca933e50d218b5261c06cfcdd91b9e36552e14d98e0ac6a04ec33cb7b",
+    "s0": 1.011,
+    "P": 50.69017199553891,
+    "U": 2.619539389722341,
+    "s1": {
+     "UK": 1.0033,
+     "K": 1.0039,
+     "U": 1.0015
+    }
+   },
+   "kappa_pins": {
+    "kappa_lin": 1.96,
+    "kappa_att": 0.83,
+    "branch": "keep_0.42"
+   },
+   "enabled": true,
+   "disabled_reason": null,
+   "incumbent": {
+    "arm": "c7gfisla",
+    "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla.json",
+    "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla_table.json",
+    "full_test_ppl": 7.8570662271187865,
+    "full_test_cost": 50.60087211675625,
+    "full_test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t48_prc_p2c7gfisla_trace.json",
+    "full_test_cost_vs_parent_pct": -1.0070619486422294
+   },
+   "parent": {
+    "wrapper": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/wrapper.json",
+    "table": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/table.json",
+    "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t48_parent_trace.json",
+    "test_cost": 51.11563825947301,
+    "ppl": 8.1784,
+    "test_trace_header_ppl": 8.178357509171702
+   },
+   "arms": {
+    "INC": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla_table.json",
+     "role": "incumbent",
+     "kind": "INC"
+    },
+    "PARENT": {
+     "wrapper": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/wrapper.json",
+     "table": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/table.json",
+     "role": "parent",
+     "kind": "PARENT"
+    },
+    "UK": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/30B_t48_r7UK_k0423_s10033.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/30B_t48_r7UK_k0423_s10033_table.json",
+     "kind": "UK",
+     "role": "primary",
+     "pred_true_nats": -0.014881955527240509,
+     "mde_nats": 0.0091,
+     "kappa_ratio": 0.423469387755102,
+     "kappa_pins": {
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "branch": "keep_0.42"
+     },
+     "pred_detail": {
+      "table_name": "r7UK_k0423_s10033",
+      "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/solve_summary.json",
+      "solve_summary_sha256": "9bdb05a8e88e7ec5b46f65484001c04d5892f20229ebb9c947a630474aa37bce",
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "heldout_vs_inc": {
+       "pred_dnll": -0.015255058883099248,
+       "pred_dnll_lin": -0.001964828897582419,
+       "pred_dnll_att": -0.01329022998551683,
+       "cost_over_ref": 1.0095628579319074,
+       "lin_cost_over_ref": 1.0664438741451492,
+       "att_cost_over_ref": 0.93103192013498
+      },
+      "calib_cost_over_target": 0.9999676044286587,
+      "fixed_point_s1": 1.0033,
+      "ladders": {
+       "av:l0": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "av:l1": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "av:l2": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "av:l3": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "qk:l0": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "qk:l1": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "qk:l2": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "qk:l3": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ]
+      },
+      "escape": {
+       "av:l0": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2935347855091095,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l1": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2485906481742859,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l2": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2381018102169037,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l3": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2394650280475616,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "qk:l0": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.8133141994476318,
+        "gate_can_fire": true,
+        "th_top": 0.4188455045223236,
+        "escape_redundant": true
+       },
+       "qk:l1": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.972242534160614,
+        "gate_can_fire": true,
+        "th_top": 0.5893635749816895,
+        "escape_redundant": true
+       },
+       "qk:l2": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9142196178436279,
+        "gate_can_fire": true,
+        "th_top": 0.5329415798187256,
+        "escape_redundant": true
+       },
+       "qk:l3": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9455708861351013,
+        "gate_can_fire": true,
+        "th_top": 0.6401684284210205,
+        "escape_redundant": true
+       }
+      }
+     },
+     "target_scale": 1.0033,
+     "fixed_point_arm": {
+      "status": "ok",
+      "s0_table_name": "r7UK_k0423_s10110",
+      "s0_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_s0/30B_t48_r7UK_k0423_s10110_table.json",
+      "s0_table_sha256": "d6314f400b82ef13a3929c9ef24fad07dc764707503b6775ede57f9a0d4845e3",
+      "C_replay_s0": 51.06039164751957,
+      "C_replay_s0_over_P": 1.0073035785322102,
+      "calib_cost_over_target_s0": 0.9999722776422548,
+      "heldout_cost_over_inc_s0": 1.017053871114407,
+      "s1_raw": 1.0032732146379153,
+      "s1": 1.0033,
+      "replay": {
+       "cost": 51.06039164751957,
+       "cycle_macs": 4703604572274688.0,
+       "fixed_cycle_macs": 272202234470400.0,
+       "prc_cycle_macs": 2762277835743232.0,
+       "attention_cycle_macs": 1669124502061056.0,
+       "ladders_changed": [
+        "attention|av:t0:l0",
+        "attention|av:t0:l1",
+        "attention|av:t0:l2",
+        "attention|av:t0:l3",
+        "attention|qk:t0:l0",
+        "attention|qk:t0:l1",
+        "attention|qk:t0:l2",
+        "attention|qk:t0:l3"
+       ]
+      }
+     },
+     "replay_at_s1": {
+      "C_replay_s1": 50.68663145963579,
+      "C_replay_s1_over_P": 0.9999301534052117,
+      "P": 50.69017199553891,
+      "flag": false
+     },
+     "predicted_cost_ratio": 1.0095628579319074,
+     "allow_psl_change": false,
+     "allow_layer_rekey": false,
+     "lineage": {
+      "ok": true,
+      "failures": [],
+      "n_failures": 0,
+      "prc_threshold_keys_changed": [
+       "down_proj:t0:l0",
+       "down_proj:t0:l1",
+       "down_proj:t0:l2",
+       "down_proj:t0:l3",
+       "gate_proj:t0:l0",
+       "gate_proj:t0:l1",
+       "gate_proj:t0:l2",
+       "gate_proj:t0:l3",
+       "k_proj:t0:l0",
+       "k_proj:t0:l1",
+       "k_proj:t0:l2",
+       "k_proj:t0:l3",
+       "o_proj:t0:l0",
+       "o_proj:t0:l1",
+       "o_proj:t0:l2",
+       "o_proj:t0:l3",
+       "q_proj:t0:l0",
+       "q_proj:t0:l1",
+       "q_proj:t0:l2",
+       "q_proj:t0:l3",
+       "up_proj:t0:l0",
+       "up_proj:t0:l1",
+       "up_proj:t0:l2",
+       "up_proj:t0:l3",
+       "v_proj:t0:l0",
+       "v_proj:t0:l1",
+       "v_proj:t0:l2",
+       "v_proj:t0:l3"
+      ],
+      "attention_threshold_keys_changed": [
+       "av:t0:l0",
+       "av:t0:l1",
+       "av:t0:l2",
+       "av:t0:l3",
+       "qk:t0:l0",
+       "qk:t0:l1",
+       "qk:t0:l2",
+       "qk:t0:l3"
+      ],
+      "attention_ladders_changed": {
+       "av:t0:l0": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "av:t0:l1": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "av:t0:l2": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "av:t0:l3": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "qk:t0:l0": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "qk:t0:l1": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "qk:t0:l2": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "qk:t0:l3": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ]
+      },
+      "descriptive_bucket_fields_changed": [],
+      "provenance_keys": [
+       "prc10_r7",
+       "prc6_calib"
+      ],
+      "layer_rekey": false,
+      "protected_stoc_len": [
+       112,
+       112
+      ],
+      "notes": []
+     },
+     "resolver_sweep": {
+      "attention": 96,
+      "prc": 336,
+      "linear_escape": 336
+     },
+     "realized_length_prediction": {
+      "schema": "prc-r7-new-rung-prediction-v1",
+      "standin": false,
+      "tolerance": 0.1,
+      "rungs": [
+       112,
+       128
+      ],
+      "rule": "Before any screen NLL is read: GPU trace histograms per (op, bucket) resolved through get_levels; realized lengths within the table's bucket ladder (+128 escape), none above 128; every new rung (112/128) realized where the solve's hold-window att_mac_hist_hold predicts it, MAC share within +-0.10 absolute of that prediction; any failure stops the cell (resolver bug family).",
+      "source": {
+       "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/solve_summary.json",
+       "solve_summary_sha256": "9bdb05a8e88e7ec5b46f65484001c04d5892f20229ebb9c947a630474aa37bce",
+       "table_name": "r7UK_k0423_s10033"
+      },
+      "buckets": {
+       "av:l0": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.009223090277777778
+        },
+        "pred_share_all": {
+         "32": 0.3198784722222222,
+         "45": 0.012803819444444444,
+         "46": 0.18250868055555555,
+         "47": 0.3169487847222222,
+         "48": 0.1586371527777778,
+         "128": 0.009223090277777778
+        },
+        "pred_macs": 309237645312.0
+       },
+       "av:l1": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.01025390625
+        },
+        "pred_share_all": {
+         "32": 0.170654296875,
+         "46": 0.16048177083333334,
+         "47": 0.3944498697916667,
+         "48": 0.26416015625,
+         "128": 0.01025390625
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l2": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.004638671875
+        },
+        "pred_share_all": {
+         "32": 0.019856770833333332,
+         "45": 0.017333984375,
+         "46": 0.21525065104166666,
+         "47": 0.14973958333333334,
+         "48": 0.0517578125,
+         "66": 0.5414225260416666,
+         "128": 0.004638671875
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l3": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.0028483072916666665
+        },
+        "pred_share_all": {
+         "32": 0.003987630208333333,
+         "45": 0.011067708333333334,
+         "46": 0.020589192708333332,
+         "47": 0.07088216145833333,
+         "48": 0.001708984375,
+         "66": 0.221435546875,
+         "109": 0.66748046875,
+         "128": 0.0028483072916666665
+        },
+        "pred_macs": 412316860416.0
+       },
+       "qk:l0": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.600830078125
+        },
+        "pred_share_all": {
+         "32": 0.005126953125,
+         "45": 0.0048828125,
+         "47": 0.013916015625,
+         "48": 0.083984375,
+         "66": 0.02294921875,
+         "109": 0.268310546875,
+         "128": 0.600830078125
+        },
+        "pred_macs": 137438953472.0
+       },
+       "qk:l1": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.32861328125
+        },
+        "pred_share_all": {
+         "32": 0.007080078125,
+         "48": 0.0042724609375,
+         "66": 0.2716064453125,
+         "109": 0.388427734375,
+         "128": 0.32861328125
+        },
+        "pred_macs": 274877906944.0
+       },
+       "qk:l2": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.4201171875
+        },
+        "pred_share_all": {
+         "48": 0.000390625,
+         "66": 0.0794921875,
+         "109": 0.5,
+         "128": 0.4201171875
+        },
+        "pred_macs": 343597383680.0
+       },
+       "qk:l3": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.24343039772727273
+        },
+        "pred_share_all": {
+         "32": 0.0029296875,
+         "46": 0.0003551136363636364,
+         "48": 0.0005326704545454545,
+         "66": 0.22878196022727273,
+         "109": 0.5239701704545454,
+         "128": 0.24343039772727273
+        },
+        "pred_macs": 377957122048.0
+       }
+      }
+     },
+     "escape_disclosure": {
+      "qk:t0:l0": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 0.8133141994476318,
+       "threshold_128": 0.4188455045223236,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l1": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 0.972242534160614,
+       "threshold_128": 0.5893635749816895,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l2": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 0.9142196178436279,
+       "threshold_128": 0.5329415798187256,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l3": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 0.9455708861351013,
+       "threshold_128": 0.6401684284210205,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "av:t0:l0": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 1.2935347855091095,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l1": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 1.2485906481742859,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l2": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 1.2381018102169037,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l3": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 1.2394650280475616,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      }
+     },
+     "kb_tbl": "r7UK20260928",
+     "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t48_prc_r7UK20260928_trace.json"
+    },
+    "U": {
+     "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/30B_t48_r7U_k1000_s10015.json",
+     "table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/30B_t48_r7U_k1000_s10015_table.json",
+     "kind": "U",
+     "role": "secondary",
+     "pred_true_nats": -0.013349874237594142,
+     "mde_nats": 0.0091,
+     "kappa_ratio": 1.0,
+     "kappa_pins": {
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "branch": "keep_0.42"
+     },
+     "pred_detail": {
+      "table_name": "r7U_k1000_s10015",
+      "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/solve_summary.json",
+      "solve_summary_sha256": "9bdb05a8e88e7ec5b46f65484001c04d5892f20229ebb9c947a630474aa37bce",
+      "kappa_lin": 1.96,
+      "kappa_att": 0.83,
+      "heldout_vs_inc": {
+       "pred_dnll": -0.016827357585783492,
+       "pred_dnll_lin": 0.0005458695208904041,
+       "pred_dnll_att": -0.017373227106673897,
+       "cost_over_ref": 1.0071347671384991,
+       "lin_cost_over_ref": 0.9838910744545758,
+       "att_cost_over_ref": 1.039225420679023
+      },
+      "calib_cost_over_target": 0.9988518982126864,
+      "fixed_point_s1": 1.0015,
+      "ladders": {
+       "av:l0": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "av:l1": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "av:l2": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "av:l3": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "qk:l0": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "qk:l1": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "qk:l2": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ],
+       "qk:l3": [
+        32,
+        45,
+        46,
+        47,
+        48,
+        66,
+        109,
+        128
+       ]
+      },
+      "escape": {
+       "av:l0": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2935347855091095,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l1": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2485906481742859,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l2": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2381018102169037,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "av:l3": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 1.2394650280475616,
+        "gate_can_fire": false,
+        "th_top": 1.0,
+        "escape_redundant": false
+       },
+       "qk:l0": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.8133141994476318,
+        "gate_can_fire": true,
+        "th_top": 0.35475245118141174,
+        "escape_redundant": true
+       },
+       "qk:l1": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.972242534160614,
+        "gate_can_fire": true,
+        "th_top": 0.584016740322113,
+        "escape_redundant": true
+       },
+       "qk:l2": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9142196178436279,
+        "gate_can_fire": true,
+        "th_top": 0.5329415798187256,
+        "escape_redundant": true
+       },
+       "qk:l3": {
+        "ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "has_128_rung": true,
+        "t_esc": 0.9455708861351013,
+        "gate_can_fire": true,
+        "th_top": 0.6401684284210205,
+        "escape_redundant": true
+       }
+      }
+     },
+     "target_scale": 1.0015,
+     "fixed_point_arm": {
+      "status": "ok",
+      "s0_table_name": "r7U_k1000_s10110",
+      "s0_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_s0/30B_t48_r7U_k1000_s10110_table.json",
+      "s0_table_sha256": "3426f0c3e62e21d7e3b31706b2b463ab3cfd4d4da049394a3fc0ba6e4c595d1c",
+      "C_replay_s0": 51.14661933763487,
+      "C_replay_s0_over_P": 1.0090046516736249,
+      "calib_cost_over_target_s0": 0.9999250837064033,
+      "heldout_cost_over_inc_s0": 1.0175009721036405,
+      "s1_raw": 1.0014905000804841,
+      "s1": 1.0015,
+      "replay": {
+       "cost": 51.14661933763487,
+       "cycle_macs": 4711547734173696.0,
+       "fixed_cycle_macs": 272202234470400.0,
+       "prc_cycle_macs": 2558362979108864.0,
+       "attention_cycle_macs": 1880982520594432.0,
+       "ladders_changed": [
+        "attention|av:t0:l0",
+        "attention|av:t0:l1",
+        "attention|av:t0:l2",
+        "attention|av:t0:l3",
+        "attention|qk:t0:l0",
+        "attention|qk:t0:l1",
+        "attention|qk:t0:l2",
+        "attention|qk:t0:l3"
+       ]
+      }
+     },
+     "replay_at_s1": {
+      "C_replay_s1": 50.637525741531974,
+      "C_replay_s1_over_P": 0.9989614110204327,
+      "P": 50.69017199553891,
+      "flag": false
+     },
+     "predicted_cost_ratio": 1.0071347671384991,
+     "allow_psl_change": false,
+     "allow_layer_rekey": false,
+     "lineage": {
+      "ok": true,
+      "failures": [],
+      "n_failures": 0,
+      "prc_threshold_keys_changed": [
+       "down_proj:t0:l0",
+       "down_proj:t0:l1",
+       "down_proj:t0:l2",
+       "down_proj:t0:l3",
+       "gate_proj:t0:l0",
+       "gate_proj:t0:l1",
+       "gate_proj:t0:l2",
+       "gate_proj:t0:l3",
+       "k_proj:t0:l0",
+       "k_proj:t0:l1",
+       "k_proj:t0:l2",
+       "k_proj:t0:l3",
+       "o_proj:t0:l0",
+       "o_proj:t0:l1",
+       "o_proj:t0:l2",
+       "o_proj:t0:l3",
+       "q_proj:t0:l0",
+       "q_proj:t0:l1",
+       "q_proj:t0:l2",
+       "q_proj:t0:l3",
+       "up_proj:t0:l0",
+       "up_proj:t0:l1",
+       "up_proj:t0:l2",
+       "up_proj:t0:l3",
+       "v_proj:t0:l0",
+       "v_proj:t0:l1",
+       "v_proj:t0:l2",
+       "v_proj:t0:l3"
+      ],
+      "attention_threshold_keys_changed": [
+       "av:t0:l0",
+       "av:t0:l1",
+       "av:t0:l2",
+       "av:t0:l3",
+       "qk:t0:l0",
+       "qk:t0:l1",
+       "qk:t0:l2",
+       "qk:t0:l3"
+      ],
+      "attention_ladders_changed": {
+       "av:t0:l0": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "av:t0:l1": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "av:t0:l2": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "av:t0:l3": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "qk:t0:l0": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "qk:t0:l1": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "qk:t0:l2": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "qk:t0:l3": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ]
+      },
+      "descriptive_bucket_fields_changed": [],
+      "provenance_keys": [
+       "prc10_r7",
+       "prc6_calib"
+      ],
+      "layer_rekey": false,
+      "protected_stoc_len": [
+       112,
+       112
+      ],
+      "notes": []
+     },
+     "resolver_sweep": {
+      "attention": 96,
+      "prc": 336,
+      "linear_escape": 336
+     },
+     "realized_length_prediction": {
+      "schema": "prc-r7-new-rung-prediction-v1",
+      "standin": false,
+      "tolerance": 0.1,
+      "rungs": [
+       112,
+       128
+      ],
+      "rule": "Before any screen NLL is read: GPU trace histograms per (op, bucket) resolved through get_levels; realized lengths within the table's bucket ladder (+128 escape), none above 128; every new rung (112/128) realized where the solve's hold-window att_mac_hist_hold predicts it, MAC share within +-0.10 absolute of that prediction; any failure stops the cell (resolver bug family).",
+      "source": {
+       "solve_summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/solve_summary.json",
+       "solve_summary_sha256": "9bdb05a8e88e7ec5b46f65484001c04d5892f20229ebb9c947a630474aa37bce",
+       "table_name": "r7U_k1000_s10015"
+      },
+      "buckets": {
+       "av:l0": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.009223090277777778
+        },
+        "pred_share_all": {
+         "32": 0.16200086805555555,
+         "45": 0.0009765625,
+         "46": 0.17860243055555555,
+         "47": 0.003146701388888889,
+         "48": 0.169921875,
+         "66": 0.4761284722222222,
+         "128": 0.009223090277777778
+        },
+        "pred_macs": 309237645312.0
+       },
+       "av:l1": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.01025390625
+        },
+        "pred_share_all": {
+         "32": 0.025960286458333332,
+         "45": 0.018636067708333332,
+         "46": 0.040852864583333336,
+         "47": 0.009602864583333334,
+         "48": 0.24178059895833334,
+         "66": 0.6529134114583334,
+         "128": 0.01025390625
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l2": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.004638671875
+        },
+        "pred_share_all": {
+         "32": 0.011637369791666666,
+         "47": 0.024983723958333332,
+         "48": 0.040608723958333336,
+         "66": 0.9181315104166666,
+         "128": 0.004638671875
+        },
+        "pred_macs": 412316860416.0
+       },
+       "av:l3": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.0028483072916666665
+        },
+        "pred_share_all": {
+         "32": 0.0013834635416666667,
+         "45": 0.004150390625,
+         "46": 0.0035807291666666665,
+         "47": 0.027587890625,
+         "66": 0.10587565104166667,
+         "109": 0.8545735677083334,
+         "128": 0.0028483072916666665
+        },
+        "pred_macs": 412316860416.0
+       },
+       "qk:l0": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.720458984375
+        },
+        "pred_share_all": {
+         "45": 0.00244140625,
+         "46": 0.00146484375,
+         "47": 0.003173828125,
+         "66": 0.051513671875,
+         "109": 0.220947265625,
+         "128": 0.720458984375
+        },
+        "pred_macs": 137438953472.0
+       },
+       "qk:l1": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.3377685546875
+        },
+        "pred_share_all": {
+         "32": 0.0015869140625,
+         "66": 0.0595703125,
+         "109": 0.60107421875,
+         "128": 0.3377685546875
+        },
+        "pred_macs": 274877906944.0
+       },
+       "qk:l2": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.4201171875
+        },
+        "pred_share_all": {
+         "48": 0.000390625,
+         "66": 0.0068359375,
+         "109": 0.57265625,
+         "128": 0.4201171875
+        },
+        "pred_macs": 343597383680.0
+       },
+       "qk:l3": {
+        "arm_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109,
+         128
+        ],
+        "inc_ladder": [
+         32,
+         45,
+         46,
+         47,
+         48,
+         66,
+         109
+        ],
+        "new_rungs": [
+         128
+        ],
+        "pred_share": {
+         "128": 0.24343039772727273
+        },
+        "pred_share_all": {
+         "32": 0.0017755681818181818,
+         "45": 0.0008877840909090909,
+         "66": 0.005593039772727273,
+         "109": 0.7483132102272727,
+         "128": 0.24343039772727273
+        },
+        "pred_macs": 377957122048.0
+       }
+      }
+     },
+     "escape_disclosure": {
+      "qk:t0:l0": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 0.8133141994476318,
+       "threshold_128": 0.35475245118141174,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l1": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 0.972242534160614,
+       "threshold_128": 0.584016740322113,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l2": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 0.9142196178436279,
+       "threshold_128": 0.5329415798187256,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "qk:t0:l3": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 0.9455708861351013,
+       "threshold_128": 0.6401684284210205,
+       "status": "gate redundant: the calibrated 128 threshold lies at or below mu+2tau"
+      },
+      "av:t0:l0": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 1.2935347855091095,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l1": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 1.2485906481742859,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l2": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 1.2381018102169037,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      },
+      "av:t0:l3": {
+       "ladder": [
+        128,
+        109,
+        66,
+        48,
+        47,
+        46,
+        45,
+        32
+       ],
+       "t_esc": 1.2394650280475616,
+       "threshold_128": 1.0,
+       "status": "gate never fires (t_esc >= 1); 128 is a genuinely new rung"
+      }
+     },
+     "kb_tbl": "r7U20260928",
+     "test_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t48_prc_r7U20260928_trace.json"
+    }
+   },
+   "primary": "UK",
+   "secondaries": [
+    "U"
+   ],
+   "refused": {
+    "K": "pred_true -0.0021936529962428768 > -MDE (0.0091)"
+   },
+   "notes": [],
+   "windows": {
+    "screen": [
+     126976,
+     301056,
+     522240,
+     602112,
+     843776,
+     851968,
+     1071104,
+     1257472,
+     1384448,
+     1482752,
+     1728512,
+     1923072,
+     1996800,
+     2107392,
+     2295808,
+     2447360
+    ],
+    "confirm": [
+     65536,
+     163840,
+     245760,
+     376832,
+     428032,
+     516096,
+     538624,
+     643072,
+     716800,
+     823296,
+     890880,
+     966656,
+     1011712,
+     1105920,
+     1222656,
+     1290240,
+     1392640,
+     1433600,
+     1525760,
+     1613824,
+     1624064,
+     1757184,
+     1845248,
+     1900544,
+     1933312,
+     2060288,
+     2101248,
+     2193408,
+     2244608,
+     2336768,
+     2381824,
+     2484224
+    ],
+    "capture_windows": [
+     266240,
+     514048,
+     788480,
+     1026048,
+     1353728,
+     1585152,
+     1908736,
+     2205696
+    ],
+    "token_ids_sha256": "9bdd7deff48783430543edbc3bc2f12ecd2be45526f8a5a52b12ce8a9915ddde",
+    "screen_source": "fresh",
+    "registry": "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_windows_r7_20260928.json"
+   },
+   "identity": {
+    "screen_reference": {
+     "nll_file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/INC16_nll.json",
+     "trace_file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/INC16_trace.json",
+     "window_nll": [
+      1.8287664651870728,
+      1.9308446645736694,
+      2.726274251937866,
+      2.3135719299316406,
+      1.8719854354858398,
+      2.0139267444610596,
+      2.274594306945801,
+      2.1151299476623535,
+      2.425229787826538,
+      1.8859305381774902,
+      2.175586700439453,
+      1.9586007595062256,
+      2.037595510482788,
+      2.2066071033477783,
+      2.2336795330047607,
+      2.134903907775879
+     ],
+     "total_macs": 92118458564608,
+     "total_cycle_macs": 4633126357581824,
+     "source": "step-0 INC16 run (round 7)"
+    },
+    "probes": [
+     {
+      "name": "probe_INC_30720",
+      "arm": "INC",
+      "start": 30720,
+      "expected": 2.0224649906158447,
+      "source": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json:tables.gfisla.window_nll[0]"
+     }
+    ]
+   },
+   "parent_cost": {
+    "mode": "reference",
+    "file": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/parent_reference.json",
+    "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/PARENT_trace.json",
+    "P": 50.69017199553891,
+    "trace_sha256": "ab47e50c85f2173b2ca7b8eed39c0f1767916e2fa58068b088bfd1e70c6a6477"
+   },
+   "full_test": {
+    "fp16_ppl": 7.2613,
+    "flip_thresholds": {
+     "1.05x": 7.624365,
+     "1.10x": 7.98743
+    },
+    "eval_tokens": 298862,
+    "best_all_test_cost_bound": 0.015,
+    "budget_correction_note": "INC's full-test cost is -1.007% vs the parent; a round-7 table re-targeted to the parent's cost carries that budget correction in any gain"
+   },
+   "hashes": {
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla.json": "53604b0b1bdb585ca11c0c25960395ad6a02761930a97d683ea563da291ff640",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla_table.json": "f05e9935cdd4eeae522b454ed6bfacb4faafadd6162b153a797a44e284f26985",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/wrapper.json": "bf7cd1436400b41ef37c28a5fc55b9de8a13d06100e529b45f4369456aa64cd1",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/table.json": "12c74835b11ca99bba1255f4fa2a3fbb4037d14f207116025d2e07a3208b6ec7",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/30B_t48_r7UK_k0423_s10033.json": "92d42777b9fcc49797bee805fccf7705659985053c1741708b0f0d5ad1a44495",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/30B_t48_r7UK_k0423_s10033_table.json": "b368e84059d6c527dc0defa9d7b24aea4232d10903df10bc26de22aa22906594",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/30B_t48_r7U_k1000_s10015.json": "bcb4d9855cf0e46c288a1f77b923636d2f44fdaff3b77f624bb422b54fea4cc9",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/30B_t48_r7U_k1000_s10015_table.json": "af3f60d186a9f9411b8d608d42f3cc376c6f31f0394e56ef10140218d7181edf",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target48/hybrid_config.json": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc",
+    "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt": "cff1acebfff48965331e294d9a3fe160f29d6caaba933554852c0295b76d15e3",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t48_prc_p2c7gfisla_trace.json": "53be1c3415e4925bdd1ad5384fe66a745c4886e80cdf1d8197a679aa1a3516e7",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t48_parent_trace.json": "fb548f87e4afb1b608db58780187b0a1fa59948edcc50728603c7476466c0305",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/fixed_point/30B_t48_fixed_point.json": "08e1fecca933e50d218b5261c06cfcdd91b9e36552e14d98e0ac6a04ec33cb7b",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/capture/identity_check7fix.json": "9f7d1148a19487726615e07837788ba4d328ad94fb0f20a3b8fb78b3762566d3",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/prc_r7_prereg_20260928.json": "c7fcfaec091ce01a2d06808f36d12ca617b3306d5f8388ca05b2165cfab4b6f2",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/step0_summary.json": "2d4e5e30967280c9047e199de3b95564343640b4f1c99fd99cdeffdb1aa6019d",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/parent_reference.json": "fe9dab57f1dcf8bcac0121b2816d9438bb4106fa3a064e3fe9c41ffe58ffec4a",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/INC16_nll.json": "3d9893c8329e5aa1df1487efccd28baad6e32f5c2f5e19657a445fadd6a12d2d",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/INC16_profile.json": "f3e84cc95537ae900a3588dcb1922240626dbb4264c858d4ca15af65762461dc",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/INC16_trace.json": "c0c545a102ece1b7c4a11fbe274ccc7e1536dfab53f61c6640c9f1f073e28bb8",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/INC16_audit.json": "852ef5b1524d9e326409201870ce0cf462d81b28401c1e7d146af98b624bb8ac",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/PARENT_trace.json": "ab47e50c85f2173b2ca7b8eed39c0f1767916e2fa58068b088bfd1e70c6a6477",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/kappa_decision.json": "2bd67e2688c38a9aad7500222f4ef7206b0b8821f59b3ddbb6c0d1fe0b34d8b6",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/30B_t48/solve_fixedpoint/solve_summary.json": "9bdb05a8e88e7ec5b46f65484001c04d5892f20229ebb9c947a630474aa37bce",
+    "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_heldout_nll.json": "812028a5e2afdd53bf3445be9a10fcdb174a6f8ad864fb2566b38844a5be530e"
+   },
+   "simulation": {
+    "inc_standin": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r7_20260928/step0/30B_t48/INC16_trace.json",
+    "deltas": {
+     "UK": -0.01,
+     "U": -0.002
+    },
+    "force_cost_gate_pass": false,
+    "note": "CPU dry-run only; other arms synthesized onto their own ladders; force_cost_gate_pass is honoured only by the simulation evaluator"
+   }
+  },
+  "4B_t40": {
+   "id": "4B_t40",
+   "model": "4B",
+   "target": 40,
+   "nominal_cycles": 80,
+   "model_path": "Qwen/Qwen3-4B-Instruct-2507",
+   "total_blocks": 36,
+   "layer_buckets": 4,
+   "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target40/hybrid_config.json",
+   "awq_cache": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-4B-Instruct-2507_b4.pt",
+   "r6_gate": {
+    "source_cell": "4B_t40",
+    "passed": false,
+    "assumed": false,
+    "summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t40/diag_summary.json",
+    "summary_sha256": "eef718dac3ef842936a70e79f81f5fb6fa8fb89e91ebf56b31d8d366feb78e92",
+    "binding": {
+     "proceed_round7_attention_ladder_solve": false,
+     "verification_ok": true,
+     "cond_beats_budget_marginal": false,
+     "cond_gross_dnll": true,
+     "dppl_pct_A": -0.60203659943247,
+     "threshold_dppl_pct": -1.2218545331641075,
+     "budget_term_pct": -0.7696762264681041,
+     "se_term_pct": -0.45217830669600356,
+     "dnll_A": -0.006038561463356018,
+     "gross_dnll_threshold": -0.004,
+     "chord": 0.14275526092426413,
+     "extra_cycles_pct": 8.985964527505107,
+     "constants": {
+      "marginal_fraction": 0.6,
+      "se_multiplier": 1.5
+     }
+    }
+   },
+   "mde_nats": 0.0148,
+   "enabled": false,
+   "disabled_reason": "not in the candidate spec"
+  },
+  "4B_t64": {
+   "id": "4B_t64",
+   "model": "4B",
+   "target": 64,
+   "nominal_cycles": 128,
+   "model_path": "Qwen/Qwen3-4B-Instruct-2507",
+   "total_blocks": 36,
+   "layer_buckets": 4,
+   "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target64/hybrid_config.json",
+   "awq_cache": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-4B-Instruct-2507_b4.pt",
+   "r6_gate": {
+    "source_cell": "4B_t64",
+    "passed": true,
+    "assumed": false,
+    "summary": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_r6_20260928/4B_t64/diag_summary.json",
+    "summary_sha256": "a7707242c31bb92418da396801806fd17c4f3851e2c3859b4e5fb09c88301e5d",
+    "binding": {
+     "proceed_round7_attention_ladder_solve": true,
+     "verification_ok": true,
+     "cond_beats_budget_marginal": true,
+     "cond_gross_dnll": true,
+     "dppl_pct_A": -0.4395934634135051,
+     "threshold_dppl_pct": -0.4185633151053997,
+     "budget_term_pct": -0.06372748474236707,
+     "se_term_pct": -0.3548358303630326,
+     "dnll_A": -0.00440562516450882,
+     "gross_dnll_threshold": -0.004,
+     "chord": 0.024742214849962627,
+     "extra_cycles_pct": 4.292763409205147,
+     "constants": {
+      "marginal_fraction": 0.6,
+      "se_multiplier": 1.5
+     }
+    }
+   },
+   "mde_nats": 0.0073,
+   "enabled": false,
+   "disabled_reason": "not in the candidate spec"
+  }
+ },
+ "preregistered_rules": {
+  "primary": "One pre-registered primary per cell from the round-6 gate: 30B gate passed -> UK (unpinned ladders up to 128, kappa-corrected currency), failed or missing -> K (inherited ladders, kappa-corrected); 30B t48 follows 30B t40's gate; 4B cells only if their own gate passed (primary U, kappa 1; a UK arm on a dense cell is the same allocation as U and is refused). U (unpinned, kappa 1) and other listed arms are secondary: screened for information only, never confirmed or full-tested. The primary kind is processed first (never dropped as a duplicate).",
+  "mde_refusal": "An arm is screened only if its pre-registered pred_true = kappa_lin*dL + kappa_att*dA (nats vs INC; absolute kappa pinned per kappa-decision branch in prc_r7_prereg_20260928.json) satisfies pred_true <= -MDE, with MDE the frozen per-cell value of that record (no override); a refused primary disables the cell. MDE80 = (2 + z_0.80)/sqrt(32) * sigma_w = 0.50233 * sigma_w (the confirmation test: 32 paired TRAIN windows, one-sided z < -2, power 0.80). sigma_w = the LARGEST paired per-window SD among the pre-existing 16-window allocation pairs of the cell: prc2/<cell>_c7_heldout_nll.json pairs gfisla-gfis, gfisla-parent, gfis-parent, c17-parent, and the round-6 arm A - INC on the diag windows where it exists (the attribution-only oracles ATT128/LIN128 are excluded). Rounded UP to 1e-4 nats. Conservative by construction (the largest SD of any comparable move); it is the upper end of the scout's MDE80 ranges (30B t32 0.010-0.013, t40 0.006-0.009, t48 0.007-0.009).",
+  "kappa": "ONE kappa rule for round 7: kappa_att 0.83 +- 0.07, pooled over 30B t32 + t40, keep ratio 0.42 only if the step-0 budget-shift kappa_lin exceeds kappa_att by more than sqrt(SE_bs^2 + 0.07^2), otherwise (inside the band, below it, or undefined) revert to kappa = 1 (one-sided; prc_eval_r7_20260928.KAPPA_RULE == prc_r7_solve.KAPPA_RULE id prc-r7-kappa-rule-v2-20260928). The eval-side kappa_decision.json written by prc_step0_r7_20260928.py kappa (schema prc-step0-r7-v1-kappa) is the decision RECORD the screen builder requires; the calib-side solver re-derives the same branch from its statistic and refuses pins that disagree. The calib-side v1 constants (prc_r7_capture v1 text and scout_calib section 3: 0.82 +- 0.073, two-sided) are superseded and never read. Solve summaries must carry exactly (kappa_lin, kappa_att) = KAPPA_PINS[branch] (30B: the branch of the authoritative kappa_decision.json; dense 4B: 'dense'). UK and K arms use r = kappa_att/kappa_lin from those pins, U uses r = 1. pred_true = kappa_lin*dL + kappa_att*dA with the SAME pins for every arm of a cell.",
+  "target_scale": "s0 = S0[cell]. Each registered arm (30B: UK, K, U, with U omitted whenever the kappa ratio is 1 because it then equals UK; dense: U; never the CPU control J) is solved ONCE at s0 with the pinned kappa and MDE (prc_r7_solve.py solve). C(s0) = CPU replay of the arm's s0 table on the step-0 INC16 profile of the cell (INC's deployed trajectory on the cell's 16 screen windows; every profiled row re-dispatched through the arm's OWN ladders and thresholds; escaped attention rows and the protected slice stay fixed; an L7 psl arm moves the protected slice by psl_arm/psl_INC). P = the step-0 PARENT16 exact trace cost on the same windows (parent_reference.json). U = the protected-slice cycles per SC MAC of the step-0 INC16 trace (analyze_trace U_prot; escaped rows are inside the solve's target and scale with s). s1 = round(s0 (P - U)/(C(s0) - U), 1e-4), refused outside [0.97, 1.05]. Each arm is re-solved ONCE at its own s1 and only that table is screened (the builder refuses any other target_scale). No iteration, no second re-solve, no re-screen. The screen's measured |C/P - 1| <= 1% gate is unchanged; the replayed C(s1)/P is recorded (non-binding, flagged when |C(s1)/P - 1| > 0.25%). A cell without a complete, non-simulated step-0 reference (INC16 profile + PARENT16) is disabled.",
+  "capture_identity": "Every screened table comes from a capture whose identity record (the capture manifest's identity.json, or a re-tagged record in the same capture directory) says identity_ok = true, whose files equal the solve summary's capture record, and which is the record the solve itself read; 'near' (a stop under the v2 capture manifest) and a failed pipeline check are flagged.",
+  "screen_gate": "The primary proceeds to confirmation iff (a) every identity check and audit passed, (b) |C/P - 1| <= 1% on the 16 screen windows (C, P exact trace costs of the primary and the parent on the same held-out TRAIN windows; P from step 0), and (c) its paired mean dNLL vs the re-evaluated INC on those windows is < 0.",
+  "confirm_gate": "Full-protocol test iff the paired z = mean/SE of dNLL(primary - INC) over 32 fresh disjoint TRAIN windows is < -2 and every audit passed.",
+  "best_all_entry": "The full-test PPL of a confirmed primary enters best(all) whatever its sign, provided every protocol check passed and its full-test cost is within +-1.5% of the parent's full-test cost (the user's ~1% cost-drift rule, with 0.5 pp slack for test-vs-held-out shift); outside that bound it is recorded but not entered, and flagged for the user. |C_test/P_test - 1| > 1% is flagged either way. best(all) = lowest eligible full-test PPL across comparable allocation rounds, each candidate keeping its provenance.",
+  "disclosure": "Round-7 = one algorithm update: joint linear+attention lambda with a family-calibrated currency (kappa from held-out data, step-0 checked) over attention ladders that may reach L_max = 128 (halved), re-solved at the parent's cost. Reported as per-row attention reallocation plus calibration objective, NOT as a T1 granularity effect. Every round-7 table also re-targets from INC's cost (0.45-1.0% below the parent on test) to the parent's cost: that part of any gain is a budget correction and is disclosed as such. Escape: mu+2tau semantics are unchanged; the effect of a 128 rung is reported PER BUCKET from each arm's escape_disclosure (qk: escaped rows fold onto the 128 rung and the gate adds nothing where the calibrated 128 threshold lies at or below mu+2tau; av: mu+2tau >= 1, the gate never fires and 128 is a genuinely new rung), never as a blanket 'no-op'. For 30B t32/t40 the kappa step-0 measurement used the same 16 windows as the screen (screen optimistic by construction; the confirmation windows are fresh). Attention MACs counted dense.",
+  "fail_closed": "Any identity mismatch (INC vs stored reference or held-out probe; unprofiled vs profiled vs restored INC) or any screened arm's audit failure stops the cell with failure.json (plus <arm>_screen_audit_failure.json); no decision, no test follows.",
+  "realized_length_audit": "REGISTERED (prc_r7_capture_20260928.json preregistered_rules.realized_length_audit, verbatim): Before any screen NLL is read: GPU trace histograms per (op, bucket) resolved through get_levels; realized lengths within the table's bucket ladder (+128 escape), none above 128; every new rung (112/128) realized where the solve's hold-window att_mac_hist_hold predicts it, MAC share within +-0.10 absolute of that prediction; any failure stops the cell (resolver bug family). Implementation: every screened arm's GPU trace is audited (runtime resolver + JSON mirror ladders or the protected length, max 128, sc_prec 8 / halve / rng_levels 128, SC (op, block) set == the INT mask's, MACs == INC, and each new 112/128 rung's realized MAC share per attention bucket within +-0.10 absolute of realized_length_prediction = the arm's solve-summary att_mac_hist_hold, re-derived by the driver from the sha-locked summary) before any candidate NLL is released; the evaluator's per-window NLL log lines are masked meanwhile. Descriptive (non-binding) on the confirmation and full-test traces."
+ },
+ "source_files": [
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_eval_r7_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_screen_r7_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_fixedpoint_r7_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r7_prereg_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_eval_r7_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_screen_r7_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_screen_audit_r7_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_r7_stage2_cpu_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/build_prc_screen_r7_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_screen_r7_20260928.sbatch",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_r7_stage2_cpu_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_r7_stage2_cpu_20260928.sh",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_ppl.sbatch",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r6_attn_diag_arms.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r6_retarget_20260928.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_refine.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_proposals.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/sc_common.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/config.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/matmul.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/kernels.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/trace.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/loader.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/awq_apply.py",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/quant/eval_quant.py"
+ ],
+ "code_hashes": {
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_eval_r7_20260928.py": "4c02fd3163a6836c78e2098cbd15916427e55a0b94dac5b0f4da071dab534665",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_screen_r7_20260928.py": "a4081337d79f665e4704784d61eb2238f77b80df53364e51c89bd348d5804e73",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_fixedpoint_r7_20260928.py": "5a0a354139d2458fa5068b53b7c936993a9537d95c3c0adf4e05a8b6134add7a",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r7_prereg_20260928.py": "80ec74e5c95ec8d2720859c4a901950e93d20a4fa501ec43ee9e2de05264de90",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_eval_r7_20260928.py": "f3876ccf6cea63813d6d82cd6e7b3572f5fb7a1cffdc787490db70220641640a",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_screen_r7_20260928.py": "6b0ec122a6c0464ec7baae5a49d66bc20ebd44a18030e1e2f5fa04a4ee761fb3",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_screen_audit_r7_20260928.py": "5d007d6bc8ec22b4c4eb4f08badde8d64b0a62bb45270175db53b274f30f6f99",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/test_prc_r7_stage2_cpu_20260928.py": "0de0456ca20886a9fb8087c86ac7bd4175a032c5ff48da754c65f019089ff6f8",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/build_prc_screen_r7_20260928.py": "51dec975f082390a06f319e12084b69fd64e2d7ceb1455962a303611fdffe7d8",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_screen_r7_20260928.sbatch": "e1ad86ad5b48ca8b49debe1c149c54459ace3a91c692cd0b0f0c51df4ac6f48e",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_r7_stage2_cpu_20260928.py": "02e134959aca2ce79603c80f5330e41213ef8d68b49daaa4838def0bd392b8bc",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_r7_stage2_cpu_20260928.sh": "de317ee3b2084012a5715a753676a0413d88618404793badb9bda3aff7fd266a",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_ppl.sbatch": "cf341d3ce960f303d683d112b24064af7d78525bed559f9f7ee5832d3e75e037",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r6_attn_diag_arms.py": "afa15def6aa63c3b34c07bf992053abfd8db58aacc1ab13aa3a95ff8408bbaea",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_r6_retarget_20260928.py": "27d9afa9ac20be9b50669a9ba0507a7a23b458338afae1d19fc76ebe5fd6586b",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_refine.py": "2e45a6e835d27fed214456a8cb7f642f1cb03840cc812247c6353df35e7a2f04",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_proposals.py": "1b7c9c27984d0bf7daedde35bfc67328d95ed5b99db899b58a42ce41d4547029",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/sc_common.py": "7e2f55e7df841df62f9833dd71804d87cbc6d606e6b7a860e2ce0736e6ade4ed",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/config.py": "a834c617c8cb08e943ae2bc2b7d83716c78a01be94160c77ea8b7fdb56ef7f13",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/matmul.py": "4fe995a83261010ca3fdf61b8ceda43024621a04707609f129e98c2f9a1e9ae1",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/kernels.py": "5dc801af65dbc8da386c15b8a14f90e666ac5794a05e42dcbdb8570b2faf6b50",
+  "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/trace.py": "bd37acacd24e1569ff5690c11d1df3e2c7593acc11185e232f0c7e526a8423c5",
+  "/home/allenjin/Projects/SCMP/scmp_llm/loader.py": "e667c6958b5b0486497b55863ccb7f6472968beffc0cf01693e843c647605990",
+  "/home/allenjin/Projects/SCMP/scmp_llm/model/awq_apply.py": "831d3fd34ae9c9e289160460819be9cce31e206060509e5b4cddee45261084ce",
+  "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/quant/eval_quant.py": "48d243dbe48dedab24650559e0f02e6d0d3493b9ec9977eae16f1e924fedfcde"
+ },
+ "frozen_utc": "2026-09-29T04:48:30.465053+00:00"
+}

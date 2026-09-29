@@ -19,4 +19,4 @@ export TMPDIR=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/tm
 # Tables produced before 2026-06-03 (incl. _mp_overnight_xlayer_fix) ran at
 # M=256 — export SC_SCRAMBLE_MASKS=256 to reproduce/patch them.
 
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm

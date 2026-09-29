@@ -5,7 +5,7 @@
 # Launch (login node, NOT from this agent):
 #   TAG=rot_gate_4B_$(date +%Y%m%d_%H%M%S)
 #   mkdir -p /scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_mp_rot_gate_4B_${TAG}
-#   sed "s/RGTAG/${TAG}/g" /home/allenjin/Projects/scmp_llm/benchmark/ppl/rot_gate/rot_gate_4B.sbatch \
+#   sed "s/RGTAG/${TAG}/g" /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/rot_gate/rot_gate_4B.sbatch \
 #     > /tmp/rot_gate_4B_${TAG}.sbatch
 #   sbatch /tmp/rot_gate_4B_${TAG}.sbatch
 #
@@ -19,4 +19,4 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/_mp_rot_gate_4B_RGTAG/%x_%j.out
 
-bash /home/allenjin/Projects/scmp_llm/benchmark/ppl/rot_gate/payload_4B.sh RGTAG
+bash /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/rot_gate/payload_4B.sh RGTAG

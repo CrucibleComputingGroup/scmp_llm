@@ -9,7 +9,7 @@ source ~/.bashrc
 conda activate annstention
 set -u
 
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 SHORT="${1:?usage: mp_ladder_refine_lane.sh <model> <parent-tag> <tag>}"
 PARENT_TAG="${2:?usage: mp_ladder_refine_lane.sh <model> <parent-tag> <tag>}"

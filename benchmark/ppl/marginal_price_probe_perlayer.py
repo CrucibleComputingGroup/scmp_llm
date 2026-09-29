@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-REPO = Path("/home/allenjin/Projects/scmp_llm")
+REPO = Path("/home/allenjin/Projects/SCMP/scmp_llm")
 sys.path.insert(0, str(REPO)); sys.path.insert(0, str(REPO / "kernels"))
 from scmp_kernels.mp.config import _bucket_index  # noqa: E402
 from benchmark.ppl.mp_v16_refine import (  # noqa: E402

@@ -17,7 +17,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${EVAL_MODEL:?EVAL_MODEL is required}"
 : "${EVAL_WRAPPER:?EVAL_WRAPPER is required}"

@@ -32,7 +32,7 @@ import re
 import shutil
 from pathlib import Path
 
-RES = Path("/home/allenjin/Projects/hpca_results/llm")
+RES = Path("/home/allenjin/Projects/SCMP/hpca_results/llm")
 PREV = RES / "ppl" / "mp_best_after_hpca"
 MPB = RES / "ppl" / "mp_best"
 OUT = RES / "ppl" / "mp_best_after_hpca_2"

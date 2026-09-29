@@ -15,9 +15,9 @@ same --mac-weights-trace the calibration used (parsed from calib_command).
 
 Usage:
   python benchmark/ppl/fw_summarize.py \
-    --results  /home/allenjin/Projects/hpca_results/llm/mp/fw_results.tsv \
-    --manifest /home/allenjin/Projects/hpca_results/llm/mp/fw_manifest.tsv \
-    --out      /home/allenjin/Projects/hpca_results/llm/mp/fw_summary.tsv
+    --results  /home/allenjin/Projects/SCMP/hpca_results/llm/mp/fw_results.tsv \
+    --manifest /home/allenjin/Projects/SCMP/hpca_results/llm/mp/fw_manifest.tsv \
+    --out      /home/allenjin/Projects/SCMP/hpca_results/llm/mp/fw_summary.tsv
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from collections import defaultdict
 
 UNIFORM_TWIN = {"int8": "sc_int8", "len192": "sc_avg192",
                 "int7": "sc_int7", "len96": "sc_avg96", "int6": "sc_int6"}
-RESULTS_BASE = "/home/allenjin/Projects/hpca_results/llm"
+RESULTS_BASE = "/home/allenjin/Projects/SCMP/hpca_results/llm"
 
 
 def _bucket_index(value: int, total: int, num_buckets: int) -> int:

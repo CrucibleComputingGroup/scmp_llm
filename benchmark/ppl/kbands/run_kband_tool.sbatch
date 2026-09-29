@@ -15,7 +15,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${KB_JOB:?KB_JOB is required (equiv|alloc)}"
 
@@ -34,17 +34,17 @@ mkdir -p "$OUT/alloc"
 if [[ "$KB_JOB" == "prcwire" ]]; then
   : "${KB_PRC_JSON:?KB_PRC_JSON required}"
   echo "[wire] per-(row,chunk) wiring check on $(hostname)"
-  export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
+  export ACT_SCALES_DIR=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales
   srun python -u -m benchmark.ppl.kbands.test_prc_wiring
   exit $?
 fi
 
 if [[ "$KB_JOB" == "prccalib" ]]; then
   : "${KB_MODEL:?}"; : "${KB_TARGET:?}"
-  PB=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}
+  PB=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}
   HF=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['model_path'])" "$PB/table.json")
   [[ -n "$HF" ]] || { echo "[prc] cannot read model_path" >&2; exit 2; }
-  export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
+  export ACT_SCALES_DIR=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales
   mkdir -p "$OUT/prc"
   echo "[prc] calibrating ${KB_MODEL} t${KB_TARGET} from $PB"
   srun python -u -m benchmark.ppl.mp_per_row_chunk_calib \
@@ -71,13 +71,13 @@ fi
 
 if [[ "$KB_JOB" == "qkcalib" ]]; then
   : "${KB_MODEL:?}"; : "${KB_TARGET:?}"
-  QKB=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}
+  QKB=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}
   HF=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['model_path'])" "$QKB/table.json")
   [[ -n "$HF" ]] || { echo "[kbands] cannot read model_path" >&2; exit 2; }
-  export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
+  export ACT_SCALES_DIR=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales
   mkdir -p "$OUT/qk"
   srun python -u -m benchmark.ppl.kbands.qk_calib \
-    --parent /home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET} \
+    --parent /home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET} \
     --model_path "$HF" \
     --out "$OUT/qk/${KB_MODEL}_t${KB_TARGET}_qk_alpha${KB_ALPHA:-0.5}.json" \
     --alpha "${KB_ALPHA:-0.5}"
@@ -87,7 +87,7 @@ fi
 if [[ "$KB_JOB" == "ceilingreal" ]]; then
   : "${KB_MODEL:?}"
   echo "[kbands] per-group ceiling on REAL activations: $KB_MODEL"
-  export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
+  export ACT_SCALES_DIR=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales
   srun python -u benchmark/ppl/kbands/t32_allocation_ceiling.py \
     --target "${KB_TARGET:-32}" --real "$KB_MODEL" --op "${KB_OP:-down_proj}" \
     --frontend "${KB_FRONTEND:-smoothquant}" ${KB_LADDER:+--ladder "$KB_LADDER"}
@@ -119,11 +119,11 @@ fi
 # DIFFERENT model and a different act_scales cache -- the config substitution
 # this project forbids inside a comparison. It failed loudly here (missing
 # cache) but would have been silent had that cache existed.
-BUNDLE=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}
+BUNDLE=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}
 HF=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['model_path'])" "$BUNDLE/table.json")
 [[ -n "$HF" ]] || { echo "[kbands] cannot read model_path from $BUNDLE/table.json" >&2; exit 2; }
 echo "[kbands] model_path (from parent table) = $HF"
-export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
+export ACT_SCALES_DIR=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales
 
 echo "[kbands] allocator: model=$KB_MODEL target=$KB_TARGET bundle=$BUNDLE"
 srun python -u -m benchmark.ppl.mp_kbands_calib \

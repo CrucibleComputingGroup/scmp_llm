@@ -36,7 +36,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${KB_MODEL:?KB_MODEL is required (4B|llama8B|14B|30B)}"
 : "${KB_BUNDLE:?KB_BUNDLE is required (bundle dir with wrapper.json)}"
@@ -54,7 +54,7 @@ export HF_DATASETS_CACHE="$HF_HOME/datasets"
 export HF_HUB_CACHE="$HF_HOME/hub"
 
 TAG="kbands_20260801"
-MP_BEST=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best
+MP_BEST=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
 OUT="$TURBO/kbands/$TAG"
 mkdir -p "$OUT/traces" "$OUT/results"

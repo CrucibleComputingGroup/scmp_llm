@@ -1,0 +1,553 @@
+{
+  "asof": "2026-09-27T11:55:11.738898",
+  "summary": {
+    "rows": 20,
+    "complete": 20,
+    "r2_wins": 9,
+    "r2_wins_ge_half_pct": 5,
+    "r2_wins_ge_one_pct": 3,
+    "protocol_failures": []
+  },
+  "rows": [
+    {
+      "model": "4B",
+      "target": 32,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 11.189096958602912,
+        "cost": 33.734662942947104,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t32_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 11.19527119041224,
+        "cost": 33.634881248737805,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t32_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.055180787441311274,
+      "dcost_pct": -0.29578387778188553
+    },
+    {
+      "model": "4B",
+      "target": 40,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 10.875070135307768,
+        "cost": 41.46951096691775,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t40_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 10.772868814559217,
+        "cost": 41.49912156109544,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t40_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t40_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": -0.9397761989298425,
+      "dcost_pct": 0.07140328758954428
+    },
+    {
+      "model": "4B",
+      "target": 48,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 10.466472049389857,
+        "cost": 49.76710477457429,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t48_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t48_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 10.553200598922384,
+        "cost": 49.4494450931761,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t48_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t48_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.8286321228706983,
+      "dcost_pct": -0.6382924681615831
+    },
+    {
+      "model": "4B",
+      "target": 64,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 10.364453286117882,
+        "cost": 65.05891827202248,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t64_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 10.30561680290084,
+        "cost": 64.9547950756253,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t64_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t64_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": -0.5676757045723568,
+      "dcost_pct": -0.1600444630232345
+    },
+    {
+      "model": "4B",
+      "target": 96,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 10.199460683973857,
+        "cost": 96.29025208044277,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t96_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t96_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 10.182700237858388,
+        "cost": 96.26666963517799,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-4B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t96_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t96_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": -0.16432678780560206,
+      "dcost_pct": -0.0244909996134135
+    },
+    {
+      "model": "llama8B",
+      "target": 32,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 8.279484515430502,
+        "cost": 33.863099926513506,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t32_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 8.310775511527016,
+        "cost": 33.85442625381052,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t32_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.37793410976487696,
+      "dcost_pct": -0.02561393588244032
+    },
+    {
+      "model": "llama8B",
+      "target": 40,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 8.02996211783967,
+        "cost": 41.573985983269765,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t40_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t40_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 8.10231414337605,
+        "cost": 41.60426420903345,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t40_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t40_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.9010257392826349,
+      "dcost_pct": 0.0728297396739297
+    },
+    {
+      "model": "llama8B",
+      "target": 48,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 7.7878079423470945,
+        "cost": 49.548390335236256,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t48_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t48_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 7.788758779053302,
+        "cost": 49.55995024021874,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t48_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t48_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.012209298344889596,
+      "dcost_pct": 0.023330535874666047
+    },
+    {
+      "model": "llama8B",
+      "target": 64,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 7.6434839332220506,
+        "cost": 65.0912782084878,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t64_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t64_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 7.648702121818714,
+        "cost": 65.11042778199091,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t64_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t64_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.06826976601577162,
+      "dcost_pct": 0.029419568996291723
+    },
+    {
+      "model": "llama8B",
+      "target": 96,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 7.585474020405456,
+        "cost": 95.60241590248269,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t96_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t96_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 7.572266561201197,
+        "cost": 95.51787118222917,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "meta-llama/Llama-3.1-8B-Instruct",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t96_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t96_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": -0.17411514651199944,
+      "dcost_pct": -0.0884336650443629
+    },
+    {
+      "model": "14B",
+      "target": 32,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 9.104089769387217,
+        "cost": 33.13019208225848,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t32_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t32_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 9.076411710046006,
+        "cost": 33.10983222233671,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t32_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t32_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": -0.3040178649630576,
+      "dcost_pct": -0.0614540956213494
+    },
+    {
+      "model": "14B",
+      "target": 40,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 8.90290357731886,
+        "cost": 41.1777213943883,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t40_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t40_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 8.907559869438188,
+        "cost": 41.17169517024559,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t40_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t40_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.05230082611689113,
+      "dcost_pct": -0.014634671221824824
+    },
+    {
+      "model": "14B",
+      "target": 48,
+      "h20": false,
+      "r1": {
+        "arm": "c6gfis",
+        "ppl": 8.78944661011464,
+        "cost": 49.08477639244991,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t48_c6_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t48_prc_p2c6gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 8.807317925998783,
+        "cost": 49.060382045416794,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t48_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t48_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.2033269746877675,
+      "dcost_pct": -0.04969839698988343
+    },
+    {
+      "model": "14B",
+      "target": 64,
+      "h20": true,
+      "r1": {
+        "arm": "c6h20gfis",
+        "ppl": 8.699282160247106,
+        "cost": 63.5897152004953,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t64_c6h20_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t64_prc_p2c6h20gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7h20gfisla",
+        "ppl": 8.765768665450071,
+        "cost": 63.382449083024014,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t64_c7h20_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t64_prc_p2c7h20gfisla_trace.json"
+      },
+      "dppl_pct": 0.7642757641174835,
+      "dcost_pct": -0.325942830248227
+    },
+    {
+      "model": "14B",
+      "target": 96,
+      "h20": true,
+      "r1": {
+        "arm": "c6h20gfis",
+        "ppl": 8.645477118652671,
+        "cost": 95.92152917945558,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t96_c6h20_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t96_prc_p2c6h20gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7h20gfisla",
+        "ppl": 8.638283483032861,
+        "cost": 95.89013674893589,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-14B",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/14B_t96_c7h20_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/14B_t96_prc_p2c7h20gfisla_trace.json"
+      },
+      "dppl_pct": -0.0832069245118916,
+      "dcost_pct": -0.032727199814508445
+    },
+    {
+      "model": "30B",
+      "target": 32,
+      "h20": false,
+      "r1": {
+        "arm": "c7gfis",
+        "ppl": 8.716281542615514,
+        "cost": 33.99365859891169,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c7gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 8.58117847495862,
+        "cost": 33.91502086235954,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": -1.550008073928666,
+      "dcost_pct": -0.2313306063345344
+    },
+    {
+      "model": "30B",
+      "target": 40,
+      "h20": false,
+      "r1": {
+        "arm": "c7gfis",
+        "ppl": 8.32102809668946,
+        "cost": 42.41027718619764,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c7gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 8.088037841529827,
+        "cost": 42.466590982155346,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": -2.800017647486719,
+      "dcost_pct": 0.13278337161171105
+    },
+    {
+      "model": "30B",
+      "target": 48,
+      "h20": false,
+      "r1": {
+        "arm": "c7gfis",
+        "ppl": 8.04144206384457,
+        "cost": 50.83970257926787,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t48_prc_p2c7gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 7.8570662271187865,
+        "cost": 50.60087211675625,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t48_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t48_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": -2.2928205570834526,
+      "dcost_pct": -0.4697715572573258
+    },
+    {
+      "model": "30B",
+      "target": 64,
+      "h20": false,
+      "r1": {
+        "arm": "c7gfis",
+        "ppl": 7.628067378174322,
+        "cost": 67.10011743912519,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t64_c7_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t64_prc_p2c7gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 7.648322237988905,
+        "cost": 67.17565742977969,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t64_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t64_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.265530688317428,
+      "dcost_pct": 0.11257803046773596
+    },
+    {
+      "model": "30B",
+      "target": 96,
+      "h20": false,
+      "r1": {
+        "arm": "c7gfis",
+        "ppl": 7.533596432063718,
+        "cost": 95.20125723210636,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t96_c7_gfis.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t96_prc_p2c7gfis_trace.json"
+      },
+      "r2": {
+        "arm": "c7gfisla",
+        "ppl": 7.589785550037539,
+        "cost": 95.06138404072183,
+        "protocol_ok": true,
+        "failed_checks": [],
+        "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t96_c7_gfisla.json",
+        "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t96_prc_p2c7gfisla_trace.json"
+      },
+      "dppl_pct": 0.7458471990173798,
+      "dcost_pct": -0.14692368089583852
+    }
+  ]
+}

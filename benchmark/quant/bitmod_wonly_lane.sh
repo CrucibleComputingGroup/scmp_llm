@@ -8,7 +8,7 @@
 source ~/.bashrc
 conda activate annstention
 set -uo pipefail
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 MODEL="$1"; CONFIGS="$2"; TAG="$3"; XCHECK="${4:-0}"
 

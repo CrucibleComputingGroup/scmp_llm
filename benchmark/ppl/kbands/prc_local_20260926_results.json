@@ -1,0 +1,63 @@
+{
+  "checked_utc": "2026-09-27T15:54:43.427649+00:00",
+  "job_id": 62032412,
+  "state": "all three tasks completed successfully",
+  "gpu_jobs_remaining": 0,
+  "rows": [
+    {
+      "cell": "4B_t32",
+      "incumbent_ppl": 11.189096958602912,
+      "round3_ppl": 11.212847675754727,
+      "delta_ppl_pct": 0.21226661311173345,
+      "delta_cost_pct": 0.05344171237251505,
+      "best_ppl": 11.189096958602912,
+      "chosen_wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c6_gfis.json",
+      "candidate_count": 8,
+      "confirmation": {
+        "mean_dnll": 0.004299819469451904,
+        "se": 0.003563338274300267,
+        "z": 1.2066829300106963,
+        "dppl_pct": 0.4309076956939444
+      },
+      "confirmed_gain": false,
+      "full_test_result": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/4B_t32/full_test_result.json"
+    },
+    {
+      "cell": "llama8B_t32",
+      "incumbent_ppl": 8.279484515430502,
+      "round3_ppl": 8.3077737947619,
+      "delta_ppl_pct": 0.3416792347237907,
+      "delta_cost_pct": -0.04499842840804957,
+      "best_ppl": 8.279484515430502,
+      "chosen_wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c6_gfis.json",
+      "candidate_count": 4,
+      "confirmation": {
+        "mean_dnll": 0.0035366415977478027,
+        "se": 0.003483828139708158,
+        "z": 1.015159604871918,
+        "dppl_pct": 0.35429028937873364
+      },
+      "confirmed_gain": false,
+      "full_test_result": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/llama8B_t32/full_test_result.json"
+    },
+    {
+      "cell": "30B_t40",
+      "incumbent_ppl": 8.088037841529827,
+      "round3_ppl": 8.085610625763966,
+      "delta_ppl_pct": -0.030009945717590636,
+      "delta_cost_pct": -0.010539344269644424,
+      "best_ppl": 8.085610625763966,
+      "chosen_wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections.json",
+      "candidate_count": 8,
+      "confirmation": {
+        "mean_dnll": -0.00044996291399002075,
+        "se": 0.002968373181343626,
+        "z": -0.1515856957669811,
+        "dppl_pct": -0.044986169586007506
+      },
+      "confirmed_gain": false,
+      "full_test_result": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/full_test_result.json"
+    }
+  ],
+  "conclusion": "No meaningful improvement from this bounded local search. 30B test improves 0.030%, with no statistically persuasive held-out gain. Keep best comparable result per cell."
+}

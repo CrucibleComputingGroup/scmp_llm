@@ -21,14 +21,22 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
+# The env's editable scmp_kernels install still maps to the pre-move path (see SCMP/CLAUDE.md).
+export PYTHONPATH=/home/allenjin/Projects/SCMP/scmp_llm/kernels${PYTHONPATH:+:$PYTHONPATH}
 
 : "${KB_MODEL:?KB_MODEL required}"
 : "${KB_TARGET:?KB_TARGET required}"
 : "${KB_ARM:?KB_ARM required (prc|parent)}"
 
-PARENT=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}
-PRC=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/prc/${KB_MODEL}_t${KB_TARGET}_${KB_TBL:-v7}_prc.json
+# KB_PARENT: an alternate parent config dir (wrapper/table/hybrid_config), e.g. the 14B h=20% cells
+PARENT=${KB_PARENT:-/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/${KB_MODEL}/target${KB_TARGET}}
+# KB_PRC_OVERRIDE points the prc/prcqk arms at an ALTERNATE wrapper (e.g. the
+# marginal-price tables, which shift ONE operator one rung shorter). Without it
+# an override was silently ignored and the cell ran the DEPLOYED table under the
+# variant's label -- and the 0-bucket guard below cannot catch that, because the
+# deployed table has buckets. Same silent-fallback class as the qk-alpha bug.
+PRC=${KB_PRC_OVERRIDE:-/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/prc/${KB_MODEL}_t${KB_TARGET}_${KB_TBL:-v7}_prc.json}
 
 # Model id comes from the PARENT TABLE, never a hardcoded string.
 HF=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['model_path'])" "$PARENT/table.json")
@@ -62,8 +70,15 @@ elif [[ "$KB_ARM" == "qk" || "$KB_ARM" == "prcqk" ]]; then
   # llama8B t32 exist only there -- the archive has no 14B qk because qk
   # REGRESSED 14B at t48; at t32 it is untested, and qk pays more at tighter
   # budgets, so it is a real question rather than a known outcome.
-  QKF=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best_after_hpca/qk_scales/${KB_MODEL}_t${KB_TARGET}_qk_alpha1.0.json
-  [[ -f "$QKF" ]] || QKF=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/qk/${KB_MODEL}_t${KB_TARGET}_qk_alpha1.0.json
+  # KB_QKALPHA selects the migration strength (default 1.0 = deployed).
+  # alpha=1.0 flattens Q entirely and dumps all imbalance into K -- right when
+  # |K| spread >> |Q| spread (4B 81 vs 37, 30B 117 vs 47), WRONG when they are
+  # equal (llama8B 4.1 vs 4.6). Measured llama8B t96: alpha=0.5 7.5647 vs
+  # alpha=1.0 7.5992 (-0.45%). This path used to hardcode the 1.0 filename, so
+  # an alpha override was silently ignored and ran 1.0 under the new label.
+  QKA="${KB_QKALPHA:-1.0}"
+  QKF=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best_after_hpca/qk_scales/${KB_MODEL}_t${KB_TARGET}_qk_alpha${QKA}.json
+  [[ -f "$QKF" ]] || QKF=/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/qk/${KB_MODEL}_t${KB_TARGET}_qk_alpha${QKA}.json
   # A named-but-missing qk path once fell back to a no-qk run recorded under a
   # "qk" label. Refuse instead.
   [[ -f "$QKF" ]] || { echo "[prc-ppl] qk scales missing: $QKF" >&2; exit 2; }
@@ -109,18 +124,36 @@ TAG="${KB_MODEL}_t${KB_TARGET}_${KB_ARM}${KB_TBL:+_${KB_TBL}}${KB_TAGSUFFIX:+_${
 HF_CACHE=/nfs/turbo/coe-nbleier/allenjin/hf_cache
 export HF_HOME="$HF_CACHE" TRANSFORMERS_CACHE="$HF_CACHE"
 export HF_DATASETS_CACHE="$HF_CACHE/datasets" HF_HUB_CACHE="$HF_CACHE/hub"
-export SC_OWEN_MODE=bitrev SC_SCRAMBLE_MASKS=64
+export SC_OWEN_MODE=bitrev
+# KB_MASKS overrides the Owen scramble-mask count (default 64 = the deployed,
+# archived setting -- byte-identical when unset). M=128 needs SC_HW_MAX_MASKS
+# raised too and is SIMULATION-ONLY at that width (the 64-pattern selector is
+# the hardware cap), so any M>64 row must be labeled an ideal/ablation, never
+# a deployed cell. Measured 2026-08-07 at the ceiling: 4B -2.63%, llama8B
+# -0.26% on pure uniform sc_int8.
+export SC_SCRAMBLE_MASKS="${KB_MASKS:-64}"
+[[ "${KB_MASKS:-64}" -gt 64 ]] && export SC_HW_MAX_MASKS="${KB_MASKS}"
+echo "[prc-ppl] SC_SCRAMBLE_MASKS=${SC_SCRAMBLE_MASKS} HW_MAX=${SC_HW_MAX_MASKS:-64}"
 # SC_RNG_GRID=pow2 matches the enable-grid to the stream length (largest
 # pow2 <= L, 128 kept at L>=96). Same cycles, different grid -- runtime-free.
 export SC_RNG_GRID="${SC_RNG_GRID:-}"
 echo "[prc-ppl] SC_RNG_GRID=${SC_RNG_GRID:-<unset, deployed 128>}"
+# SC_RNG_GRID_{ATTN,QK,AV} set the enable grid for the ATTENTION PRODUCTS only,
+# independently of the linears (SC_RNG_GRID above). Cycle-neutral: stoc_len is
+# untouched, so cost and the iso-compute identity are unchanged. Unset =>
+# byte-identical to the deployed path (proven by attn_grid_identity.py).
+export SC_RNG_GRID_ATTN="${SC_RNG_GRID_ATTN:-}"
+export SC_RNG_GRID_QK="${SC_RNG_GRID_QK:-}"
+export SC_RNG_GRID_AV="${SC_RNG_GRID_AV:-}"
+echo "[prc-ppl] attn grid: ATTN=${SC_RNG_GRID_ATTN:-<unset>} " \
+     "QK=${SC_RNG_GRID_QK:-<unset>} AV=${SC_RNG_GRID_AV:-<unset>}"
 export QUANT_CONFIG=mp
 export MP_CONFIG_JSON="$CFG"
 export SC_HYBRID_CONFIG_JSON="${KB_HYBRID:-$PARENT/hybrid_config.json}"
 [[ -f "$SC_HYBRID_CONFIG_JSON" ]] || {
   echo "[prc-ppl] missing hybrid config $SC_HYBRID_CONFIG_JSON" >&2; exit 2; }
 echo "[prc-ppl] hybrid mask: $SC_HYBRID_CONFIG_JSON"
-export ACT_SCALES_DIR=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales
+export ACT_SCALES_DIR=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales
 export FRONTEND="${KB_FRONTEND:-awq}"
 export MODEL_PATH="$HF"
 export CTX=2048

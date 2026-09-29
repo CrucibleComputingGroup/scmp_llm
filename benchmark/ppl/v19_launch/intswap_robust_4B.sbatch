@@ -19,7 +19,7 @@
 # rather than discarding a day of GPU work.  This produces a ranking only and
 # does not replace or activate either the old mask or the v18 experimental mask.
 
-bash /home/allenjin/Projects/scmp_llm/hpca \
+bash /home/allenjin/Projects/SCMP/scmp_llm/hpca \
   --sensitivity \
   --models 4B \
   --configs mp_avg32_v9 \

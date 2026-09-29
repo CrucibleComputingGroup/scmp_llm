@@ -78,6 +78,122 @@ def _sc_matmul(*args, **kwargs):
             kwargs["rng_levels"] = g
     return _sc_matmul_raw(*args, **kwargs)
 
+
+# --- SC_RNG_GRID_{QK,AV,ATTN}: per-operator-family enable grid ---------------
+# SC_RNG_GRID above is ONE global policy: it applies the same rule to the seven
+# linear projections and to the two attention products. But those two families
+# sit at very different operating points. Measured on the deployed 4B t32 table
+# (`table.json` bucket `av:t0:l0`): avg_stoc_len 84.1 against rng_levels 128 --
+# i.e. attention runs a 128-level grid that an ~84-cycle stream cannot resolve,
+# while the global `pow2` policy switches OFF entirely at L>=96 and so never
+# reaches the escape-gate rung. Attention is also the operator family neither
+# SmoothQuant nor AWQ reaches (both stop at SCLinear), and the per-(row,chunk)
+# allocator structurally cannot reach it either (qk contracts over head_dim=128
+# = one chunk; av is unchunked). The grid is the one knob that does reach it.
+#
+# Policy per family, resolved where `operator` is known (_sc_attention_matmul_ab_t)
+# and passed as an EXPLICIT rng_levels, which takes precedence over the global
+# policy in _sc_matmul above:
+#   ""       unset  -> None -> the global SC_RNG_GRID policy decides (today's path)
+#   "pow2"          -> largest power of two <= L, and 128 kept at L>=96
+#                      (the global rule, scoped to this family)
+#   "pow2all"       -> largest power of two <= L at EVERY L, no L>=96 carve-out
+#   <int>           -> that fixed grid at every rung; must be a power of two
+#                      (the Owen/bit-reversal scramble is a pow2 construction --
+#                      non-pow2 grids measured DEAD) and <= 2**sc_prec.
+#                      "128" is meaningful: it PINS attention to the kernel
+#                      default, i.e. applies SC_RNG_GRID=pow2 to linears only.
+# SC_RNG_GRID_ATTN sets both families; SC_RNG_GRID_QK / _AV override per family.
+#
+# Cycle-neutral: stoc_len is untouched, so cost, the water-fill and the
+# iso-compute identity are unchanged. rng_levels is an existing per-call kernel
+# argument that the trace already records, so this adds NO runtime hardware.
+_VALID_ATTN_GRID_WORDS = ("pow2", "pow2all")
+
+
+def _parse_attn_grid_policy(raw: str, var: str):
+    """Validate one SC_RNG_GRID_* value at import. Raises -- never silently off.
+
+    This project has repeatedly shipped cells where an override was ignored and
+    the deployed config ran under a variant's label, so a malformed value is a
+    hard error rather than a fallback to the default.
+    """
+    v = (raw or "").strip().lower()
+    if not v:
+        return ""
+    if v in _VALID_ATTN_GRID_WORDS:
+        return v
+    try:
+        g = int(v)
+    except ValueError:
+        raise ValueError(
+            f"{var}={raw!r} is not valid. Expected a power-of-two integer, "
+            f"or one of {_VALID_ATTN_GRID_WORDS}, or unset.")
+    if g < 2 or g > 256 or (g & (g - 1)) != 0:
+        raise ValueError(
+            f"{var}={raw!r}: the enable grid must be a POWER OF TWO in [2, 256]. "
+            f"The Owen/bit-reversal scramble is a pow2 construction "
+            f"(mask = bit_reverse(d mod M)); non-pow2 grids were measured dead.")
+    return str(g)
+
+
+_SC_RNG_GRID_ATTN = _parse_attn_grid_policy(
+    os.environ.get("SC_RNG_GRID_ATTN", ""), "SC_RNG_GRID_ATTN")
+_SC_RNG_GRID_QK = _parse_attn_grid_policy(
+    os.environ.get("SC_RNG_GRID_QK", ""), "SC_RNG_GRID_QK") or _SC_RNG_GRID_ATTN
+_SC_RNG_GRID_AV = _parse_attn_grid_policy(
+    os.environ.get("SC_RNG_GRID_AV", ""), "SC_RNG_GRID_AV") or _SC_RNG_GRID_ATTN
+
+# Consumption proof: {(operator, resolved_levels): call_count}. Empty dict when
+# no attention grid policy is set, so a run can ASSERT its override took effect
+# instead of trusting the env var reached the code.
+_ATTN_GRID_CALLS: dict = {}
+
+
+def attn_grid_policy() -> dict:
+    """The resolved per-family policy, for logging/assertions."""
+    return {"qk": _SC_RNG_GRID_QK, "av": _SC_RNG_GRID_AV,
+            "global": _SC_RNG_GRID}
+
+
+def attn_grid_stats() -> dict:
+    """{'qk:64': n, ...} -- how many SC calls each resolved grid actually ran."""
+    return {f"{op}:{g}": n
+            for (op, g), n in sorted(_ATTN_GRID_CALLS.items(),
+                                     key=lambda kv: (kv[0][0], str(kv[0][1])))}
+
+
+def _attn_grid_for(operator, stoc_len):
+    """Resolved rng_levels for one attention-product SC call, or None.
+
+    None reproduces today's path exactly: _sc_matmul then applies the global
+    SC_RNG_GRID policy, and the kernel defaults rng_levels to 2**(sc_prec-1).
+    """
+    if operator == "qk":
+        policy = _SC_RNG_GRID_QK
+    elif operator == "av":
+        policy = _SC_RNG_GRID_AV
+    else:
+        return None
+    if not policy or stoc_len is None:
+        return None                       # policy off: zero overhead, no record
+    L = int(stoc_len)
+    if L < 2:
+        g = None
+    elif policy == "pow2":
+        # the global rule's carve-out: 128 measured better at L>=96
+        g = None if L >= 96 else 1 << (L.bit_length() - 1)
+    elif policy == "pow2all":
+        g = 1 << (L.bit_length() - 1)
+    else:
+        g = int(policy)
+    # Record even when the policy resolves to "no change" (g is None), so an
+    # empty stats dict means the policy was never REACHED -- which is the
+    # silent-fallback case worth refusing -- rather than "reached but a no-op".
+    key = (operator, "default(128)" if g is None else g)
+    _ATTN_GRID_CALLS[key] = _ATTN_GRID_CALLS.get(key, 0) + 1
+    return g
+
 try:
     # Precision-trace context (energy/latency simulator log). Tagging is
     # gated on _sc_trace._ENABLED so the off-path cost is one attr read.
@@ -404,6 +520,13 @@ def per_row_chunk_rungs(
             raise ValueError(
                 f"per-(row, chunk) dispatch needs {n_levels - 1} thresholds "
                 f"for {n_levels} levels, got {th.numel()}")
+        if os.environ.get("SC_PRC_ROWSHARED", "0") == "1":
+            # ABLATION CONTROL ONLY (default off => byte-identical): every chunk
+            # of a row takes the row's rung, chosen from the row's normalized
+            # absmax (= max over its chunks). This is per-ROW dispatch run
+            # through the same kernel, ladder and calibration as per-(row,
+            # chunk), so the pair isolates granularity from recalibration.
+            mn = mn.amax(dim=1, keepdim=True).expand_as(mn).contiguous()
         return torch.bucketize(mn, th).to(torch.int32)
 
     # Oracle path: rank all pairs and give the longest streams to the largest
@@ -1165,6 +1288,7 @@ def _sc_attention_matmul_ab_t(
                         sc_prec=sc_prec, stoc_len=int(sl),
                         halve_bipolar_stoc_len=halve_bipolar_stoc_len,
                         smooth_scales=smooth_scales,
+                        rng_levels=_attn_grid_for(operator, int(sl)),
                     )
                     out3[bh, indices] = out_sub
             return out3.reshape(B, H, N, M).to(orig_dtype)
@@ -1196,6 +1320,7 @@ def _sc_attention_matmul_ab_t(
                     sc_prec=sc_prec, stoc_len=int(sl),
                     halve_bipolar_stoc_len=halve_bipolar_stoc_len,
                     smooth_scales=smooth_scales,
+                    rng_levels=_attn_grid_for(operator, int(sl)),
                 )
                 out3[bh, indices] = out_sub
         return out3.reshape(B, H, N, M).to(orig_dtype)
@@ -1221,6 +1346,7 @@ def _sc_attention_matmul_ab_t(
         sc_prec=sc_prec, stoc_len=call_stoc_len,
         halve_bipolar_stoc_len=halve_bipolar_stoc_len,
         smooth_scales=smooth_scales,
+        rng_levels=_attn_grid_for(operator, call_stoc_len),
     )
     return out3.reshape(B, H, N, M).to(orig_dtype)
 

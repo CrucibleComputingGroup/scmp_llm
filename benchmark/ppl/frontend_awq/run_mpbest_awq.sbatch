@@ -32,7 +32,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${FE_MODEL:?FE_MODEL is required (4B|llama8B|14B|30B)}"
 : "${FE_TARGET:?FE_TARGET is required (32|96)}"
@@ -55,7 +55,7 @@ export HF_DATASETS_CACHE="$HF_HOME/datasets"
 export HF_HUB_CACHE="$HF_HOME/hub"
 
 TAG="mpbest_awq_20260726"
-MP_BEST=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best
+MP_BEST=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best
 BUNDLE="$MP_BEST/configs/${FE_MODEL}/target${FE_TARGET}"
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
 OUT="$TURBO/results/${TAG}"

@@ -23,7 +23,7 @@ import os
 import shutil
 from pathlib import Path
 
-RESULTS = Path("/home/allenjin/Projects/hpca_results/llm")
+RESULTS = Path("/home/allenjin/Projects/SCMP/hpca_results/llm")
 MP_BEST = RESULTS / "ppl" / "mp_best"
 OUT = RESULTS / "ppl" / "mp_best_after_hpca"
 KB = Path("/nfs/turbo/coe-nbleier/allenjin/hpca/kbands")

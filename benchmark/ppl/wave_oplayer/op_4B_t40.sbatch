@@ -26,4 +26,4 @@ export FINAL_WALLTIME_HOURS=28.0
 export FINAL_GATE_K=2.0
 export FINAL_LADDER_GROUPS=op:layer
 export FINAL_SEED_PSL=80
-bash /home/allenjin/Projects/scmp_llm/benchmark/ppl/final_mp_lane.sh 4B oplayer_20260720
+bash /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/final_mp_lane.sh 4B oplayer_20260720

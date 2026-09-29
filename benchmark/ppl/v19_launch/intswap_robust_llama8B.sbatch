@@ -14,7 +14,7 @@
 # for the statistical design.  The V9 MP wrapper is the all-SC reference and
 # the hybrid mask is kept off while each single operator-layer swap is probed.
 
-bash /home/allenjin/Projects/scmp_llm/hpca \
+bash /home/allenjin/Projects/SCMP/scmp_llm/hpca \
   --sensitivity \
   --models llama8B \
   --configs mp_avg32_v9 \

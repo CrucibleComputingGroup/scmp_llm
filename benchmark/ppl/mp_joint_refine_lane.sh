@@ -7,7 +7,7 @@ source ~/.bashrc
 conda activate annstention
 set -u
 
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 SHORT="${1:?usage: mp_joint_refine_lane.sh <model> <tag>}"
 TAG="${2:?usage: mp_joint_refine_lane.sh <model> <tag>}"

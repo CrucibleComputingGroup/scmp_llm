@@ -1,6 +1,6 @@
 # Track C — absolute escape gate (R7) — agent work log
 
-Work dir: /home/allenjin/Projects/scmp_llm/benchmark/ppl/v17_launch/trackC/
+Work dir: /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/v17_launch/trackC/
 Date: 2026-07-19. NO sbatch submission from this session; scripts are prepared only.
 
 ## Task

@@ -524,6 +524,22 @@ def main():
     realized_flop_sl = mp_tracker_flop_avg_stoc_len() if _has_mptrack else 0.0
     # realized_flop_avg_sl = MAC-weighted (iso-compute) — the budget's units;
     # realized_avg_sl = row-weighted — threshold-transfer diagnostic only.
+    # Per-operator-family attention enable grid (SC_RNG_GRID_{ATTN,QK,AV}).
+    # An override that is SET but never CONSUMED means the cell ran the deployed
+    # config under a variant's label -- the exact silent-fallback failure that
+    # has bitten this project repeatedly (qk-alpha, KB_PRC_OVERRIDE). Refuse.
+    try:
+        from model.sc_common import attn_grid_policy, attn_grid_stats
+        _pol, _stats = attn_grid_policy(), attn_grid_stats()
+        if _pol.get("qk") or _pol.get("av"):
+            print(f"[sc] attn grid policy={_pol} consumed={_stats}")
+            if not _stats:
+                raise SystemExit(
+                    f"[sc] SC_RNG_GRID_* is set ({_pol}) but NO attention SC "
+                    f"call consumed it. This cell would be the deployed config "
+                    f"recorded under a variant's label. Refusing.")
+    except ImportError:
+        pass
     print(f"[RESULT] model={model_path} config={tag} metric=ppl "
           f"value={ppl:.4f} tokens={n} sec={secs:.1f} "
           f"realized_avg_sl={realized_sl:.2f} "

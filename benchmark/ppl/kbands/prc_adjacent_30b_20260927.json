@@ -1,0 +1,225 @@
+{
+  "schema": "prc-adjacent-pilot-v1",
+  "run_id": "prc_adjacent_30b_20260927",
+  "max_total_gpus": 4,
+  "selection_rule": "Best full-test PPL across comparable allocation rounds. A new full test requires a negative fresh confirmation effect with paired z < -1.5 and realized cost within 1%.",
+  "scope": "Adjacent-rung stream-length allocation only; freeze RNG, quantization, INT mask, protected channels, ladders, dispatch statistic, AWQ scales, and QK operands.",
+  "protocol": {
+    "frontend": "awq",
+    "owen_mode": "bitrev",
+    "scramble_masks": 64,
+    "ctx": 2048,
+    "stride": 2048,
+    "ppl_max_tokens": 0,
+    "ppl_window_batch_size": 1,
+    "sc_prec": 8,
+    "sc_halve": true,
+    "qk_rebalance": false,
+    "rng_grid": "fixed128",
+    "awq_obj_bits": 4,
+    "search_windows": 6,
+    "confirmation_windows": 16,
+    "max_candidates": 12,
+    "transfer_fractions": [
+      0.0025,
+      0.005
+    ],
+    "operator_cost_fraction_cap": 0.02,
+    "bucket_cost_fraction_cap": 0.05,
+    "changed_group_fraction_cap": 0.05,
+    "changed_mac_fraction_cap": 0.05,
+    "cost_tolerance_fraction": 0.01,
+    "confirmation_z_threshold": -1.5,
+    "require_confirmation_improvement": true,
+    "data_sampling_seed": 260927,
+    "search_iterations": 1,
+    "maximum_rung_change": 1,
+    "boundaries_per_affected_bucket": 1,
+    "donor_recipient_distinct_buckets": true,
+    "check_bounds_on_baseline_and_candidate_profiles": true
+  },
+  "source_files": [
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_adjacent_refine.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_adjacent_proposals.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_refine.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_proposals.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_adjacent_30b_20260927.sbatch",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_ppl.sbatch",
+    "/home/allenjin/Projects/SCMP/scmp_llm/model/sc_common.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/config.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/matmul.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/loader.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/model/awq_apply.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/quant/eval_quant.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/trace.py",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/calibrate_mp_thresholds.py"
+  ],
+  "code_hashes": {
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_adjacent_refine.py": "c85d9e343243630af54d2a5df51b31ca849c4f50dbfbb504249ea2426c734711",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_adjacent_proposals.py": "37b53ad004fa56a4a55df766797abdee7357a06ad97f926bab6101aded8a020e",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_refine.py": "2e45a6e835d27fed214456a8cb7f642f1cb03840cc812247c6353df35e7a2f04",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_proposals.py": "1b7c9c27984d0bf7daedde35bfc67328d95ed5b99db899b58a42ce41d4547029",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_adjacent_30b_20260927.sbatch": "119d9f6a528dfd850ba5d350aa5454a903cf44d55ea8748370e7696d09d16250",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_ppl.sbatch": "cf341d3ce960f303d683d112b24064af7d78525bed559f9f7ee5832d3e75e037",
+    "/home/allenjin/Projects/SCMP/scmp_llm/model/sc_common.py": "7e2f55e7df841df62f9833dd71804d87cbc6d606e6b7a860e2ce0736e6ade4ed",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/config.py": "a834c617c8cb08e943ae2bc2b7d83716c78a01be94160c77ea8b7fdb56ef7f13",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/matmul.py": "4fe995a83261010ca3fdf61b8ceda43024621a04707609f129e98c2f9a1e9ae1",
+    "/home/allenjin/Projects/SCMP/scmp_llm/loader.py": "e667c6958b5b0486497b55863ccb7f6472968beffc0cf01693e843c647605990",
+    "/home/allenjin/Projects/SCMP/scmp_llm/model/awq_apply.py": "831d3fd34ae9c9e289160460819be9cce31e206060509e5b4cddee45261084ce",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/quant/eval_quant.py": "48d243dbe48dedab24650559e0f02e6d0d3493b9ec9977eae16f1e924fedfcde",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/trace.py": "bd37acacd24e1569ff5690c11d1df3e2c7593acc11185e232f0c7e526a8423c5",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/calibrate_mp_thresholds.py": "9344d8c8d7dddd4e7d037092df03d5e73b5b7e58a63ce084a5fae5da5c141792"
+  },
+  "code_hashes_note": "Frozen after companion launcher syntax/embedded-Python validation; all 13 shared sources match the original round-4 array, which passed 32 CPU tests.",
+  "baseline_results": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/prc2/BEST_ALL_VS_SUBMITTED_20260927.json",
+  "baseline_results_sha256": "f9f6b6a2dbc071dfbfb476b1ccbb84ed66d8db1ae66f9297907993f294c2e5ad",
+  "cells": [
+    {
+      "id": "30B_t32",
+      "model": "30B",
+      "target": 32,
+      "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32",
+      "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+      "incumbent_wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla.json",
+      "incumbent_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json",
+      "incumbent_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c7gfisla_trace.json",
+      "incumbent_ppl": 8.58117847495862,
+      "incumbent_cost": 33.91502086235954,
+      "incumbent_arm": "c7gfisla",
+      "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/hybrid_config.json",
+      "hashes": {
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla.json": "fb6cd4b856419f23419d606b2e5eda447f3f9b0edc8f48a2c7f34e2609475379",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla_table.json": "3dc3169e15f0f85499b6c5a1be4c44eb3c3a8025e7c28b45c24894633b1de4eb",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/hybrid_config.json": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/wrapper.json": "423243cbb5a184d9a03615e6cdf5d75aea054e3fa0f558c586911c5f237583b3",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target32/table.json": "40981e7b719cb22f42d121001526d898d370acaa1fb52fc22c68ff5cd36a3fd5",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c7gfisla_trace.json": "c845b54fb629f87179395062fa912ffff1c0378d32db675b0eba59cdc06a4258",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt": "cff1acebfff48965331e294d9a3fe160f29d6caaba933554852c0295b76d15e3",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/windows.json": "fc9ac84c1c20e68167c5356e0f0e6b963c22cf1cb5b5e7b150462125a66947e0"
+      },
+      "comparable_test_results": [
+        {
+          "arm": "c7gfis",
+          "ppl": 8.716281542615514,
+          "cost": 33.99365859891169,
+          "protocol_ok": true,
+          "failed_checks": [],
+          "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfis.json",
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c7gfis_trace.json"
+        },
+        {
+          "arm": "c7gfisla",
+          "ppl": 8.58117847495862,
+          "cost": 33.91502086235954,
+          "protocol_ok": true,
+          "failed_checks": [],
+          "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c7_gfisla.json",
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c7gfisla_trace.json"
+        },
+        {
+          "arm": "c17e32",
+          "ppl": 8.959877410718326,
+          "cost": 34.000273974809545,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t32_prc_p2c17e32_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t32_c17e32.json"
+        }
+      ],
+      "awq_scales": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt",
+      "excluded_windows_files": [
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/windows.json"
+      ],
+      "historical_calibration_globs": [
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t*_heldout_nll.json"
+      ],
+      "historical_calibration_seed": 0,
+      "historical_calibration_window_counts": [
+        6,
+        8,
+        12,
+        14
+      ],
+      "exclusion_note": "Exclude prior 30B t40 round-3 windows for both budgets; same model/tokenizer, conservative across-budget exclusion."
+    },
+    {
+      "id": "30B_t40",
+      "model": "30B",
+      "target": 40,
+      "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40",
+      "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+      "incumbent_wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections.json",
+      "incumbent_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections_table.json",
+      "incumbent_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p3local20260926_trace.json",
+      "incumbent_ppl": 8.085610625763966,
+      "incumbent_cost": 42.46211528193216,
+      "incumbent_arm": "round3_local",
+      "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/hybrid_config.json",
+      "hashes": {
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections.json": "4743e3fc118339b9f9f6b2207b09e47c7ec23525d5a44ece1919f8bee6bdcf1b",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections_table.json": "6321e3781f4a53cf20b1f6138188093dbe35c1cda5d95f0674dedbe66e43653b",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/hybrid_config.json": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/wrapper.json": "f972033deb7c04b69cf8f52b1b93177673af94ab567abfc3990d00d712e836e8",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/table.json": "5b544ad40712b423379cb68dc6b0f586d66d62f1bb924430e8d65fba01429345",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p3local20260926_trace.json": "feb55c7e991432b9e45212d1ec3f45c8548e9a79592e465d056adecd9e197e07",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt": "cff1acebfff48965331e294d9a3fe160f29d6caaba933554852c0295b76d15e3",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/windows.json": "fc9ac84c1c20e68167c5356e0f0e6b963c22cf1cb5b5e7b150462125a66947e0"
+      },
+      "comparable_test_results": [
+        {
+          "arm": "c7gfis",
+          "ppl": 8.32102809668946,
+          "cost": 42.41027718619764,
+          "protocol_ok": true,
+          "failed_checks": [],
+          "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfis.json",
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c7gfis_trace.json"
+        },
+        {
+          "arm": "c7gfisla",
+          "ppl": 8.088037841529827,
+          "cost": 42.466590982155346,
+          "protocol_ok": true,
+          "failed_checks": [],
+          "model_header": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla.json",
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c7gfisla_trace.json"
+        },
+        {
+          "arm": "c17",
+          "ppl": 8.412323299821272,
+          "cost": 42.45951246386282,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c17_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c17.json"
+        },
+        {
+          "arm": "round3_local",
+          "ppl": 8.085610625763966,
+          "cost": 42.46211528193216,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p3local20260926_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/candidate07_mlp_from_projections.json"
+        }
+      ],
+      "awq_scales": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt",
+      "excluded_windows_files": [
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_local_20260926/30B_t40/windows.json"
+      ],
+      "historical_calibration_globs": [
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t*_heldout_nll.json"
+      ],
+      "historical_calibration_seed": 0,
+      "historical_calibration_window_counts": [
+        6,
+        8,
+        12,
+        14
+      ],
+      "exclusion_note": "Exclude prior 30B t40 round-3 windows for both budgets; same model/tokenizer, conservative across-budget exclusion."
+    }
+  ],
+  "companion_array_job_id": "62104342",
+  "concurrency_note": "Two one-GPU tasks in this companion array plus two one-GPU tasks in array 62104342; at most four GPUs total.",
+  "scope_extension": "User raised GPU cap from two to four; add 30B t32/t40 with unchanged adjacent-rung method and exact best(all) incumbents.",
+  "frozen_utc": "2026-09-27T17:52:39.838750+00:00"
+}

@@ -17,7 +17,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm/benchmark/ruler
+cd /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ruler
 bash run_ruler_baseline.sh \
   --models "$RULER_MODEL" \
   --configs sc_int7,sc_avg96 \

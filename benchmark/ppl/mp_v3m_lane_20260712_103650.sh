@@ -2,7 +2,7 @@
 set -o pipefail
 set +u; source ~/.bashrc; set -u 2>/dev/null || true
 conda activate annstention
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 bash hpca --models llama8B --configs mp_avg64f_burst128 --metrics ppl \
   --mp-method act_global_v3m --mp-protect-metric act_collapse \
   --sc-backend hybrid --hybrid-int-frac 0.10 \

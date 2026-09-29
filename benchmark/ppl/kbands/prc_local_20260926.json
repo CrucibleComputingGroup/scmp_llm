@@ -1,0 +1,188 @@
+{
+  "schema": "prc-local-pilot-v1",
+  "run_id": "prc_local_20260926",
+  "dependency_job_id": 61982983,
+  "selection_rule": "Best full-test PPL across comparable allocation rounds; a new diagnostic test never displaces a better incumbent.",
+  "scope": "Stream-length allocation only; freeze RNG, quantization, mask, frontend, and QK transform.",
+  "protocol": {
+    "frontend": "awq",
+    "owen_mode": "bitrev",
+    "scramble_masks": 64,
+    "ctx": 2048,
+    "stride": 2048,
+    "ppl_max_tokens": 0,
+    "ppl_window_batch_size": 1,
+    "sc_prec": 8,
+    "sc_halve": true,
+    "qk_rebalance": false,
+    "rng_grid": "fixed128",
+    "search_windows": 6,
+    "confirmation_windows": 16,
+    "max_candidates": 8,
+    "cost_tolerance_fraction": 0.01,
+    "awq_obj_bits": 4,
+    "transfer_fraction": 0.02,
+    "search_iterations": 1,
+    "data_sampling_seed": 260926
+  },
+  "cells": [
+    {
+      "id": "4B_t32",
+      "model": "4B",
+      "target": 32,
+      "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target32",
+      "model_path": "Qwen/Qwen3-4B-Instruct-2507",
+      "incumbent_wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c6_gfis.json",
+      "incumbent_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c6_gfis_table.json",
+      "incumbent_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t32_prc_p2c6gfis_trace.json",
+      "incumbent_ppl": 11.189096958602912,
+      "incumbent_cost": 33.734662942947104,
+      "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target32/hybrid_config.json",
+      "hashes": {
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c6_gfis.json": "dbe4d07c4319ebdadc23a0acc664db944657d97f2d04658453479b0505f0e6d6",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c6_gfis_table.json": "3749b8a0f8d79202ecd6c5229cbfd0c3a10586ca355e8d420d10201e31e58bed",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target32/hybrid_config.json": "ca4dfadf188109f528bae6f8ceff0a18fb4f45fc4399c816deb899c5e70efc4a",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target32/wrapper.json": "ec0466b08898f4e53bf5fee680300a4ab59d4f4bd5f7bd09cb87bf37fe1efe92",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/4B/target32/table.json": "869a74d958077862ad7826926739c9a4f6a3912b3528df7fa65e75ed923f3304",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t32_prc_p2c6gfis_trace.json": "ef9751b3fb7b2ed1a0c5c9b2dc03066db429f4ee4b8f6471b629c73344764cae",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-4B-Instruct-2507_b4.pt": "2fd6a991beb9b88527b82db5e372df3600ee8da1adaae7f3713fbd426ec18e02"
+      },
+      "comparable_test_results": [
+        {
+          "arm": "c17",
+          "ppl": 11.330469761536593,
+          "cost": 33.66746925915188,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t32_prc_p2c17_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c17.json"
+        },
+        {
+          "arm": "c6gfis",
+          "ppl": 11.189096958602912,
+          "cost": 33.734662942947104,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t32_prc_p2c6gfis_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c6_gfis.json"
+        },
+        {
+          "arm": "c7gfisla",
+          "ppl": 11.19527119041224,
+          "cost": 33.634881248737805,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/4B_t32_prc_p2c7gfisla_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/4B_t32_c7_gfisla.json"
+        }
+      ],
+      "awq_scales": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-4B-Instruct-2507_b4.pt"
+    },
+    {
+      "id": "llama8B_t32",
+      "model": "llama8B",
+      "target": 32,
+      "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/llama8B/target32",
+      "model_path": "meta-llama/Llama-3.1-8B-Instruct",
+      "incumbent_wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c6_gfis.json",
+      "incumbent_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c6_gfis_table.json",
+      "incumbent_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t32_prc_p2c6gfis_trace.json",
+      "incumbent_ppl": 8.279484515430502,
+      "incumbent_cost": 33.863099926513506,
+      "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/llama8B/target32/hybrid_config.json",
+      "hashes": {
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c6_gfis.json": "5c2e795963adf2e67b271a3837c6fcd5364b7571d39bf5e112c8b9139c2e194c",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c6_gfis_table.json": "da8891798b6d3be19d8479e29990fa04e8c05d25957c0556abc784caa3ef2515",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/llama8B/target32/hybrid_config.json": "2cda27607381d2534b95318213a7b3b28e2f7b91022eb29e1bad1996c05299f9",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/llama8B/target32/wrapper.json": "4cf636ec26fc4e6e79c8c8865448af32524cf4f74b4e75b457b978a2b3560513",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/llama8B/target32/table.json": "f9d6bcc67163b8ee8dcf669b81fa9c381f51195ca52830570d47034b37e3f03f",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t32_prc_p2c6gfis_trace.json": "0dd1a62f6d85bd66a5246e179d6d42c7400cefd9836abf88993c23a094fd7eb8",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_meta-llama_Llama-3.1-8B-Instruct_b4.pt": "6f0bb52fe1e2ebd2c7e7710d5277d38f15aea707a1db8e1ede675326220cc1a5"
+      },
+      "comparable_test_results": [
+        {
+          "arm": "c17",
+          "ppl": 8.389856716283804,
+          "cost": 33.725872510644834,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t32_prc_p2c17_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c17.json"
+        },
+        {
+          "arm": "c6gfis",
+          "ppl": 8.279484515430502,
+          "cost": 33.863099926513506,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t32_prc_p2c6gfis_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c6_gfis.json"
+        },
+        {
+          "arm": "c7gfisla",
+          "ppl": 8.310775511527016,
+          "cost": 33.85442625381052,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t32_prc_p2c7gfisla_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_c7_gfisla.json"
+        },
+        {
+          "arm": "g5",
+          "ppl": 8.370992810967566,
+          "cost": 33.852922205444244,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/llama8B_t32_prc_p2g5_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/llama8B_t32_g5.json"
+        }
+      ],
+      "awq_scales": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_meta-llama_Llama-3.1-8B-Instruct_b4.pt"
+    },
+    {
+      "id": "30B_t40",
+      "model": "30B",
+      "target": 40,
+      "parent": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40",
+      "model_path": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+      "incumbent_wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla.json",
+      "incumbent_table": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla_table.json",
+      "incumbent_trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c7gfisla_trace.json",
+      "incumbent_ppl": 8.088037841529827,
+      "incumbent_cost": 42.466590982155346,
+      "hybrid_config": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/hybrid_config.json",
+      "hashes": {
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla.json": "60300f8bd6ff552b2969394345c67fda597e92c13417df3949dd8b30e673a8c2",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla_table.json": "4899741a4c3d6070e773f7c5b570ec80978e6a12a4e4dc3968588b1b5becb6e2",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/hybrid_config.json": "f39edcf55ce80f51e8f0bdb8ef7ccc48998bc0a6da896b1415af621f768b77fc",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/wrapper.json": "f972033deb7c04b69cf8f52b1b93177673af94ab567abfc3990d00d712e836e8",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/configs/30B/target40/table.json": "5b544ad40712b423379cb68dc6b0f586d66d62f1bb924430e8d65fba01429345",
+        "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c7gfisla_trace.json": "a075feb5f27d40b3833ef59e92e86f995bec1aa407afeb416b728ba7051526a0",
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt": "cff1acebfff48965331e294d9a3fe160f29d6caaba933554852c0295b76d15e3"
+      },
+      "comparable_test_results": [
+        {
+          "arm": "c17",
+          "ppl": 8.412323299821272,
+          "cost": 42.45951246386282,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c17_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c17.json"
+        },
+        {
+          "arm": "c7gfis",
+          "ppl": 8.32102809668946,
+          "cost": 42.41027718619764,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c7gfis_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfis.json"
+        },
+        {
+          "arm": "c7gfisla",
+          "ppl": 8.088037841529827,
+          "cost": 42.466590982155346,
+          "trace": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/kbands_20260801/ppl/30B_t40_prc_p2c7gfisla_trace.json",
+          "wrapper": "/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc2/30B_t40_c7_gfisla.json"
+        }
+      ],
+      "awq_scales": "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales/awq_scales/awq_scales_Qwen_Qwen3-30B-A3B-Instruct-2507_b4.pt"
+    }
+  ],
+  "code_hashes": {
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_refine.py": "2e45a6e835d27fed214456a8cb7f642f1cb03840cc812247c6353df35e7a2f04",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/prc_local_proposals.py": "1b7c9c27984d0bf7daedde35bfc67328d95ed5b99db899b58a42ce41d4547029",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_local_20260926.sbatch": "22b2a194f164754d91f3d455f3d090e078c12412742c519de276bd3bb1e4158c",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/kbands/run_prc_ppl.sbatch": "cf341d3ce960f303d683d112b24064af7d78525bed559f9f7ee5832d3e75e037",
+    "/home/allenjin/Projects/SCMP/scmp_llm/model/sc_common.py": "7e2f55e7df841df62f9833dd71804d87cbc6d606e6b7a860e2ce0736e6ade4ed",
+    "/home/allenjin/Projects/SCMP/scmp_llm/model/awq_apply.py": "831d3fd34ae9c9e289160460819be9cce31e206060509e5b4cddee45261084ce",
+    "/home/allenjin/Projects/SCMP/scmp_llm/loader.py": "e667c6958b5b0486497b55863ccb7f6472968beffc0cf01693e843c647605990",
+    "/home/allenjin/Projects/SCMP/scmp_llm/benchmark/quant/eval_quant.py": "48d243dbe48dedab24650559e0f02e6d0d3493b9ec9977eae16f1e924fedfcde",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/mp/config.py": "a834c617c8cb08e943ae2bc2b7d83716c78a01be94160c77ea8b7fdb56ef7f13",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/trace.py": "bd37acacd24e1569ff5690c11d1df3e2c7593acc11185e232f0c7e526a8423c5",
+    "/home/allenjin/Projects/SCMP/scmp_llm/kernels/scmp_kernels/sc/matmul.py": "4fe995a83261010ca3fdf61b8ceda43024621a04707609f129e98c2f9a1e9ae1"
+  }
+}

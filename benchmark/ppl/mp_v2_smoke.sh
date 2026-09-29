@@ -13,7 +13,7 @@
 set -o pipefail
 set +u; source ~/.bashrc; set -u 2>/dev/null || true
 conda activate annstention
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 MARKER="$HOME/mp_v2_smoke_passed"
 rm -f "$MARKER"

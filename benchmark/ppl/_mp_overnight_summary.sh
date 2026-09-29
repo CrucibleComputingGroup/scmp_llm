@@ -2,7 +2,7 @@
 # Aggregate per-(model, MP) log lines into SUMMARY.txt.
 # Run after all .done markers land — or anytime as a partial summary.
 set -e
-OUTDIR="${1:-$(cat /home/allenjin/Projects/scmp_llm/benchmark/ppl/_mp_overnight_latest.path 2>/dev/null | sed 's/^out=//')}"
+OUTDIR="${1:-$(cat /home/allenjin/Projects/SCMP/scmp_llm/benchmark/ppl/_mp_overnight_latest.path 2>/dev/null | sed 's/^out=//')}"
 [[ -z "$OUTDIR" ]] && { echo "Usage: $0 <outdir>"; exit 1; }
 [[ ! -d "$OUTDIR" ]] && { echo "no such outdir: $OUTDIR"; exit 1; }
 

@@ -719,7 +719,7 @@ run_mp_ppl() {  # <short> <hf> <mp_config>
   table="$tables/${sm}__${safe_cfg}__${method}.json"
   wrapper="$tables/${sm}__${safe_cfg}__${method}_wrapper.json"
   log="$OUTDIR/${short}_${safe_cfg}_${method}_ppl.log"
-  trace="/home/allenjin/Projects/hpca_results/llm/uniform/traces/${short}_sc_int7_trace.json"
+  trace="/home/allenjin/Projects/SCMP/hpca_results/llm/uniform/traces/${short}_sc_int7_trace.json"
 
   protect_flags=()
   if [[ "$MP_PROTECT_FRAC" != "0" && "$MP_PROTECT_FRAC" != "0.0" ]]; then

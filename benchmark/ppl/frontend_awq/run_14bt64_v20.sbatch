@@ -23,11 +23,11 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 HF="Qwen/Qwen3-14B"
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
-MP_BEST=/home/allenjin/Projects/hpca_results/llm/ppl/mp_best
+MP_BEST=/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best
 V20=$TURBO/mp_final_search_mp_v20_structured_14B_t64_20260721/14B/target64p000
 TABLE="$V20/s02_precision_040_macro_ceilcomp_8.json"
 MASK="$TURBO/hybrid_configs/_hpca_mp_v9_hybdose_all_20260718_183035/14B_mp_avg32_v9_rank-sc_int8_measured_curve_top0p20.json"

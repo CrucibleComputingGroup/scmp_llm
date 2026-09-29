@@ -82,7 +82,8 @@ def waterfill(err, cost, budget_mean, grid):
     return j, cost[j].mean().item(), err.gather(1, j.unsqueeze(1)).sum().item()
 
 
-def capture_real(model_key: str, op: str, block: int, n_rows: int):
+def capture_real(model_key: str, op: str, block: int, n_rows: int,
+                 frontend: str = "smoothquant"):
     """Capture one SCLinear's real (x, W) at the point the SC kernel sees them.
 
     Uses the DEPLOYED loader so smoothing, the hybrid mask and protected
@@ -90,7 +91,7 @@ def capture_real(model_key: str, op: str, block: int, n_rows: int):
     chunks so the chunk grid matches the runtime's.
     """
     import os
-    parent = (f"/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/"
+    parent = (f"/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/"
               f"configs/{model_key}/target32")
     os.environ.setdefault("SC_OWEN_MODE", "bitrev")
     os.environ.setdefault("SC_SCRAMBLE_MASKS", "64")
@@ -100,7 +101,12 @@ def capture_real(model_key: str, op: str, block: int, n_rows: int):
         os.environ["SC_HYBRID_CONFIG_JSON"] = f"{parent}/hybrid_config.json"
     os.environ.setdefault(
         "ACT_SCALES_DIR",
-        "/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales")
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales")
+    # The DEPLOYED baseline is AWQ + INT7 20%, and AWQ exists to migrate
+    # per-channel activation outliers into the weights -- exactly the structure
+    # the post-LN per-chunk gain feeds on. Measuring the ceiling on SmoothQuant
+    # activations can therefore OVERSTATE it on the baseline that matters.
+    os.environ["FRONTEND"] = frontend
     import json as _json
     hf = _json.load(open(f"{parent}/table.json"))["model_path"]
 
@@ -157,6 +163,18 @@ def main() -> int:
                          "must be reproduced on activations the model actually "
                          "produces before any of it is trusted.")
     ap.add_argument("--op", default="down_proj")
+    ap.add_argument("--ladder", default=None,
+                    help="Comma list of lengths to allocate over. Default is a "
+                         "14-point oracle grid down to 8. The DEPLOYED ladders "
+                         "have ~7 rungs with a floor near 18, so the oracle may "
+                         "be measuring headroom the runtime cannot express: at a "
+                         "tight budget, being unable to cheapen unimportant "
+                         "pairs below the floor starves the important ones.")
+    ap.add_argument("--frontend", default="smoothquant",
+                    choices=("smoothquant", "awq"),
+                    help="PTQ front-end for the capture. The deployed baseline "
+                         "is AWQ; SmoothQuant captures may overstate the "
+                         "channel-structured (per-chunk) gain.")
     ap.add_argument("--block", type=int, default=12)
     args = ap.parse_args()
     if not torch.cuda.is_available():
@@ -167,15 +185,20 @@ def main() -> int:
     L0 = args.target
     N, nch, M = args.rows, args.nchunks, 2560
     D = nch * CHUNK_D
-    grid = [8, 12, 16, 20, 24, 28, 32, 40, 48, 64, 80, 96, 112, 128]
+    grid = ([int(v) for v in args.ladder.split(",")] if args.ladder
+            else [8, 12, 16, 20, 24, 28, 32, 40, 48, 64, 80, 96, 112, 128])
+    grid = sorted(set(grid))
+    if L0 not in grid:
+        grid = sorted(set(grid + [L0]))   # uniform baseline must be expressible
 
     if args.real:
-        x, w = capture_real(args.real, args.op, args.block, N)
+        x, w = capture_real(args.real, args.op, args.block, N, args.frontend)
         N, D = x.shape
         M = w.shape[0]
         nch = D // CHUNK_D
         print(f"REAL activations: {args.real} {args.op} block {args.block} "
-              f"-> x{tuple(x.shape)} w{tuple(w.shape)}, {nch} chunks")
+              f"[{args.frontend}] -> x{tuple(x.shape)} w{tuple(w.shape)}, "
+              f"{nch} chunks")
     else:
         ch = torch.exp(torch.randn(D, device=dev) * 1.1)
         ch[torch.randperm(D, device=dev)[:D // 200]] *= 30.0
@@ -210,7 +233,7 @@ def main() -> int:
 
     # 2. PER-CHUNK: one L per chunk, shared across rows
     ec = e.sum(dim=0)                                  # (nch, n_levels)
-    _, c2, t2 = waterfill(ec, cost, float(L0), grid)
+    alloc2_idx, c2, t2 = waterfill(ec, cost, float(L0), grid)
     print(f"  {'2. PER-CHUNK (earlier oracle)':34} {nch:12} {t2:12.4e} "
           f"{(t2/base-1)*100:10.1f}%")
 
@@ -220,8 +243,72 @@ def main() -> int:
     print(f"  {'3. PER-(ROW,CHUNK) full space':34} {N*nch:12} {t3:12.4e} "
           f"{(t3/base-1)*100:10.1f}%")
 
+    # 4. DEPLOYABLE: a threshold on the per-(row, chunk) absmax.
+    #
+    # Policies 1-3 are ORACLES -- they water-fill on the measured error, which
+    # needs the FP reference at runtime. The deployed dispatcher sees only the
+    # per-(row, chunk) absmax (free: it is the group's quantization scale),
+    # min-max normalized per call, compared against calibrated thresholds. The
+    # gap between 3 and 4 is the price of that proxy, and it decides whether the
+    # per-group ceiling is reachable at all.
+    metric = x.abs().view(N, nch, CHUNK_D).amax(-1)          # (N, nch)
+    mn = (metric - metric.min()) / (metric.max() - metric.min()).clamp_min(1e-8)
+    flat_m = mn.reshape(-1)
+    # Rank-match the ORACLE's length histogram: give the longest streams to the
+    # largest metric. Same cost by construction, so any loss is pure ordering
+    # quality -- exactly the quantity a threshold rule can deliver.
+    alloc3, _, _ = waterfill(erc, cost, float(L0), grid)
+    lens_sorted = torch.sort(cost[alloc3], descending=True).values
+    order = torch.argsort(flat_m, descending=True)
+    assigned = torch.empty_like(lens_sorted)
+    assigned[order] = lens_sorted
+    idx = (assigned[:, None] == cost[None, :]).float().argmax(1)
+    t4 = erc.gather(1, idx[:, None]).sum().item()
+    c4 = assigned.mean().item()
+    print(f"  {'4. amax THRESHOLD (deployable)':34} {N*nch:12} {t4:12.4e} "
+          f"{(t4/base-1)*100:10.1f}%")
+
+    def rank_match(score):
+        """Give the oracle's length histogram to items ranked by `score`.
+
+        Cost is identical to the oracle by construction, so the only thing
+        being measured is ORDERING quality -- which is all a threshold rule
+        can supply.
+        """
+        o = torch.argsort(score.reshape(-1), descending=True)
+        a = torch.empty_like(lens_sorted)
+        a[o] = lens_sorted
+        i = (a[:, None] == cost[None, :]).float().argmax(1)
+        return erc.gather(1, i[:, None]).sum().item(), a.mean().item()
+
+    # 5. amax x the chunk's STATIC weight norm. The error a chunk contributes
+    # scales with its input quantization error TIMES the weight it is
+    # multiplied by, and ||w_c|| is known offline, so this stays free at
+    # runtime (one multiply by a stored per-chunk constant).
+    wn = w.view(M, nch, CHUNK_D).float().pow(2).sum(-1).sqrt().mean(0)  # (nch,)
+    t5, c5 = rank_match(metric * wn[None, :])
+    print(f"  {'5. amax x ||w_c|| (deployable)':34} {N*nch:12} {t5:12.4e} "
+          f"{(t5/base-1)*100:10.1f}%")
+
+    # 6. STATIC per-chunk base + DYNAMIC per-row shift. The operator map says
+    # the two classes carry their structure on different axes (post-LN ops in
+    # channels, intermediate ops in rows), so compose both: each chunk keeps
+    # the oracle's per-chunk length as its base, and within the chunk rows are
+    # ranked by amax and spread around it at fixed chunk mean cost.
+    base_len = cost[alloc2_idx]                                   # (nch,)
+    within = mn - mn.mean(dim=0, keepdim=True)                    # row shift
+    t6, c6 = rank_match(base_len[None, :].log() * 4.0 + within)
+    print(f"  {'6. static chunk + row shift':34} {N*nch:12} {t6:12.4e} "
+          f"{(t6/base-1)*100:10.1f}%")
+
     print(f"\n  realized mean cost: per-row {c1:.2f}, per-chunk {c2:.2f}, "
-          f"per-(row,chunk) {c3:.2f}  (budget {L0})")
+          f"per-(row,chunk) {c3:.2f}, amax {c4:.2f}, amax*w {c5:.2f}, "
+          f"static+shift {c6:.2f}  (budget {L0})")
+    den = max(abs(t3 / base - 1), 1e-12)
+    print(f"\n  fraction of the per-group ORACLE gain each DEPLOYABLE rule captures:")
+    for nm, tv in (("amax", t4), ("amax x ||w_c||", t5), ("static+shift", t6)):
+        print(f"    {nm:18} {(tv/base-1)/den*100:6.0f}%   "
+              f"({(tv/base-1)*100:+.1f}% vs uniform)")
     print(f"\n  INCREMENT of the full per-group space over what MP does today:")
     print(f"    per-row -> per-(row,chunk):  {(t3/t1-1)*100:+.1f}% error")
     print(f"    per-chunk -> per-(row,chunk):{(t3/t2-1)*100:+.1f}% error")

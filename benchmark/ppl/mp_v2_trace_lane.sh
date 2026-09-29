@@ -11,14 +11,14 @@
 set -o pipefail
 set +u; source ~/.bashrc; set -u 2>/dev/null || true
 conda activate annstention
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 SHORT="${1:?usage: mp_v2_trace_lane.sh <4B|llama8B|14B|30B>}"
 TAG=mp_v2_hyb_pc_20260710_201348
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
 TABLES=$TURBO/mp_calib_${TAG}
 HYB=$TURBO/hybrid_configs/_hpca_${TAG}
-OUT=/home/allenjin/Projects/hpca_results/llm/mp_v2/traces
+OUT=/home/allenjin/Projects/SCMP/hpca_results/llm/mp_v2/traces
 
 declare -A HF=(
   [4B]=Qwen/Qwen3-4B-Instruct-2507

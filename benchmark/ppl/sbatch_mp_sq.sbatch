@@ -24,12 +24,12 @@ set +u                       # /etc/bashrc references unbound vars
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 MODELS="${MODELS:-4B,llama8B,14B,30B}" \
 CALIB_SQ=1 \
 BUDGET_WEIGHT=macs \
   TABLES=/nfs/turbo/coe-nbleier/allenjin/hpca/mp_calib_sq \
-  RESULTS=/home/allenjin/Projects/hpca_results/llm/mp/sq_results.tsv \
-  MANIFEST=/home/allenjin/Projects/hpca_results/llm/mp/sq_manifest.tsv \
+  RESULTS=/home/allenjin/Projects/SCMP/hpca_results/llm/mp/sq_results.tsv \
+  MANIFEST=/home/allenjin/Projects/SCMP/hpca_results/llm/mp/sq_manifest.tsv \
   bash benchmark/ppl/overnight_mp.sh
 echo "[sbatch] end=$(date)"

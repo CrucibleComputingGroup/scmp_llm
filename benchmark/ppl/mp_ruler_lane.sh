@@ -22,7 +22,7 @@
 set -o pipefail
 set +u; source ~/.bashrc; set -u 2>/dev/null || true
 conda activate annstention
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 # same model cache as hpca (default ~/.cache hits the full home quota)
 export HF_HOME=/nfs/turbo/coe-nbleier/allenjin/hf_cache
 export TRANSFORMERS_CACHE="$HF_HOME"
@@ -39,7 +39,7 @@ sm="$(echo "$hf" | tr '/' '_')"
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
 TABLES="$TURBO/mp_calib_${TAG}"
 RESULTS="$TURBO/results/results_${TAG}.tsv"
-TRACE="/home/allenjin/Projects/hpca_results/llm/uniform/traces/${SHORT}_sc_int7_trace_ctx4096.json"
+TRACE="/home/allenjin/Projects/SCMP/hpca_results/llm/uniform/traces/${SHORT}_sc_int7_trace_ctx4096.json"
 HYB="$TURBO/hybrid_configs/_hpca_mp_final_sweep_20260713_143745/${SHORT}_mp_avg96f_burst128_rank-sc_int8_measured_curve_top0p10.json"
 OV="down_proj:0.06,up_proj:0.03,gate_proj:0.03"
 mkdir -p "$TABLES"

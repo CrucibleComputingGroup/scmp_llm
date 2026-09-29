@@ -24,7 +24,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${BA_MODEL:?BA_MODEL is required (4B|llama8B|14B|30B)}"
 

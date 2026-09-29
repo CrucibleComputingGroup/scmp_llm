@@ -18,7 +18,7 @@
 
 set +u; source ~/.bashrc; conda activate annstention; set -u
 set -eo pipefail
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 OUT=/nfs/turbo/coe-nbleier/allenjin/hpca/fig3_sigma_qwen4b_20260731
 mkdir -p "$OUT"

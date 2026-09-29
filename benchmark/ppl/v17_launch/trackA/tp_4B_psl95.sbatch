@@ -18,7 +18,7 @@ CELLDIR=/nfs/turbo/coe-nbleier/allenjin/hpca/mp_handbuilt_mp_v17_transplant_2026
 source ~/.bashrc
 conda activate annstention
 set -euo pipefail
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 export SC_OWEN_MODE=bitrev
 export SC_SCRAMBLE_MASKS=64

@@ -33,7 +33,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${CTXSWEEP_MODEL:?CTXSWEEP_MODEL is required}"
 : "${CTXSWEEP_CTX:?CTXSWEEP_CTX is required}"

@@ -18,7 +18,7 @@ source ~/.bashrc
 conda activate annstention
 set -u
 
-REPO=/home/allenjin/Projects/scmp_llm
+REPO=/home/allenjin/Projects/SCMP/scmp_llm
 TURBO=/nfs/turbo/coe-nbleier/allenjin
 BASE=${TURBO}/hpca/mp_rot_gate_llama8B_${TAG}
 MODEL=meta-llama/Llama-3.1-8B-Instruct
@@ -106,7 +106,7 @@ EOF
         --ctx_len 2048 \
         --budget-scope global \
         --budget-weight macs \
-        --mac-weights-trace /home/allenjin/Projects/hpca_results/llm/uniform/traces/llama8B_sc_int7_trace.json \
+        --mac-weights-trace /home/allenjin/Projects/SCMP/hpca_results/llm/uniform/traces/llama8B_sc_int7_trace.json \
         --calib-smoothquant \
         --protect-channel-frac 0.01 \
         --protect-channel-stoc-len 112 \

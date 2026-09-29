@@ -63,7 +63,7 @@ def main() -> int:
     print(f"[wire] per_row_chunk buckets in TABLE: "
           f"{len(((tbl.get('per_row_chunk') or {}).get('buckets')) or {})}")
 
-    parent = (f"/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/"
+    parent = (f"/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/"
               f"configs/{model_key}/target{target}")
     os.environ["QUANT_CONFIG"] = "mp"
     os.environ["MP_CONFIG_JSON"] = prc_json
@@ -71,7 +71,7 @@ def main() -> int:
         os.environ["SC_HYBRID_CONFIG_JSON"] = f"{parent}/hybrid_config.json"
     os.environ.setdefault(
         "ACT_SCALES_DIR",
-        "/home/allenjin/Projects/hpca_results/llm/ppl/mp_best/act_scales")
+        "/home/allenjin/Projects/SCMP/hpca_results/llm/ppl/mp_best/act_scales")
     os.environ["FRONTEND"] = os.environ.get("KB_FRONTEND", "awq")
     hf = json.loads(Path(f"{parent}/table.json").read_text())["model_path"]
 

@@ -29,7 +29,7 @@ set -eo pipefail
 
 TAG=${1:?usage: payload_4B.sh <tag>}
 
-REPO=/home/allenjin/Projects/scmp_llm
+REPO=/home/allenjin/Projects/SCMP/scmp_llm
 TURBO=/nfs/turbo/coe-nbleier/allenjin
 BASE=${TURBO}/hpca/mp_antiquarot_4B_${TAG}
 Q1=${BASE}/q1_concentration.pt
@@ -140,7 +140,7 @@ else
     --ctx_len 2048 \
     --budget-scope global \
     --budget-weight macs \
-    --mac-weights-trace /home/allenjin/Projects/hpca_results/llm/uniform/traces/4B_sc_int7_trace.json \
+    --mac-weights-trace /home/allenjin/Projects/SCMP/hpca_results/llm/uniform/traces/4B_sc_int7_trace.json \
     --calib-smoothquant \
     --protect-channel-frac 0.01 \
     --protect-channel-stoc-len 112 \

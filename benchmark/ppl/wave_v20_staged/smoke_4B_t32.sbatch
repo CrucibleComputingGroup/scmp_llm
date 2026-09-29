@@ -17,7 +17,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 export FINAL_PARENT_WRAPPER=/nfs/turbo/coe-nbleier/allenjin/hpca/mp_final_search_final_20260719_2130/4B/target32p000/s01_precision_048_pc_len_84_wrapper.json
 export FINAL_EXCLUDE_PARTITION_CHECKPOINT=/nfs/turbo/coe-nbleier/allenjin/hpca/mp_final_search_final_20260719_2130/4B/target32p000/checkpoint.json

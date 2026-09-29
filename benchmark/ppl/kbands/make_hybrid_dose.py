@@ -29,7 +29,7 @@ import argparse
 import json
 from pathlib import Path
 
-RES = Path("/home/allenjin/Projects/hpca_results/llm")
+RES = Path("/home/allenjin/Projects/SCMP/hpca_results/llm")
 SENS_DIR = Path("/nfs/turbo/coe-nbleier/allenjin/hpca/sensitivity/"
                 "_hpca_sens_layer_int8_20260709_012921")
 

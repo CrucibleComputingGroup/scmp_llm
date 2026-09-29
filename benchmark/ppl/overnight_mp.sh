@@ -20,8 +20,8 @@ CELL_TIMEOUT="${CELL_TIMEOUT:-6h}"
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
 SCRATCH=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca
 TABLES="${TABLES:-$TURBO/mp_calib_overnight}"
-RESULTS="${RESULTS:-/home/allenjin/Projects/hpca_results/llm/mp/overnight_results.tsv}"
-MANIFEST="${MANIFEST:-/home/allenjin/Projects/hpca_results/llm/mp/manifest.tsv}"
+RESULTS="${RESULTS:-/home/allenjin/Projects/SCMP/hpca_results/llm/mp/overnight_results.tsv}"
+MANIFEST="${MANIFEST:-/home/allenjin/Projects/SCMP/hpca_results/llm/mp/manifest.tsv}"
 LOGDIR="${LOGDIR:-$SCRATCH/logs/_mp_overnight_$(date +%Y%m%d_%H%M)}"
 export ACT_SCALES_DIR="$TURBO/act_scales"
 export HF_HOME=/nfs/turbo/coe-nbleier/allenjin/hf_cache
@@ -91,7 +91,7 @@ run_cell(){  # <gpu> <model> <budget> <method>
   local ckpt=""; case "$model" in 14B|30B|32B) ckpt="CALIB_GRAD_CKPT=1";; esac
   # FLOP/energy-weighted budget (iso-compute): per-op MACs/row from the model's
   # sc_int7 trace. A MAC-weighted cell REQUIRES the trace — see the fail below.
-  local trace="${TRACE_DIR:-/home/allenjin/Projects/hpca_results/llm/uniform/traces}/${model}_sc_int7_trace.json"
+  local trace="${TRACE_DIR:-/home/allenjin/Projects/SCMP/hpca_results/llm/uniform/traces}/${model}_sc_int7_trace.json"
   local budgetflags=""
   if [[ "${BUDGET_WEIGHT:-rows}" == "macs" ]]; then
     if [[ -s "$trace" ]]; then

@@ -19,10 +19,10 @@ SC_SCRAMBLE_MASKS="${SC_SCRAMBLE_MASKS:-64}"
 TURBO=/nfs/turbo/coe-nbleier/allenjin/hpca
 SCRATCH=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca
 TABLES="${TABLES:-$TURBO/mp_calib_protected}"
-RESULTS="${RESULTS:-/home/allenjin/Projects/hpca_results/llm/mp/protected_channel_results.tsv}"
-MANIFEST="${MANIFEST:-/home/allenjin/Projects/hpca_results/llm/mp/protected_channel_manifest.tsv}"
+RESULTS="${RESULTS:-/home/allenjin/Projects/SCMP/hpca_results/llm/mp/protected_channel_results.tsv}"
+MANIFEST="${MANIFEST:-/home/allenjin/Projects/SCMP/hpca_results/llm/mp/protected_channel_manifest.tsv}"
 LOGDIR="${LOGDIR:-$SCRATCH/logs/_mp_protected_$(date +%Y%m%d_%H%M)}"
-TRACE="${TRACE:-/home/allenjin/Projects/hpca_results/llm/uniform/traces/${MODEL}_sc_int7_trace.json}"
+TRACE="${TRACE:-/home/allenjin/Projects/SCMP/hpca_results/llm/uniform/traces/${MODEL}_sc_int7_trace.json}"
 
 export ACT_SCALES_DIR="${ACT_SCALES_DIR:-$TURBO/act_scales}"
 export HF_HOME=/nfs/turbo/coe-nbleier/allenjin/hf_cache

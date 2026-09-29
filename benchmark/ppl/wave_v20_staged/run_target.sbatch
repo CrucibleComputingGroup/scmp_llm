@@ -15,7 +15,7 @@ set +u
 source ~/.bashrc
 conda activate annstention
 set -u
-cd /home/allenjin/Projects/scmp_llm
+cd /home/allenjin/Projects/SCMP/scmp_llm
 
 : "${V20_MODEL:?V20_MODEL is required}"
 : "${V20_PARENT:?V20_PARENT is required}"

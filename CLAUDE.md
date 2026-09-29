@@ -1,7 +1,122 @@
 # scmp_llm — reproduction guide
 
 > ═══════════════════════════════════════════════════════════════════════════
-> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-08-04
+> ## ⚑ CURRENT STATUS / SESSION HANDOFF — last updated 2026-09-29
+>
+> ### 2026-09-29 — tile-max avg_sl (hardware tiles run at their longest row)
+> User hardware model: the systolic array fetches an A tile of 32 rows × 8 K; the tile runs at its
+> LONGEST row's stream length. Computed on all 20 best(all) cells (array 62287797, FP-matmul
+> trajectory with the deployed dispatch; flat avg_sl within −1.09…+0.04% of the archived trace
+> cost; llama8B t32's Slurm FAILED is only that 1% check at −1.09%). 32-row tiles: t32–t48
+> +32…+57%, t64 +26…+42%, t96 +20…+26% (mean +38%; 8-row +23%, 64-row +44%). Linears carry it
+> (+25…+64%, down_proj ≈2×); attention 0–16%. Uniform SC pays no tile penalty. Counting attention
+> CAUSALLY (row i needs i+1 keys; estimate assuming length is position-independent) halves its MAC
+> share, lowers flat avg_sl 1–11% (4B t32 33.5→29.9) and raises the 32-row penalty to mean +42%
+> (+22…+61%). avg_sl in traces/archives still counts attention dense. Results: Turbo
+> `hpca/kbands/tile_cost_20260928/fp/<cell>/tile.json`; tool `benchmark/ppl/tile_cost.py`
+> (+ `test_tile_cost.py`), launcher `kbands/run_tile_cost_20260928.sbatch` (TILE_MODE=exact|fp).
+> **Round 7 is BLOCKED:** all three 30B captures (62263344_0-2) failed the identity check
+> `own_tables_rescored_equal_capture_diag` — a checker bug, not a mismatch: calib10_r7 fills
+> `diag["tables"]` (l.755–785) before creating gfisla (l.883), so `tables.gfisla` is always null;
+> every other value matches exactly. Fix check (7) in `prc_r7_solve.py`, then re-run `identity`
+> on CPU (needs user OK — hashed round-7 source).
+>
+> ### 2026-09-28 — T1 stall investigated; round 6 SUBMITTED
+> **Round 6 submitted 2026-09-28 (user OK):** attention diagnostic array **62208439** (0-2%2: 30B_t40, 30B_t32,
+> 4B_dense) and 14B t32 re-target **62208440** (`--array=0` only — 30B t64 re-target DROPPED per critic: −0.64%
+> under-spend, predicted not to flip). ≤3 GPUs. Outputs: Turbo `kbands/prc_r6_20260928/`, `prc_r6_retarget_20260928/`.
+> **ROUND 7 SUBMITTED 2026-09-28 (user OK; user says do not re-ask for rounds 6–8 stages):** step 0 array
+> **62263343** (`0-2%1`: 30B t40→t32→t48, c17 vs c17_s80 linear marginal → κ decision) + captures **62263344**
+> (`0-2%3`: 30B t32/t40/t48, attention rungs to 128, att-rows 512). ≤4 GPUs. Prereg `kbands/PRC_R7_PREREG_20260928.md`
+> + `prc_r7_prereg_20260928.json`; submission records `prc_{step0_r7,r7_capture}_20260928_submission.json`.
+> Step 0 done (30B linear marginal: cut 12.1%→+2.02% PPL at t40, cut 10.5%→+6.07% at t32). All 3 captures
+> FAILED exit 3 ONLY on a checker bug (pinned check 7 demands diag.tables.gfisla, never written); CPU re-check
+> `identity_check7fix.json` = exact; **user approved** accepting it (2026-09-28) → chain flag
+> `--accept-identity-recheck` (note `kbands/PRC_R7_CAPTURE_IDENTITY_NOTE_20260928.md`). Stage-2 CPU chain job
+> 62293499 OK: κ keep_0.42; all 3 cells enabled, primary UK, secondary U, K refused (<MDE). ⚠ 30B t32 UK/U
+> pred −0.51 nats = Fisher extrapolation anomaly (K +0.001) — screen NLL decides. **Screen array 62295294**
+> (`0-2%2`; tilecost array holds 2 GPUs). Record `kbands/prc_screen_r7_20260928_submission.json`.
+> **ROUND-6 RESULTS (all jobs COMPLETED; record `kbands/PRC_R6_RESULTS_20260928.md`):**
+> - Attention diag (TRAIN, over-budget, not citable): pinned qk/av → 128 = **30B t32 −1.98% @+7.0% cyc
+>   (z −5.2), 30B t40 −2.36% @+8.7% (z −7.2)** ⇒ gate PASS (≈1.2–1.85× the budget chord; ~9× linears'
+>   per-cycle value). 4B t40 −0.60% @+9.0% FAIL; 4B t64 −0.44% @+4.3% marginal PASS. ⇒ Round 7 = 30B t32/t40/t48.
+> - 14B t32 re-target to parent cost: full test **9.0845 (+0.089% vs incumbent 9.0764), no ≤1.05× flip** ⇒
+>   re-targeting refuted; best(all) unchanged; no further re-targets.
+> **Round-4 results exist** — the "No round-4 PPL results yet" line in the 09-27 entry below is stale.
+> All 4 tasks finished 09-27 15:20–17:36; best(all) is unchanged. 4B t32, 30B t32 and 30B t40
+> retained their incumbents. llama8B t32 confirmed (z −1.98) but lost on test, 8.285860 vs 8.279485
+> (+0.077%). Record: `benchmark/ppl/kbands/PRC_ADJACENT_RESULTS_20260927.md`.
+> **Why rounds 3–5 added ~0:** proposals carried no loss signal, and moves were too small (R4/R5) or
+> rung-skipping (R3). Read-only investigation: `kbands/investigations/T1_STALL_INVESTIGATION_20260928.md`.
+> Mapper reports and the round-6 critic are in `investigations/t1_stall_20260928/`.
+> **Plan:** `kbands/ROUNDS_6_8_PLAN_20260928.md`. It covers the pre-registered gates, the ≤4-GPU plan, and
+> honest expectations (20-cell mean −0.05…−0.35 pp; 14B t32 likely flips to ≤1.05×).
+> Round 6 is two arrays, each `%2`, so ≤4 GPUs in total:
+> - (a) attention diagnostic on 30B t32/t40 and 4B t40/t64 (gross, TRAIN-only, not citable; gates round 7).
+>   Launcher `kbands/run_prc_r6_attn_diag_20260928.sbatch`, manifest `prc_r6_attn_diag_20260928.json`.
+>   Out: Turbo `hpca/kbands/prc_r6_20260928/`.
+> - (b) budget re-target to parent cost of 14B t32 (`c7gfisla`) and 30B t64 (`c7gfis`) through the new
+>   `mp_per_row_chunk_calib9_r6.py`. Launcher `kbands/run_prc_r6_retarget_20260928.sbatch`, manifest
+>   `prc_r6_retarget_20260928.json`. Out: Turbo `hpca/kbands/prc_r6_retarget_20260928/`.
+>   Report as a budget correction, not as T1.
+> **ROUND 7 BUILT, NOT SUBMITTED (needs user OK):** 30B t32/t40/t48, all with primary UK (family-κ joint λ, qk/av ladders up to 128,
+> parent cost via one fixed point). Prereg and exact commands in `kbands/PRC_R7_PREREG_20260928.md`; records `prc_r7_prereg_20260928.json`
+> (c7fcfaec…), step 0 `prc_step0_r7_20260928.json` (cdbfdbad…), capture `prc_r7_capture_20260928.json` (7a7d8121…). Step 0 (1 GPU) plus captures (3 GPUs)
+> run first; the screen manifest can only be built after the CPU chain. 4B t64 is off by default. Open (prereg §10): the one-sided κ rule and
+> 0.83/0.83 revert pins, MDE 0.9–1.3% above the expected gain (refusal plausible), and the ±0.10 new-rung audit, registered but not implemented.
+> Do not edit hashed round-4/6/7 sources. Round 8 is not built.
+>
+> ### 2026-09-27 — round-4 adjacent-rung allocation pilot queued
+> User authorized implementation and queueing, then increased the cap to
+> **four GPUs total**. Original Slurm array
+> **62104342**, tasks 0/1 = `4B_t32` / `llama8B_t32`, one GPU each, throttle 2,
+> account `nbleier_owned1`, RTX6000 reservation. Companion array **62105189**
+> adds `30B_t32` / `30B_t40`, also one GPU each and throttle 2. Together these
+> arrays occupy at most four GPUs; all four initially pending for resources.
+> Exact current best(all) incumbents: dense `c6_gfis`, 30B t32 `c7_gfisla`,
+> 30B t40 round-3 `candidate07_mlp_from_projections`. Change one threshold in each of two buckets,
+> with at most one-rung displacement and bounded group/MAC/operator changes.
+> Six fresh TRAIN search windows and 16 disjoint confirmation windows; full TEST
+> only after lower paired NLL with `z < -1.5` and cost/locality checks. Final
+> reporting remains best(full-test PPL) across all comparable rounds. No RNG,
+> QK transform, frontend, mask, protected-channel, ladder, or runtime changes.
+> Protocol: `benchmark/ppl/kbands/PRC_ADJACENT_20260927.md`; frozen manifest and
+> submission record: `prc_adjacent_20260927{,_submission}.json` in that directory;
+> 30B companion: `prc_adjacent_30b_20260927{,_submission}.json`.
+> Driver/proposals: `benchmark/ppl/prc_adjacent_{refine,proposals}.py`.
+> Outputs: `/nfs/turbo/coe-nbleier/allenjin/hpca/kbands/prc_adjacent_20260927/`.
+> All 32 CPU tests and both job preflights passed. Do not edit frozen source
+> files while these jobs run. No round-4 PPL results yet.
+>
+> ### 2026-09-23 — per-GROUP allocation redone right: archive `llm/ppl/prc2/`
+> **Rebuttal T1/T2 evidence lives in `hpca_results/llm/ppl/prc2/`** (README,
+> SUMMARY, manifest; rebuild `python benchmark/ppl/kbands/build_prc2_archive.py`).
+> Pure allocation vs the submitted per-row `parent` (same wrapper / INT mask / AWQ;
+> attention keeps the parent's per-row thresholds + μ+2τ escape; on the 7 linears the
+> per-(row,chunk) table replaces the per-row statistic/ladder/escape; cost from each
+> run's TRACE — the [RESULT] tracker reads per-group arms ≤0.4% cheap). Iso-cost ΔPPL
+> (SUMMARY.md authoritative): 4B −5.49/−2.40/−1.37/−0.63/−0.23% (t32…t96), llama8B
+> −3.30/−1.51/−1.32/−0.68/−0.21%, 14B −1.53% (t32) / −1.04% (t48); every finished cell
+> improves, trace cost within 1.1% of the parent. Identically calibrated per-ROW
+> control (4B t32) −1.12% ⇒ **granularity alone −4.42%** raw (one cell). Compute
+> (secondary): 4B t32 at 0.8× linear budget = parent PPL at −12.0% SC cycles.
+> User rule: ~1% cost doesn't matter, 1% PPL does — headline ΔPPL per budget.
+> **Calibrator:** `benchmark/ppl/mp_per_row_chunk_calib2.py` (UNTRACKED) — fixes 8
+> defects of the v7 calibrator (`mp_per_row_chunk_calib.py`): full-call min-max
+> normalization, all blocks, SC-only modules, AWQ smooth_scales in the error
+> curves, tail chunk, dense ladder [8..128], exact monotone-staircase DP, budgets =
+> parent's own L on the same stratified TRAIN windows. Pre-registered held-out
+> gate (L within [−3%,+2%], error < parent) before every eval. Analysis copy
+> `mp_per_row_chunk_calib3.py` (+ `--row-shared` control). Runtime edit:
+> `model/sc_common.per_row_chunk_rungs` honours `SC_PRC_ROWSHARED=1` (default off,
+> byte-identical) for the per-row control only. Launchers:
+> `kbands/run_prc2_calib.sbatch` (calib→gate→eval), `run_prc3_calib.sbatch`,
+> `run_prc2_scaled.sbatch`, `launch_prc2_ppl.sh`. Narrative/run log:
+> `kbands/PRC2_OVERNIGHT.md`.
+> ⚠ **ENV:** the editable `scmp_kernels` install points at the pre-move path; every
+> eval must export `PYTHONPATH=/home/allenjin/Projects/SCMP/scmp_llm/kernels`.
+> ⚠ The v7 tables inside `mp_best_after_hpca_{2,3,4}` are mis-calibrated; the
+> "granularity ≈ −1.04%" figure below/elsewhere is SUPERSEDED by prc2.
 >
 > ### 2026-08-04 — per-(row,chunk) archive SHIPPED; P1 loss-weighting REFUTED
 > **Deployment archive is now `hpca_results/llm/ppl/mp_best_after_hpca_2/`**
@@ -401,7 +516,7 @@ sbatch --job-name=<name> \
   --partition=gpu-rtx6000 --gres=gpu:1 --cpus-per-task=12 --mem=180G \
   --time=24:00:00 \
   --output=/scratch/nbleier_owned_root/nbleier_owned1/shared_data/allenjin/hpca/logs/<name>_%j.out \
-  --wrap='source ~/.bashrc; conda activate annstention; cd /home/allenjin/Projects/scmp_llm; <command>'
+  --wrap='source ~/.bashrc; conda activate annstention; cd /home/allenjin/Projects/SCMP/scmp_llm; <command>'
 ```
 
 For interactive diagnostics inside an already-running allocation, use `srun
