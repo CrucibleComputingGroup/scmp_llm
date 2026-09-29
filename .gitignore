@@ -50,3 +50,13 @@ benchmark/ppl/_halved_fix_*/
 # hpca runtime artifacts (results live on Turbo; these are local eval caches)
 benchmark/LongBench/results
 benchmark/ruler/ruler_eval_result
+
+# Session notes, run manifests and per-round results stay local, not in the
+# repo (cleaned up 2026-09-29). Durable copies live on Turbo / hpca_results.
+benchmark/ppl/kbands/*.md
+!benchmark/ppl/kbands/PREREG_*.md
+benchmark/ppl/kbands/investigations/
+benchmark/ppl/**/*_submission.json
+benchmark/ppl/**/*_results.json
+NEXT_SESSION*.md
+*.bak
