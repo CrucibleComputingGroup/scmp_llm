@@ -21,6 +21,12 @@
 > every other value matches exactly. Fix check (7) in `prc_r7_solve.py`, then re-run `identity`
 > on CPU (needs user OK — hashed round-7 source).
 >
+> ### 2026-09-29 — T1 allocation rounds CLOSED after round 7 (user decision; round 8 cancelled)
+> Rounds 6–7 added no citable PPL. **Final T1 numbers = codex's best(all)** (per-cell table: `SCMP/CLAUDE.md` §Current best LLM numbers) `hpca_results/llm/ppl/prc2/
+> BEST_ALL_VS_SUBMITTED_20260927.md` (20/20 cells improved vs submitted, mean −2.53%). No jobs running. Do NOT
+> relaunch allocation rounds without a new user request. Records: `kbands/PRC_R6_RESULTS_20260928.md`,
+> `PRC_R7_RESULTS_20260929.md`, investigation `kbands/investigations/T1_STALL_INVESTIGATION_20260928.md`.
+>
 > ### 2026-09-28 — T1 stall investigated; round 6 SUBMITTED
 > **Round 6 submitted 2026-09-28 (user OK):** attention diagnostic array **62208439** (0-2%2: 30B_t40, 30B_t32,
 > 4B_dense) and 14B t32 re-target **62208440** (`--array=0` only — 30B t64 re-target DROPPED per critic: −0.64%
@@ -36,6 +42,9 @@
 > 62293499 OK: κ keep_0.42; all 3 cells enabled, primary UK, secondary U, K refused (<MDE). ⚠ 30B t32 UK/U
 > pred −0.51 nats = Fisher extrapolation anomaly (K +0.001) — screen NLL decides. **Screen array 62295294**
 > (`0-2%2`; tilecost array holds 2 GPUs). Record `kbands/prc_screen_r7_20260928_submission.json`.
+> **ROUND-7 RESULT: NO FULL TEST, best(all) unchanged** (`kbands/PRC_R7_RESULTS_20260929.md`). 30B t32 UK screen
+> −1.37% (z −3.6) but confirm on 32 fresh windows −0.18% (z −0.49) → fail (screen windows ≈ κ-fit windows ⇒
+> optimistic); t40 UK +0.43%, t48 UK +0.08% → screen gate fail. Iso-cost attention-ladder re-solve REFUTED on 30B.
 > **ROUND-6 RESULTS (all jobs COMPLETED; record `kbands/PRC_R6_RESULTS_20260928.md`):**
 > - Attention diag (TRAIN, over-budget, not citable): pinned qk/av → 128 = **30B t32 −1.98% @+7.0% cyc
 >   (z −5.2), 30B t40 −2.36% @+8.7% (z −7.2)** ⇒ gate PASS (≈1.2–1.85× the budget chord; ~9× linears'

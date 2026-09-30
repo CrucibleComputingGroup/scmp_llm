@@ -484,6 +484,29 @@ def compute_ppl(
     return ppl, n_loss, time.time() - t0
 
 
+C4_VAL_FILE = ("/nfs/turbo/coe-nbleier/allenjin/hpca/datasets/c4/"
+               "c4-validation.00000-of-00008.json.gz")
+
+
+def _c4_gptq_stream(tokenizer, ctx, nsamples=256, ndocs=1100):
+    """C4 PPL stream in the GPTQ/AWQ/QuaRot protocol (GPTQ datautils.get_c4,
+    eval branch): allenai/c4 'en' validation shard 0, the first 1100 documents
+    joined with ' ', truncated to nsamples*ctx tokens. Nothing in the SC-MP
+    pipeline is calibrated on C4, so this is an out-of-distribution corpus."""
+    import gzip
+    path = os.environ.get("C4_VAL_FILE", C4_VAL_FILE)
+    docs = []
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        for line in f:
+            docs.append(json.loads(line)["text"])
+            if len(docs) == ndocs:
+                break
+    if len(docs) < ndocs:
+        raise SystemExit(f"[data] {path} holds {len(docs)} < {ndocs} documents")
+    enc = tokenizer(" ".join(docs), return_tensors="pt").input_ids[0]
+    return enc[: nsamples * ctx]
+
+
 def main():
     model_path = os.environ["MODEL_PATH"]
     tag = os.environ.get("QUANT_CONFIG", "fp16")
@@ -493,15 +516,25 @@ def main():
     alpha = float(os.environ.get("SQ_ALPHA", "0.5"))
 
     model, tokenizer = build_model(model_path, tag, alpha=alpha)
-    from datasets import load_dataset
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-    # Canonical GPTQ stream (= BitMoD llm_eval_wikitext.py): join ALL rows,
-    # blank lines included, and drop the sub-window tail so every window is
-    # full. With stride=ctx this makes our PPL bit-comparable to published
-    # GPTQ-protocol tables. NOTE: act_scales calibration (train split) keeps
-    # its own join — do not "unify" them, cached scales would be invalidated.
-    text = "\n\n".join(ds["text"])
-    enc = tokenizer(text, return_tensors="pt").input_ids[0]
+    # PPL_DATASET selects the scored text. Unset/"wikitext2" is the HPCA
+    # protocol, byte-identical to the path before this switch existed.
+    dataset = os.environ.get("PPL_DATASET", "wikitext2").strip().lower()
+    if dataset == "wikitext2":
+        from datasets import load_dataset
+        ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        # Canonical GPTQ stream (= BitMoD llm_eval_wikitext.py): join ALL rows,
+        # blank lines included, and drop the sub-window tail so every window is
+        # full. With stride=ctx this makes our PPL bit-comparable to published
+        # GPTQ-protocol tables. NOTE: act_scales calibration (train split) keeps
+        # its own join — do not "unify" them, cached scales would be invalidated.
+        text = "\n\n".join(ds["text"])
+        enc = tokenizer(text, return_tensors="pt").input_ids[0]
+    elif dataset == "c4":
+        enc = _c4_gptq_stream(tokenizer, ctx)
+        print(f"[data] dataset=c4 tokens={enc.shape[0]} "
+              f"windows={enc.shape[0] // ctx} ctx={ctx}")
+    else:
+        raise SystemExit(f"unknown PPL_DATASET={dataset!r} (want wikitext2|c4)")
     if max_tok > 0:
         enc = enc[:max_tok]
     enc = enc[: (enc.shape[0] // ctx) * ctx]
@@ -540,6 +573,9 @@ def main():
                     f"recorded under a variant's label. Refusing.")
     except ImportError:
         pass
+    if os.environ.get("SC_TRACE_PROVENANCE") == "1" and torch.cuda.is_available():
+        print(f"[mem] peak_allocated_gb="
+              f"{torch.cuda.max_memory_allocated() / 2**30:.1f}")
     print(f"[RESULT] model={model_path} config={tag} metric=ppl "
           f"value={ppl:.4f} tokens={n} sec={secs:.1f} "
           f"realized_avg_sl={realized_sl:.2f} "
@@ -563,6 +599,12 @@ def main():
             "scramble_masks": os.environ.get("SC_SCRAMBLE_MASKS", "64"),
             "use_smoothquant": "1",
             "smoothquant_alpha": alpha,
+            # Opt-in provenance (off = header byte-identical to earlier traces):
+            # the fields above cannot show the scored text, front end or mask.
+            **({"dataset": dataset,
+                "frontend": os.environ.get("FRONTEND", "smoothquant"),
+                "hybrid_config_json": os.environ.get("SC_HYBRID_CONFIG_JSON", "")}
+               if os.environ.get("SC_TRACE_PROVENANCE") == "1" else {}),
         })
         if out:
             print(f"[trace] wrote {out}")

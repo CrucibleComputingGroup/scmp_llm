@@ -1,0 +1,16 @@
+0	4B	mp	-	timing probe first
+1	4B	uniform	sc_avg96	uniform t48
+2	4B	fp16	-	fp16 reference
+3	llama8B	mp	-	arc
+4	14B	mp	-	arc
+5	30B	mp	-	arc
+6	llama8B	uniform	sc_avg96	uniform t48
+7	14B	uniform	sc_avg96	uniform t48
+8	30B	uniform	sc_avg96	uniform t48
+9	4B	uniform	sc_int7	uniform t64
+10	llama8B	uniform	sc_int7	uniform t64
+11	14B	uniform	sc_int7	uniform t64
+12	30B	uniform	sc_int7	uniform t64
+13	llama8B	fp16	-	fp16 reference
+14	14B	fp16	-	fp16 reference
+15	30B	fp16	-	fp16 reference
